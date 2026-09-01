@@ -8,6 +8,23 @@ enforces the 7-day retention ceiling server-side, and serves that history to an 
 
 You need a Cloudflare account with a payment method on file (R2 requires one).
 
+> **Run these from `apps/api`, not the repository root.** This repo is a pnpm workspace,
+> and there is no wrangler config at the root, so `wrangler deploy` there fails with:
+>
+> ```
+> ✘ [ERROR] The Cloudflare application detection logic has been run in the root of a
+>   workspace instead of targeting a specific project.
+> ```
+>
+> Wrangler is telling you it found a workspace and does not know which application you
+> meant. Either `cd apps/api` first, or use the root shortcuts, which do it for you:
+> `pnpm deploy:api`, `pnpm migrate:api`, `pnpm dev:api`.
+>
+> One trap if you write your own: **`pnpm --filter @sr/api deploy` does not work.** `deploy`
+> is a built-in pnpm command and silently shadows the package script — you get
+> `Unknown option: 'dry-run'` with no hint a script was involved. Insert `run`:
+> `pnpm --filter @sr/api run deploy`.
+
 ```bash
 cd apps/api
 npx wrangler login
@@ -30,6 +47,21 @@ npx wrangler deploy
 
 `wrangler deploy` prints the URL. Paste it into the web app under
 **Settings → Cloud sync → Worker API URL**, click *Test & register*, tick *Sync enabled*.
+
+### Deploying from the Cloudflare dashboard instead
+
+If you connect the repository through the dashboard (Workers → Import a repository) rather
+than deploying from your machine, the same workspace error appears — the build runs
+detection at the repository root by default. Set the build configuration to:
+
+| setting | value |
+|---|---|
+| Root directory | `apps/api` |
+| Build command | *(leave empty — wrangler builds the Worker itself)* |
+| Deploy command | `npx wrangler deploy` |
+
+`AUTH_SECRET` still has to be set as a secret; the dashboard's plaintext build variables are
+not the same thing, and a secret set with `wrangler secret put` survives redeploys.
 
 > **Set `AUTH_SECRET` before you deploy.** Without it the Worker falls back to a
 > well-known development key, and anyone who knows it could mint a token for any user id.

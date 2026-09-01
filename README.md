@@ -42,10 +42,18 @@ claude mcp add --transport http screenregister https://<your-worker>/mcp \
 Then ask *"what was I working on yesterday afternoon?"* — see
 [`apps/api/README.md`](apps/api/README.md) for the tools and the token.
 
-Cloud sync is off by default. To turn it on, deploy the Worker (see
-[`apps/api/README.md`](apps/api/README.md)) and paste its URL into
+Cloud sync is off by default. To turn it on, deploy the Worker and paste its URL into
 **Settings → Cloud sync**. Recording never waits on the network: frames are written
 locally first and drain from there, so capture continues through an outage.
+
+```bash
+pnpm migrate:api     # apply D1 migrations to the remote database
+pnpm deploy:api      # deploy the Worker
+```
+
+These run in `apps/api` for you. Running `wrangler deploy` from the repository root fails —
+it is a pnpm workspace with no wrangler config at the root, so wrangler cannot tell which
+application you meant. Full deploy steps in [`apps/api/README.md`](apps/api/README.md).
 
 ### Mobile
 

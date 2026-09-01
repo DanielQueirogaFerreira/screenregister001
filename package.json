@@ -4,10 +4,14 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "pnpm --filter @sr/web dev",
-    "build": "pnpm --filter @sr/web build",
+    "dev": "pnpm --filter @sr/web run dev",
+    "build": "pnpm --filter @sr/web run build",
     "test": "vitest run",
-    "typecheck": "tsc -b --pretty false"
+    "typecheck": "tsc -b --pretty false",
+    "dev:api": "pnpm --filter @sr/api run dev",
+    "deploy:api": "pnpm --filter @sr/api run deploy",
+    "migrate:api": "pnpm --filter @sr/api run migrate:remote",
+    "migrate:api:local": "pnpm --filter @sr/api run migrate:local"
   },
   "devDependencies": {
     "typescript": "^5.7.2",
