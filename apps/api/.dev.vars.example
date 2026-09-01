@@ -1,3 +1,8 @@
-# Copy to .dev.vars, or just run `pnpm dev:api`, which generates one for you.
-# Never commit .dev.vars. Production sets this with: wrangler secret put AUTH_SECRET
+# Copy to .dev.vars, or just run `pnpm dev:api`, which fills these in for you.
+# Never commit .dev.vars. Production sets the secret with: wrangler secret put AUTH_SECRET
+
 AUTH_SECRET = "replace-with-at-least-16-characters"
+
+# Allows a dev client on another localhost port to call this API cross-origin.
+# Local development only — leave this unset in production.
+ALLOW_LOCALHOST_ORIGINS = "true"

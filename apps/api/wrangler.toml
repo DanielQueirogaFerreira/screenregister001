@@ -25,6 +25,12 @@ directory = "../web/dist"
 [vars]
 RETENTION_DAYS = "7"
 
+# Cross-origin calls from localhost, off in production. The deployed Worker serves its own
+# client, so all real traffic is same-origin; a developer machine runs many unrelated local
+# services and none of them should be able to reach this API from the browser. Local
+# development turns this on through apps/api/.dev.vars, which never ships.
+ALLOW_LOCALHOST_ORIGINS = "false"
+
 # Nightly prune. The 7-day ceiling is enforced server-side, not merely by the client.
 [triggers]
 crons = ["0 3 * * *"]

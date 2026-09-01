@@ -12,20 +12,29 @@ type Ctx = { Bindings: Env; Variables: { me: Principal } };
 
 const app = new Hono<Ctx>();
 
-/** A dev client on localhost still needs to reach a deployed Worker. */
-const DEV_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
+const LOCALHOST_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
+
+/** Opt-in, and only an exact "true" counts — an unset or malformed value stays off. */
+const localhostAllowed = (env: Env): boolean =>
+  (env.ALLOW_LOCALHOST_ORIGINS ?? '').trim().toLowerCase() === 'true';
 
 /**
  * The Worker serves the client, so real traffic is same-origin and needs no CORS at all.
- * Reflecting every requesting origin — which this used to do — hands any website a
- * working cross-origin channel to the API. A bearer token is still required, so it was
- * not exploitable on its own, but there is no reason to offer the surface.
+ * An earlier version reflected every requesting origin, which handed any website a working
+ * cross-origin channel to the API — a bearer token was still required, so it was not
+ * exploitable alone, but the surface had no reason to exist.
+ *
+ * The localhost exception exists only for running a dev client on one port against an API
+ * on another, and it is off unless ALLOW_LOCALHOST_ORIGINS is "true". A developer machine
+ * runs many unrelated local services; a deployed Worker should not accept cross-origin
+ * calls from whatever else happens to be listening.
  */
 app.use('*', cors({
   origin: (origin, c) => {
     if (!origin) return undefined;                       // same-origin or non-browser
     if (origin === new URL(c.req.url).origin) return origin;
-    return DEV_ORIGIN.test(origin) ? origin : undefined; // anything else is denied
+    if (localhostAllowed(c.env) && LOCALHOST_ORIGIN.test(origin)) return origin;
+    return undefined;                                    // everything else is denied
   },
   allowHeaders: ['Authorization', 'Content-Type'],
   allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
@@ -76,6 +85,7 @@ app.get('/v1/health', async (c) => {
     service: 'screenregister-api',
     schema,
     auth_configured: authConfigured,
+    cors_localhost: localhostAllowed(c.env),
     ...(schema === 'missing' && {
       hint: 'Run the D1 migrations: wrangler d1 migrations apply screenregister --remote',
     }),
