@@ -4,11 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev --local --port 8787",
+    "dev": "node scripts/ensure-dev-vars.mjs && wrangler dev --local --port 8787",
     "deploy": "node scripts/preflight.mjs && wrangler deploy",
     "migrate:local": "wrangler d1 migrations apply screenregister --local",
     "migrate:remote": "wrangler d1 migrations apply screenregister --remote",
-    "preflight": "node scripts/preflight.mjs"
+    "preflight": "node scripts/preflight.mjs",
+    "build": "pnpm -w run test && pnpm --filter @sr/web run build"
   },
   "dependencies": {
     "@sr/schema": "workspace:*",

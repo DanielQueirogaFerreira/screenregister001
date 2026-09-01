@@ -1,7 +1,9 @@
 import { Hono, type MiddlewareHandler } from 'hono';
 import { cors } from 'hono/cors';
 import type { Env, Principal } from './types.js';
-import { bearer, issueToken, verifyToken } from './auth.js';
+import {
+  AuthNotConfiguredError, bearer, isAuthConfigured, issueToken, verifyToken,
+} from './auth.js';
 import { handleMcp } from './mcp.js';
 import { buildScenes, listFrames, resolveWindow } from './queries.js';
 import { OPENAPI } from './openapi.js';
@@ -10,12 +12,43 @@ type Ctx = { Bindings: Env; Variables: { me: Principal } };
 
 const app = new Hono<Ctx>();
 
+/** A dev client on localhost still needs to reach a deployed Worker. */
+const DEV_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
+
+/**
+ * The Worker serves the client, so real traffic is same-origin and needs no CORS at all.
+ * Reflecting every requesting origin — which this used to do — hands any website a
+ * working cross-origin channel to the API. A bearer token is still required, so it was
+ * not exploitable on its own, but there is no reason to offer the surface.
+ */
 app.use('*', cors({
-  origin: (o) => o,               // the client is served from a different origin
+  origin: (origin, c) => {
+    if (!origin) return undefined;                       // same-origin or non-browser
+    if (origin === new URL(c.req.url).origin) return origin;
+    return DEV_ORIGIN.test(origin) ? origin : undefined; // anything else is denied
+  },
   allowHeaders: ['Authorization', 'Content-Type'],
   allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   maxAge: 86400,
 }));
+
+/**
+ * A Worker running without a signing key is misconfigured, not broken, and 503 says so.
+ * Without this the failure surfaces as an unhandled exception and a 500 with no clue.
+ */
+app.onError((err, c) => {
+  if (err instanceof AuthNotConfiguredError) {
+    return c.json({ error: 'server_not_configured', detail: err.message }, 503);
+  }
+  // A body that will not parse is the caller's mistake, not the server's. Hono raises a
+  // SyntaxError out of c.req.json(); left unhandled it becomes a 500 and looks like an
+  // outage in the logs.
+  if (err instanceof SyntaxError) {
+    return c.json({ error: 'invalid_json', detail: err.message }, 400);
+  }
+  console.error('unhandled error', err);
+  return c.json({ error: 'internal_error' }, 500);
+});
 
 /**
  * Liveness plus the two things a fresh deploy most often lacks.
@@ -36,7 +69,7 @@ app.get('/v1/health', async (c) => {
   } catch (err) {
     schema = /no such table/i.test(String(err)) ? 'missing' : 'error';
   }
-  const authConfigured = Boolean(c.env.AUTH_SECRET);
+  const authConfigured = isAuthConfigured(c.env);
 
   return c.json({
     ok: schema === 'ready' && authConfigured,
@@ -47,8 +80,9 @@ app.get('/v1/health', async (c) => {
       hint: 'Run the D1 migrations: wrangler d1 migrations apply screenregister --remote',
     }),
     ...(!authConfigured && {
-      auth_hint: 'AUTH_SECRET is not set; the Worker is using a public development key. ' +
-        'Set it: wrangler secret put AUTH_SECRET',
+      auth_hint: 'AUTH_SECRET is missing or too short, so the Worker refuses to issue or ' +
+        'accept tokens and every authenticated route returns 503. Set it: ' +
+        'wrangler secret put AUTH_SECRET',
     }),
   });
 });
@@ -73,6 +107,11 @@ app.post('/v1/devices', async (c) => {
 });
 
 const authGuard: MiddlewareHandler<Ctx> = async (c, next) => {
+  // Checked before the token is even parsed. A malformed token would otherwise short out
+  // to 401 without consulting the key, telling an operator their token is bad when the
+  // real problem is that the server has no key at all.
+  if (!isAuthConfigured(c.env)) throw new AuthNotConfiguredError();
+
   const token = bearer(c.req.header('Authorization'));
   const me = token ? await verifyToken(c.env, token) : null;
   if (!me) return c.json({ error: 'unauthorized' }, 401);

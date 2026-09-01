@@ -15,16 +15,41 @@ import type { Env, Principal } from './types.js';
 
 const enc = new TextEncoder();
 
-function devSecret(env: Env): string {
-  if (env.AUTH_SECRET) return env.AUTH_SECRET;
-  // Local `wrangler dev` has no secret bound. Fail closed in production instead of
-  // silently accepting a well-known key.
-  return 'dev-only-insecure-secret';
+/** Refuse to mint or accept tokens rather than fall back to a guessable key. */
+export class AuthNotConfiguredError extends Error {
+  constructor() {
+    super(
+      'AUTH_SECRET is not configured. Set it before serving traffic: ' +
+        'wrangler secret put AUTH_SECRET (production), or put it in apps/api/.dev.vars (local).',
+    );
+    this.name = 'AuthNotConfiguredError';
+  }
+}
+
+/** Below this a brute-force search over the key space stops being fanciful. */
+const MIN_SECRET_LENGTH = 16;
+
+/**
+ * There is deliberately no fallback key.
+ *
+ * An earlier version returned a hard-coded development secret when AUTH_SECRET was
+ * missing, so a deploy that forgot the secret came up signing tokens with a value
+ * published in this repository — anyone could mint a token for any user id, and nothing
+ * about the running service looked wrong. A missing key is a configuration failure, and
+ * the only safe response is to stop, loudly.
+ */
+export function isAuthConfigured(env: Env): boolean {
+  return Boolean(env.AUTH_SECRET && env.AUTH_SECRET.length >= MIN_SECRET_LENGTH);
+}
+
+function signingKey(env: Env): string {
+  if (!isAuthConfigured(env)) throw new AuthNotConfiguredError();
+  return env.AUTH_SECRET!;
 }
 
 async function sign(env: Env, payload: string): Promise<string> {
   const key = await crypto.subtle.importKey(
-    'raw', enc.encode(devSecret(env)), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'],
+    'raw', enc.encode(signingKey(env)), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'],
   );
   const sig = await crypto.subtle.sign('HMAC', key, enc.encode(payload));
   return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, '0')).join('');

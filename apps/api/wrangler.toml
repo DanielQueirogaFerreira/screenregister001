@@ -1,6 +1,7 @@
 name = "screenregister-api"
 main = "src/index.ts"
-compatibility_date = "2026-01-01"
+# Kept current deliberately: an old date silently pins old runtime behaviour.
+compatibility_date = "2026-08-28"
 compatibility_flags = ["nodejs_compat"]
 
 # Frame blobs. Retention is enforced by the scheduled handler below rather than by an
@@ -27,3 +28,8 @@ RETENTION_DAYS = "7"
 # Nightly prune. The 7-day ceiling is enforced server-side, not merely by the client.
 [triggers]
 crons = ["0 3 * * *"]
+
+# Logs, so the first production incident is diagnosable rather than guessed at. The
+# retention sweep in particular runs unattended at 03:00 and is otherwise invisible.
+[observability]
+enabled = true

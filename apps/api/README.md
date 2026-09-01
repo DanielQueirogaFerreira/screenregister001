@@ -86,11 +86,15 @@ Then set the build configuration to exactly this:
 | setting | value |
 |---|---|
 | **Root directory** | `apps/api` |
-| **Build command** | `pnpm --filter @sr/web run build` |
+| **Build command** | `pnpm run build` |
 | **Deploy command** | `pnpm run deploy` |
 
-`pnpm run deploy` rather than `npx wrangler deploy` so the preflight runs on this path too
-— it refuses to ship an unedited `database_id` or a missing web build.
+Both are package scripts rather than raw wrangler calls, and that is the point:
+
+- `pnpm run build` runs the full test suite **before** building the SPA, so a broken commit
+  fails the build instead of reaching production. Nothing else in this pipeline runs tests.
+- `pnpm run deploy` runs the preflight, which refuses to ship an unedited `database_id` or
+  a missing web build.
 
 Three things go wrong if these are left at their defaults:
 
@@ -119,24 +123,30 @@ curl https://<your-worker>/v1/health
 ```
 
 `ok` is true only when both are right. If `schema` is `missing` you skipped the migration
-step; if `auth_configured` is false the Worker is signing tokens with the development key
-published in this repository, and anyone can forge a token for any user. Both responses
-carry the command that fixes them.
+step. If `auth_configured` is false the Worker **refuses to issue or accept tokens at
+all** — every authenticated route returns `503 server_not_configured`, and the static UI
+still serves so you can see the failure. Both responses carry the command that fixes them.
 
 Then open the Worker's URL. **Settings → Cloud sync** already has the API URL filled in
 with that same origin. Tick *Sync enabled* — deliberately not on by default, because
 uploading screen frames is not a decision a default should make for you.
 
-> **Set `AUTH_SECRET` before you deploy.** Without it the Worker falls back to a
-> well-known development key, and anyone who knows it could mint a token for any user id.
-> The fallback exists so `wrangler dev` works offline; it is not safe in production.
+> **`AUTH_SECRET` is mandatory.** There is no fallback key. An earlier version substituted
+> a hard-coded development secret when the variable was missing, which meant a deploy that
+> forgot it came up signing tokens with a value published in this repository — anyone could
+> mint a token for any user, and nothing about the running service looked wrong. A missing
+> key is now a hard failure.
 
 ## Run locally
 
 ```bash
 npx wrangler d1 migrations apply screenregister --local
-npm run dev            # http://127.0.0.1:8787, D1 and R2 emulated on disk
+pnpm run dev           # http://127.0.0.1:8787, D1 and R2 emulated on disk
 ```
+
+`dev` generates `apps/api/.dev.vars` with a random `AUTH_SECRET` the first time, because
+the Worker will not run without one. That file is gitignored and unique per machine, so it
+can never quietly become a shared secret the way a checked-in default would.
 
 Add `--test-scheduled` to expose `GET /__scheduled?cron=0+3+*+*+*`, which runs the
 retention sweep on demand instead of waiting for 03:00.
@@ -234,6 +244,18 @@ the open frame's unknown `hold_ms`. Neither is needed: ordering comes from the c
 monotonic `seq` and its time-sortable ULIDs, and the client already knows a frame's
 duration the moment the next frame is stored. A DO would have added a moving part for no
 current benefit.
+
+**No fallback signing key.** `AUTH_SECRET` has no default. The Worker throws
+`AuthNotConfiguredError` at startup of any authenticated request and the router maps it to
+`503 server_not_configured`. Configuration is checked before the token is even parsed —
+otherwise a malformed token short-circuits to 401 and tells an operator their token is bad
+when the real problem is that the server has no key.
+
+**CORS is scoped to this origin plus localhost.** The Worker serves the client, so real
+traffic is same-origin and needs no CORS at all; the previous configuration reflected
+every requesting origin, handing any website a working cross-origin channel to the API. A
+bearer token was still required so it was not exploitable alone, but there was no reason
+to offer the surface.
 
 **Retention deletes rows and objects in one pass.** An R2 lifecycle rule would expire
 objects on its own schedule and leave catalogue rows pointing at nothing. The nightly
