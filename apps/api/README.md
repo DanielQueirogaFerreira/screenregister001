@@ -1,7 +1,8 @@
-# ScreenRegister API (Phase 2)
+# ScreenRegister API
 
 Cloudflare Worker that stores the frame catalogue in **D1** and the frame blobs in **R2**,
-and enforces the 7-day retention ceiling server-side.
+enforces the 7-day retention ceiling server-side, and serves that history to an LLM over
+**MCP** (or plain REST).
 
 ## Deploy
 
@@ -44,9 +45,62 @@ npm run dev            # http://127.0.0.1:8787, D1 and R2 emulated on disk
 Add `--test-scheduled` to expose `GET /__scheduled?cron=0+3+*+*+*`, which runs the
 retention sweep on demand instead of waiting for 03:00.
 
+## Connecting an LLM (Phase 3)
+
+The Worker speaks **MCP over Streamable HTTP** at `POST /mcp`, using the same device
+token as the REST API.
+
+```bash
+claude mcp add --transport http screenregister https://<your-worker>/mcp \
+  --header "Authorization: Bearer <your device token>"
+```
+
+Get a token with `POST /v1/devices`, or copy the one the web app already stored under
+`sr.cloud_token` in localStorage.
+
+Then ask, in plain language: *"What was I working on yesterday afternoon?"* The assistant
+calls `get_scene_summary` first, narrows with `search_timeline`, and pulls a couple of
+images with `get_frame`.
+
+### The tools, and why they are layered
+
+Seven days of frames is thousands of images. An assistant that had to download them to
+answer a question would exhaust its context before reaching the answer. So the tools are
+tiered — cheap text first, pixels last:
+
+| tool | returns | cost |
+|---|---|---|
+| `list_sessions` | when the screen was being recorded at all | text |
+| `get_scene_summary` | a period collapsed into scenes — a day becomes a few dozen lines | text |
+| `search_timeline` | individual frames, filterable by change or reason | text |
+| `get_frame` | the screenshot at one moment | **image** |
+| `get_frames` | up to 8 moments, forced to thumbnails | **images** |
+
+`get_frames` caps at 8 and refuses full-size images on purpose: a dozen full screenshots
+crowds out whatever the assistant was reasoning about.
+
+The server's `instructions` tell the client that gaps between frame timestamps mean
+"nothing changed", not "no data" — without that, an assistant reads sparse frames as
+missing history and hedges its answers.
+
+### Clients that do not speak MCP
+
+The same reads are mirrored as REST, running the same code in `queries.ts` so the two
+surfaces cannot drift: `GET /v1/scenes` and `GET /v1/timeline`, described by
+`GET /v1/openapi.json` (unauthenticated, so a client can discover the shape before
+holding a token).
+
+### Known limit: no OAuth
+
+Authentication is a bearer token, not OAuth. Any client that can set an `Authorization`
+header works today — Claude Code, scripts, most MCP clients. The one-click custom
+connector on claude.ai expects an OAuth authorization server, which this does not yet
+implement; that belongs with real accounts in Phase 4.
+
 ## API
 
-All routes except `/v1/health` and `POST /v1/devices` require `Authorization: Bearer <token>`.
+All routes except `/v1/health`, `/v1/openapi.json` and `POST /v1/devices` require
+`Authorization: Bearer <token>`.
 
 | | |
 |---|---|
@@ -60,6 +114,10 @@ All routes except `/v1/health` and `POST /v1/devices` require `Authorization: Be
 | `GET /v1/sessions/:id/frames` | the session's frames, in capture order |
 | `GET /v1/frames/:id/image?variant=full\|thumb` | the WebP bytes |
 | `GET /v1/usage` | frame count, byte total, oldest frame |
+| `GET /v1/scenes` | a period collapsed into scenes |
+| `GET /v1/timeline` | individual frames as metadata |
+| `GET /v1/openapi.json` | machine-readable API description (no auth) |
+| `POST /mcp` | MCP over Streamable HTTP |
 
 ## Design notes
 
@@ -99,3 +157,13 @@ Against `wrangler dev --local` (real D1 and R2 emulation):
   valid WebP showing the recorded screen.
 - Network cut mid-session: capture continued, frames queued locally, and the whole
   backlog drained once the connection returned.
+
+Phase 3, driven by a real MCP client (`@modelcontextprotocol/sdk` 1.30.0) over the wire:
+
+- Protocol negotiated at **2025-11-25**; all five tools listed with their schemas and
+  called successfully, returning text and base64 WebP image blocks.
+- An unrelated user's token sees no sessions, no frames and no scenes, and asking for a
+  known frame id belonging to someone else returns an error with **no image block**.
+- An unauthenticated `POST /mcp` is rejected with 401 before any MCP handling runs.
+- `GET /v1/scenes` and `GET /v1/timeline` return the same scenes and frames the MCP tools
+  report, and both require auth.

@@ -2,6 +2,9 @@ import { Hono, type MiddlewareHandler } from 'hono';
 import { cors } from 'hono/cors';
 import type { Env, Principal } from './types.js';
 import { bearer, issueToken, verifyToken } from './auth.js';
+import { handleMcp } from './mcp.js';
+import { buildScenes, listFrames, resolveWindow } from './queries.js';
+import { OPENAPI } from './openapi.js';
 
 type Ctx = { Bindings: Env; Variables: { me: Principal } };
 
@@ -15,6 +18,9 @@ app.use('*', cors({
 }));
 
 app.get('/v1/health', (c) => c.json({ ok: true, service: 'screenregister-api' }));
+
+/** Machine-readable description of this API, for clients that do not speak MCP. */
+app.get('/v1/openapi.json', (c) => c.json(OPENAPI(new URL(c.req.url).origin)));
 
 /**
  * Register a device and get a token. The client supplies the ids it already generated
@@ -48,6 +54,15 @@ app.use('/v1/sessions', authGuard);
 app.use('/v1/frames/*', authGuard);
 app.use('/v1/frames', authGuard);
 app.use('/v1/usage', authGuard);
+app.use('/v1/timeline', authGuard);
+app.use('/v1/scenes', authGuard);
+app.use('/mcp', authGuard);
+
+/**
+ * MCP endpoint. Same device token as the REST API — an MCP client that can send an
+ * Authorization header is all that is required.
+ */
+app.all('/mcp', (c) => handleMcp(c.req.raw, c.env, c.get('me')));
 
 
 /** Upsert, so the client can call it before every batch without tracking whether it exists. */
@@ -182,6 +197,35 @@ app.get('/v1/frames/:id/image', async (c) => {
       ETag: obj.httpEtag,
     },
   });
+});
+
+/**
+ * The MCP tools' queries, mirrored as plain REST for clients without MCP support.
+ * Both surfaces run the same code in queries.ts so they cannot drift apart.
+ */
+app.get('/v1/timeline', async (c) => {
+  const qs = c.req.query();
+  const w = resolveWindow({
+    last_hours: qs.last_hours ? Number(qs.last_hours) : undefined,
+    from: qs.from, to: qs.to,
+  });
+  const frames = await listFrames(c.env, c.get('me').userId, w, {
+    minChange: qs.min_change ? Number(qs.min_change) : undefined,
+    reason: qs.reason,
+    limit: qs.limit ? Number(qs.limit) : 100,
+  });
+  return c.json({ window: w, count: frames.length, frames });
+});
+
+app.get('/v1/scenes', async (c) => {
+  const qs = c.req.query();
+  const w = resolveWindow({
+    last_hours: qs.last_hours ? Number(qs.last_hours) : undefined,
+    from: qs.from, to: qs.to,
+  });
+  const frames = await listFrames(c.env, c.get('me').userId, w, { limit: 5000 });
+  const { scenes, hidden } = buildScenes(frames, qs.min_scene_ms ? Number(qs.min_scene_ms) : 5000);
+  return c.json({ window: w, count: scenes.length, hidden, scenes });
 });
 
 app.get('/v1/usage', async (c) => {

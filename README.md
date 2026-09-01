@@ -10,9 +10,10 @@ anything else can connect and *see* your last seven days instead of being told a
 The rule that shapes everything: **do not store what did not change.** A screen that sat
 still for an hour is one frame, and both the player and the API skip straight over it.
 
-> **Status: Phase 2.** Capture, change detection, storage and playback run locally in the
-> browser; frames optionally sync to a Cloudflare Worker backed by R2 and D1, with the
-> 7-day ceiling enforced server-side. The LLM connector is Phase 3 (see [Roadmap](#roadmap)).
+> **Status: Phase 3.** Capture, change detection, storage and playback run locally in the
+> browser; frames optionally sync to a Cloudflare Worker backed by R2 and D1; and an LLM
+> can read that history over **MCP** or plain REST. Next up is accounts
+> (see [Roadmap](#roadmap)).
 
 ---
 
@@ -27,9 +28,19 @@ Open it on a **desktop** browser, click *Share screen & record*, and leave it al
 few minutes. Watch the `stored` and `sampled` counters diverge.
 
 ```bash
-pnpm test                                   # 68 tests
+pnpm test                                   # 89 tests
 npx vite-node packages/core/src/bench.ts    # threshold tuning bench
 ```
+
+To let an assistant read your screen history, deploy the Worker and point a client at it:
+
+```bash
+claude mcp add --transport http screenregister https://<your-worker>/mcp \
+  --header "Authorization: Bearer <device token>"
+```
+
+Then ask *"what was I working on yesterday afternoon?"* — see
+[`apps/api/README.md`](apps/api/README.md) for the tools and the token.
 
 Cloud sync is off by default. To turn it on, deploy the Worker (see
 [`apps/api/README.md`](apps/api/README.md)) and paste its URL into
@@ -114,7 +125,7 @@ covering one static screen, one window switch, and six 200ms flickers — all si
 
 ```
 apps/web            Vite + React client — capture, playback, settings
-apps/api            Cloudflare Worker — ingest + read API over R2 and D1
+apps/api            Cloudflare Worker — ingest, read API, and the MCP server
 packages/core       diff engine, ring buffer, timeline processor, fixtures, bench
 packages/schema     frame/session types, settings, sensitivity mapping, ULID
 packages/storage    StorageAdapter + IndexedDB store, API client, sync engine
@@ -148,7 +159,7 @@ ocr_text, caption, enrich_status    <- reserved for Phase 5, unused today
 |---|---|
 | **1 — done** | Browser capture, change detection, preroll buffer, WebP, IndexedDB, playback, 7-day prune |
 | **2 — done** | Cloudflare Worker API over R2 (blobs) and D1 (catalogue), signed device tokens, server-side retention sweep; IndexedDB became the offline outbox |
-| **3** | Remote MCP server (`list_sessions`, `search_timeline`, `get_scene_summary`, `get_frame`) plus REST/OpenAPI for clients without MCP |
+| **3 — done** | MCP server over Streamable HTTP (`list_sessions`, `get_scene_summary`, `search_timeline`, `get_frame`, `get_frames`) plus mirrored REST + OpenAPI for clients without MCP |
 | **4** | Accounts — email magic link, multi-device |
 | **5** | Enrichment — OCR, captions, embeddings; turns "download 400 screenshots" into "search text, fetch 3 images" |
 | **6** | Native iOS/Android capture posting to the same ingest contract |
@@ -193,3 +204,6 @@ banking, private messages, other people's data visible in calls.
   script cannot be fetched. Found while testing; a service worker would close it.
 - Device tokens are unforgeable but not revocable, and a token is as good as the device
   holding it. Accounts (Phase 4) replace this.
+- The MCP server authenticates with a bearer token, not OAuth, so any client that can set
+  an `Authorization` header works — but claude.ai's one-click custom connector, which
+  expects an OAuth authorization server, does not. That belongs with accounts.
