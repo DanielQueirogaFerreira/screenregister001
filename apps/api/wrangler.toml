@@ -1,0 +1,23 @@
+name = "screenregister-api"
+main = "src/index.ts"
+compatibility_date = "2026-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Frame blobs. Retention is enforced by the scheduled handler below rather than by an
+# R2 lifecycle rule, so that the catalogue row and the object are always deleted together.
+[[r2_buckets]]
+binding = "FRAMES"
+bucket_name = "screenregister-frames"
+
+# The catalogue. `database_id` is filled in by `wrangler d1 create` — see apps/api/README.md.
+[[d1_databases]]
+binding = "DB"
+database_name = "screenregister"
+database_id = "REPLACE_WITH_ID_FROM_WRANGLER_D1_CREATE"
+
+[vars]
+RETENTION_DAYS = "7"
+
+# Nightly prune. The 7-day ceiling is enforced server-side, not merely by the client.
+[triggers]
+crons = ["0 3 * * *"]

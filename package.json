@@ -12,7 +12,8 @@
   "devDependencies": {
     "typescript": "^5.7.2",
     "vite-node": "^6.0.0",
-    "vitest": "^2.1.8"
+    "vitest": "^2.1.8",
+    "wrangler": "^4.127.1"
   },
   "packageManager": "pnpm@10.33.0"
 }

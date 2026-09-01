@@ -191,8 +191,8 @@ export function RecordView({ store, settings, onSettings, onSessionEnd }: Props)
         </div>
 
         <div className="banner info" style={{ margin: 0 }}>
-          Frames stay on this device only, for {settings.retentionDays} days. Nothing is uploaded
-          in this build.
+          Frames are written to this device first and kept for {settings.retentionDays} days.
+          Whether they are also uploaded is controlled by Cloud sync in Settings.
         </div>
       </div>
     </div>

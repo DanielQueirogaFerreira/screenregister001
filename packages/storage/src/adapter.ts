@@ -41,6 +41,22 @@ export interface StorageAdapter {
   clearAll(): Promise<void>;
 }
 
+/**
+ * The subset of a local store that the sync engine needs.
+ *
+ * Split out from StorageAdapter because it is meaningful only for a store that queues
+ * work for somewhere else — a pure cloud-backed adapter has no outbox.
+ */
+export interface OutboxStore {
+  /** Frames not yet on the server. Only closed frames (hold_ms set) are eligible. */
+  listUnsynced(limit: number): Promise<FrameRecord[]>;
+  countUnsynced(): Promise<number>;
+  markSynced(frameIds: string[]): Promise<void>;
+  getSession(id: string): Promise<SessionRecord | null>;
+  getFullBlob(frameId: string): Promise<Blob | null>;
+  getThumbBlob(frameId: string): Promise<Blob | null>;
+}
+
 export async function sha256Hex(blob: Blob): Promise<string> {
   const buf = await blob.arrayBuffer();
   const digest = await crypto.subtle.digest('SHA-256', buf);

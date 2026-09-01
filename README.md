@@ -10,9 +10,9 @@ anything else can connect and *see* your last seven days instead of being told a
 The rule that shapes everything: **do not store what did not change.** A screen that sat
 still for an hour is one frame, and both the player and the API skip straight over it.
 
-> **Status: Phase 1.** Everything runs locally in the browser — capture, change detection,
-> storage, playback. No server, no account, no upload. Cloudflare and the LLM connector
-> are Phases 2–3 (see [Roadmap](#roadmap)).
+> **Status: Phase 2.** Capture, change detection, storage and playback run locally in the
+> browser; frames optionally sync to a Cloudflare Worker backed by R2 and D1, with the
+> 7-day ceiling enforced server-side. The LLM connector is Phase 3 (see [Roadmap](#roadmap)).
 
 ---
 
@@ -27,9 +27,14 @@ Open it on a **desktop** browser, click *Share screen & record*, and leave it al
 few minutes. Watch the `stored` and `sampled` counters diverge.
 
 ```bash
-pnpm test                                   # 18 unit tests over the decision logic
+pnpm test                                   # 68 tests
 npx vite-node packages/core/src/bench.ts    # threshold tuning bench
 ```
+
+Cloud sync is off by default. To turn it on, deploy the Worker (see
+[`apps/api/README.md`](apps/api/README.md)) and paste its URL into
+**Settings → Cloud sync**. Recording never waits on the network: frames are written
+locally first and drain from there, so capture continues through an outage.
 
 ### Mobile
 
@@ -109,14 +114,16 @@ covering one static screen, one window switch, and six 200ms flickers — all si
 
 ```
 apps/web            Vite + React client — capture, playback, settings
+apps/api            Cloudflare Worker — ingest + read API over R2 and D1
 packages/core       diff engine, ring buffer, timeline processor, fixtures, bench
 packages/schema     frame/session types, settings, sensitivity mapping, ULID
-packages/storage    StorageAdapter interface + IndexedDB implementation
+packages/storage    StorageAdapter + IndexedDB store, API client, sync engine
+scripts             repo-wide checks (file encoding)
 ```
 
 `packages/core` is DOM-free and headless-testable — thresholds are tuned against synthetic
 motion fixtures, not by eye. `StorageAdapter` is the seam Cloudflare slots into; the
-IndexedDB implementation is not throwaway, it becomes the offline outbox in Phase 2.
+IndexedDB implementation was not throwaway — it is now the offline outbox.
 
 ### The frame record
 
@@ -140,7 +147,7 @@ ocr_text, caption, enrich_status    <- reserved for Phase 5, unused today
 | | |
 |---|---|
 | **1 — done** | Browser capture, change detection, preroll buffer, WebP, IndexedDB, playback, 7-day prune |
-| **2** | Cloudflare: Pages + Worker API + R2 (blobs, direct presigned PUT) + D1 (catalogue) + Durable Object per live session; IndexedDB becomes the offline outbox |
+| **2 — done** | Cloudflare Worker API over R2 (blobs) and D1 (catalogue), signed device tokens, server-side retention sweep; IndexedDB became the offline outbox |
 | **3** | Remote MCP server (`list_sessions`, `search_timeline`, `get_scene_summary`, `get_frame`) plus REST/OpenAPI for clients without MCP |
 | **4** | Accounts — email magic link, multi-device |
 | **5** | Enrichment — OCR, captions, embeddings; turns "download 400 screenshots" into "search text, fetch 3 images" |
@@ -180,3 +187,9 @@ banking, private messages, other people's data visible in calls.
   unbounded queue. This is the tradeoff a 3-second lookahead costs at high frame rates.
 - One shared surface per session. Multi-monitor means multiple concurrent sessions.
 - Audio is out of scope.
+- **No offline app shell.** A recording already in progress survives an outage, and its
+  frames queue and drain correctly. But *starting* a new session while offline does not
+  work: each session spawns a fresh capture worker, and without a service worker that
+  script cannot be fetched. Found while testing; a service worker would close it.
+- Device tokens are unforgeable but not revocable, and a token is as good as the device
+  holding it. Accounts (Phase 4) replace this.
