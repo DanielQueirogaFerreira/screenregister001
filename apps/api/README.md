@@ -45,6 +45,12 @@ openssl rand -hex 32 | npx wrangler secret put AUTH_SECRET
 npx wrangler deploy
 ```
 
+`deploy` runs a preflight check first (`pnpm --filter @sr/api run preflight` to run it
+alone). It catches the mistakes that `--dry-run` cannot: a dry run validates the bundle
+but never checks whether the bindings point at resources that exist, so an unedited
+`database_id` passes it and then fails against the Cloudflare API with an error that does
+not mention the config file.
+
 `wrangler deploy` prints the URL. Paste it into the web app under
 **Settings → Cloud sync → Worker API URL**, click *Test & register*, tick *Sync enabled*.
 

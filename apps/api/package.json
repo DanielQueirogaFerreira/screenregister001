@@ -5,9 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev --local --port 8787",
-    "deploy": "wrangler deploy",
+    "deploy": "node scripts/preflight.mjs && wrangler deploy",
     "migrate:local": "wrangler d1 migrations apply screenregister --local",
-    "migrate:remote": "wrangler d1 migrations apply screenregister --remote"
+    "migrate:remote": "wrangler d1 migrations apply screenregister --remote",
+    "preflight": "node scripts/preflight.mjs"
   },
   "dependencies": {
     "@sr/schema": "workspace:*",
