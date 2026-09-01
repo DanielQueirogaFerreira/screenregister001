@@ -6,8 +6,8 @@
   "scripts": {
     "dev": "node scripts/ensure-dev-vars.mjs && wrangler dev --local --port 8787",
     "deploy": "node scripts/preflight.mjs && wrangler deploy",
-    "migrate:local": "wrangler d1 migrations apply screenregister --local",
-    "migrate:remote": "wrangler d1 migrations apply screenregister --remote",
+    "migrate:local": "wrangler d1 migrations apply screenregister001 --local",
+    "migrate:remote": "wrangler d1 migrations apply screenregister001 --remote",
     "preflight": "node scripts/preflight.mjs",
     "build": "pnpm -w run test && pnpm --filter @sr/web run build"
   },

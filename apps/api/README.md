@@ -31,12 +31,12 @@ npx wrangler login
 
 # 1. Create the bucket and the database
 npx wrangler r2 bucket create screenregister-frames
-npx wrangler d1 create screenregister
+npx wrangler d1 create screenregister001
 #    ^ copy the printed database_id into wrangler.toml, replacing
 #      REPLACE_WITH_ID_FROM_WRANGLER_D1_CREATE
 
 # 2. Create the schema
-npx wrangler d1 migrations apply screenregister --remote
+npx wrangler d1 migrations apply screenregister001 --remote
 
 # 3. Set the token-signing key (any long random string; keep it secret)
 openssl rand -hex 32 | npx wrangler secret put AUTH_SECRET
@@ -70,10 +70,10 @@ cd apps/api
 npx wrangler login
 
 npx wrangler r2 bucket create screenregister-frames
-npx wrangler d1 create screenregister      # paste the printed id into wrangler.toml,
+npx wrangler d1 create screenregister001   # paste the printed id into wrangler.toml,
                                            # then COMMIT it — the build reads the file
                                            # from git, not from your machine
-npx wrangler d1 migrations apply screenregister --remote   # creates the tables
+npx wrangler d1 migrations apply screenregister001 --remote   # creates the tables
 openssl rand -hex 32 | npx wrangler secret put AUTH_SECRET
 ```
 
@@ -145,7 +145,7 @@ uploading screen frames is not a decision a default should make for you.
 ## Run locally
 
 ```bash
-npx wrangler d1 migrations apply screenregister --local
+npx wrangler d1 migrations apply screenregister001 --local
 pnpm run dev           # http://127.0.0.1:8787, D1 and R2 emulated on disk
 ```
 

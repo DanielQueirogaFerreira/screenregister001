@@ -1,4 +1,4 @@
-name = "screenregister-api"
+name = "screenregister001"
 main = "src/index.ts"
 # Kept current deliberately: an old date silently pins old runtime behaviour.
 compatibility_date = "2026-08-28"
@@ -10,11 +10,12 @@ compatibility_flags = ["nodejs_compat"]
 binding = "FRAMES"
 bucket_name = "screenregister-frames"
 
-# The catalogue. `database_id` is filled in by `wrangler d1 create` — see apps/api/README.md.
+# The catalogue. Names match the resources already in the account; a mismatch here
+# silently creates parallel resources instead of using the ones that exist.
 [[d1_databases]]
 binding = "DB"
-database_name = "screenregister"
-database_id = "REPLACE_WITH_ID_FROM_WRANGLER_D1_CREATE"
+database_name = "screenregister001"
+database_id = "c92f63da-e3a4-4852-ace5-ed30ea851db3"
 
 # The recorder UI, served from the same Worker. One deployment, one origin, and the
 # browser client talks to /v1 on the origin it was loaded from — no CORS, no second URL

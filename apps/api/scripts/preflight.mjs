@@ -51,7 +51,7 @@ else notes.push(`R2 bucket "${bucket}" must exist: npx wrangler r2 bucket create
 notes.push(
   'AUTH_SECRET must be set as a secret, not a build variable:\n' +
     '       openssl rand -hex 32 | npx wrangler secret put AUTH_SECRET\n' +
-    '     Without it the Worker falls back to a well-known development key.',
+    '     Without it the Worker refuses every authenticated request with 503.',
 );
 
 if (problems.length > 0) {
