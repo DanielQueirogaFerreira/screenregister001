@@ -62,13 +62,35 @@ not match a built file falls through to the Worker. That means one deployment, o
 and the browser client calling the API on the origin it was loaded from, so there is no
 CORS to configure and no second address to keep in sync.
 
-Set the build configuration to exactly this:
+**Do these three once, before connecting the repository.** The dashboard build cannot do
+them for you, and a deploy succeeds without them — it just fails at request time:
+
+```bash
+cd apps/api
+npx wrangler login
+
+npx wrangler r2 bucket create screenregister-frames
+npx wrangler d1 create screenregister      # paste the printed id into wrangler.toml,
+                                           # then COMMIT it — the build reads the file
+                                           # from git, not from your machine
+npx wrangler d1 migrations apply screenregister --remote   # creates the tables
+openssl rand -hex 32 | npx wrangler secret put AUTH_SECRET
+```
+
+The migration step is the one people miss. The build never runs migrations, so without it
+the Worker deploys cleanly and then every request fails with `no such table: frames`,
+which does not obviously mean "you never created the schema".
+
+Then set the build configuration to exactly this:
 
 | setting | value |
 |---|---|
 | **Root directory** | `apps/api` |
 | **Build command** | `pnpm --filter @sr/web run build` |
-| **Deploy command** | `npx wrangler deploy` |
+| **Deploy command** | `pnpm run deploy` |
+
+`pnpm run deploy` rather than `npx wrangler deploy` so the preflight runs on this path too
+— it refuses to ship an unedited `database_id` or a missing web build.
 
 Three things go wrong if these are left at their defaults:
 
@@ -86,10 +108,24 @@ Three things go wrong if these are left at their defaults:
 plaintext and are not the same thing; a secret set with `wrangler secret put AUTH_SECRET`
 survives redeploys.
 
-After the first deploy, open the Worker's URL, go to **Settings → Cloud sync**, and the
-API URL is already filled in with that same origin. Tick *Sync enabled* — deliberately not
-on by default, because uploading screen frames is not a decision a default should make for
-you.
+### Check the deploy landed
+
+```bash
+curl https://<your-worker>/v1/health
+```
+
+```json
+{ "ok": true, "service": "screenregister-api", "schema": "ready", "auth_configured": true }
+```
+
+`ok` is true only when both are right. If `schema` is `missing` you skipped the migration
+step; if `auth_configured` is false the Worker is signing tokens with the development key
+published in this repository, and anyone can forge a token for any user. Both responses
+carry the command that fixes them.
+
+Then open the Worker's URL. **Settings → Cloud sync** already has the API URL filled in
+with that same origin. Tick *Sync enabled* — deliberately not on by default, because
+uploading screen frames is not a decision a default should make for you.
 
 > **Set `AUTH_SECRET` before you deploy.** Without it the Worker falls back to a
 > well-known development key, and anyone who knows it could mint a token for any user id.

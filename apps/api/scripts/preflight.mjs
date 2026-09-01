@@ -7,7 +7,7 @@
  * run and then fails against the API with a message that does not mention the config
  * file. This turns that into a clear failure before the network is involved.
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -30,6 +30,18 @@ if (!dbId || dbId.startsWith('REPLACE_WITH')) {
     `database_id does not look like a Cloudflare database id: "${dbId}".\n` +
       '     Expected a UUID, as printed by `wrangler d1 create screenregister`.',
   );
+}
+
+const assetsDir = /^\s*directory\s*=\s*"([^"]*)"/m.exec(config)?.[1] ?? '';
+if (assetsDir) {
+  const resolved = join(here, '..', assetsDir);
+  if (!existsSync(join(resolved, 'index.html'))) {
+    problems.push(
+      `The Worker serves the web app from ${assetsDir}, but there is no index.html there.\n` +
+        '     Build it first:\n' +
+        '       pnpm --filter @sr/web run build',
+    );
+  }
 }
 
 const bucket = /^\s*bucket_name\s*=\s*"([^"]*)"/m.exec(config)?.[1] ?? '';

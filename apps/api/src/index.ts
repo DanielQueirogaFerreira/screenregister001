@@ -17,7 +17,41 @@ app.use('*', cors({
   maxAge: 86400,
 }));
 
-app.get('/v1/health', (c) => c.json({ ok: true, service: 'screenregister-api' }));
+/**
+ * Liveness plus the two things a fresh deploy most often lacks.
+ *
+ * The Worker deploys happily without a D1 schema or an AUTH_SECRET, and then fails at
+ * request time with errors that point nowhere near the cause — "no such table: frames"
+ * says nothing about migrations never having been run. Reporting both here turns a
+ * confusing outage into one curl.
+ *
+ * `auth_configured` is deliberately public: when it is false the Worker is signing with a
+ * key published in this repository, so anyone can already forge a token. Hiding that would
+ * protect nobody and would let the misconfiguration go unnoticed.
+ */
+app.get('/v1/health', async (c) => {
+  let schema: 'ready' | 'missing' | 'error' = 'ready';
+  try {
+    await c.env.DB.prepare('SELECT 1 FROM frames LIMIT 1').all();
+  } catch (err) {
+    schema = /no such table/i.test(String(err)) ? 'missing' : 'error';
+  }
+  const authConfigured = Boolean(c.env.AUTH_SECRET);
+
+  return c.json({
+    ok: schema === 'ready' && authConfigured,
+    service: 'screenregister-api',
+    schema,
+    auth_configured: authConfigured,
+    ...(schema === 'missing' && {
+      hint: 'Run the D1 migrations: wrangler d1 migrations apply screenregister --remote',
+    }),
+    ...(!authConfigured && {
+      auth_hint: 'AUTH_SECRET is not set; the Worker is using a public development key. ' +
+        'Set it: wrangler secret put AUTH_SECRET',
+    }),
+  });
+});
 
 /** Machine-readable description of this API, for clients that do not speak MCP. */
 app.get('/v1/openapi.json', (c) => c.json(OPENAPI(new URL(c.req.url).origin)));
