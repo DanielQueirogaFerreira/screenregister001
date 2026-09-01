@@ -50,6 +50,9 @@ export function CloudPanel({ cloud, status, onCloud, onSyncNow }: Props) {
                    border: '1px solid var(--line)', borderRadius: 8, padding: '6px 8px' }}
         />
         <div className="hint">
+          {url === (typeof location !== 'undefined' ? location.origin : '')
+            ? 'This page is served by the Worker, so the API is on this same origin — the URL above is already correct.'
+            : 'The URL of your deployed Worker.'}{' '}
           Recording never waits on the network. Frames are written locally first and drain
           from there, so capture continues through an outage and resumes when it clears.
         </div>

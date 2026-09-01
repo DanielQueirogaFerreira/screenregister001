@@ -53,7 +53,12 @@ pnpm deploy:api      # deploy the Worker
 
 These run in `apps/api` for you. Running `wrangler deploy` from the repository root fails —
 it is a pnpm workspace with no wrangler config at the root, so wrangler cannot tell which
-application you meant. Full deploy steps in [`apps/api/README.md`](apps/api/README.md).
+application you meant.
+
+**One Worker serves everything**: the recorder UI at `/`, the API at `/v1/*` and MCP at
+`/mcp`. So a deployment gives you a single URL you can open, share your screen on, and
+point an assistant at. Deploying from the Cloudflare dashboard instead? The build settings
+that work are in [`apps/api/README.md`](apps/api/README.md) — the defaults do not.
 
 ### Mobile
 

@@ -9,7 +9,18 @@ export interface CloudConfig {
   enabled: boolean;
 }
 
-export const DEFAULT_CLOUD: CloudConfig = { apiUrl: '', enabled: false };
+/**
+ * When the Worker serves this page, the API is on the very origin it was loaded from, so
+ * defaulting the URL there means a fresh deploy needs no configuration at all.
+ *
+ * `enabled` stays false regardless. Uploading screen frames is a decision about some of
+ * the most sensitive data a machine holds, and it is not one a default should make on the
+ * user's behalf — they tick the box.
+ */
+export const DEFAULT_CLOUD: CloudConfig = {
+  apiUrl: typeof location !== 'undefined' ? location.origin : '',
+  enabled: false,
+};
 
 export function loadCloud(): CloudConfig {
   try {

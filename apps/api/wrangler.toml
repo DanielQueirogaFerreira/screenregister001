@@ -15,6 +15,12 @@ binding = "DB"
 database_name = "screenregister"
 database_id = "REPLACE_WITH_ID_FROM_WRANGLER_D1_CREATE"
 
+# The recorder UI, served from the same Worker. One deployment, one origin, and the
+# browser client talks to /v1 on the origin it was loaded from — no CORS, no second URL
+# to configure. Requests that do not match a built asset fall through to the Worker.
+[assets]
+directory = "../web/dist"
+
 [vars]
 RETENTION_DAYS = "7"
 

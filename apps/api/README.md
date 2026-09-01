@@ -54,20 +54,42 @@ not mention the config file.
 `wrangler deploy` prints the URL. Paste it into the web app under
 **Settings → Cloud sync → Worker API URL**, click *Test & register*, tick *Sync enabled*.
 
-### Deploying from the Cloudflare dashboard instead
+### Deploying from the Cloudflare dashboard (connected to GitHub)
 
-If you connect the repository through the dashboard (Workers → Import a repository) rather
-than deploying from your machine, the same workspace error appears — the build runs
-detection at the repository root by default. Set the build configuration to:
+**One Worker serves everything** — the recorder UI at `/`, the API at `/v1/*`, and MCP at
+`/mcp`. `[assets]` in `wrangler.toml` points at the built SPA, and any request that does
+not match a built file falls through to the Worker. That means one deployment, one URL,
+and the browser client calling the API on the origin it was loaded from, so there is no
+CORS to configure and no second address to keep in sync.
+
+Set the build configuration to exactly this:
 
 | setting | value |
 |---|---|
-| Root directory | `apps/api` |
-| Build command | *(leave empty — wrangler builds the Worker itself)* |
-| Deploy command | `npx wrangler deploy` |
+| **Root directory** | `apps/api` |
+| **Build command** | `pnpm --filter @sr/web run build` |
+| **Deploy command** | `npx wrangler deploy` |
 
-`AUTH_SECRET` still has to be set as a secret; the dashboard's plaintext build variables are
-not the same thing, and a secret set with `wrangler secret put` survives redeploys.
+Three things go wrong if these are left at their defaults:
+
+- **Root directory `/`** makes wrangler run in the workspace root, where there is no
+  config, and it fails with *"Missing entry-point to Worker script or to assets
+  directory"* — or, for `deploy`, the workspace-detection error above. It has to point at
+  the directory holding `wrangler.toml`.
+- **The build command must build the web app**, because the Worker serves it. `pnpm run
+  build` at the root does this too, but naming the filter makes the dependency obvious.
+  Wrangler bundles the Worker itself; the build step exists only to produce `apps/web/dist`.
+- **`wrangler versions upload` uploads a version without sending traffic to it**, so a
+  build can succeed while the live Worker never changes. Use `wrangler deploy`.
+
+`AUTH_SECRET` still has to be set as a secret. The dashboard's build variables are
+plaintext and are not the same thing; a secret set with `wrangler secret put AUTH_SECRET`
+survives redeploys.
+
+After the first deploy, open the Worker's URL, go to **Settings → Cloud sync**, and the
+API URL is already filled in with that same origin. Tick *Sync enabled* — deliberately not
+on by default, because uploading screen frames is not a decision a default should make for
+you.
 
 > **Set `AUTH_SECRET` before you deploy.** Without it the Worker falls back to a
 > well-known development key, and anyone who knows it could mint a token for any user id.
