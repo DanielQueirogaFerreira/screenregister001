@@ -1,0 +1,42 @@
+name = "screenregister001"
+main = "src/index.ts"
+# Kept current deliberately: an old date silently pins old runtime behaviour.
+compatibility_date = "2026-08-28"
+compatibility_flags = ["nodejs_compat"]
+
+# Frame blobs. Retention is enforced by the scheduled handler below rather than by an
+# R2 lifecycle rule, so that the catalogue row and the object are always deleted together.
+[[r2_buckets]]
+binding = "FRAMES"
+bucket_name = "screenregister-frames"
+
+# The catalogue. Names match the resources already in the account; a mismatch here
+# silently creates parallel resources instead of using the ones that exist.
+[[d1_databases]]
+binding = "DB"
+database_name = "screenregister001"
+database_id = "c92f63da-e3a4-4852-ace5-ed30ea851db3"
+
+# The recorder UI, served from the same Worker. One deployment, one origin, and the
+# browser client talks to /v1 on the origin it was loaded from — no CORS, no second URL
+# to configure. Requests that do not match a built asset fall through to the Worker.
+[assets]
+directory = "../web/dist"
+
+[vars]
+RETENTION_DAYS = "7"
+
+# Cross-origin calls from localhost, off in production. The deployed Worker serves its own
+# client, so all real traffic is same-origin; a developer machine runs many unrelated local
+# services and none of them should be able to reach this API from the browser. Local
+# development turns this on through apps/api/.dev.vars, which never ships.
+ALLOW_LOCALHOST_ORIGINS = "false"
+
+# Nightly prune. The 7-day ceiling is enforced server-side, not merely by the client.
+[triggers]
+crons = ["0 3 * * *"]
+
+# Logs, so the first production incident is diagnosable rather than guessed at. The
+# retention sweep in particular runs unattended at 03:00 and is otherwise invisible.
+[observability]
+enabled = true

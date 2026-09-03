@@ -1,12 +1,18 @@
 import { useState } from 'react';
 import { DEFAULT_SETTINGS, validateSettings, withSensitivity, type CaptureSettings } from '@sr/schema';
-import type { StorageAdapter, UsageInfo } from '@sr/storage';
+import type { StorageAdapter, SyncStatus, UsageInfo } from '@sr/storage';
 import { bytes } from '../lib/format.js';
+import { CloudPanel } from './CloudPanel.js';
+import type { CloudConfig } from '../lib/cloud.js';
 
 interface Props {
   store: StorageAdapter;
   settings: CaptureSettings;
   usage: UsageInfo | null;
+  cloud: CloudConfig;
+  syncStatus: SyncStatus | null;
+  onCloud: (c: CloudConfig) => void;
+  onSyncNow: () => void;
   onSettings: (s: CaptureSettings) => void;
   onChanged: () => void;
 }
@@ -27,7 +33,9 @@ function Num({
   );
 }
 
-export function SettingsView({ store, settings, usage, onSettings, onChanged }: Props) {
+export function SettingsView({
+  store, settings, usage, cloud, syncStatus, onCloud, onSyncNow, onSettings, onChanged,
+}: Props) {
   const [busy, setBusy] = useState(false);
   const errors = validateSettings(settings);
   const set = (patch: Partial<CaptureSettings>) => onSettings({ ...settings, ...patch });
@@ -139,14 +147,24 @@ export function SettingsView({ store, settings, usage, onSettings, onChanged }: 
           </div>
         </div>
 
+        <CloudPanel cloud={cloud} status={syncStatus} onCloud={onCloud} onSyncNow={onSyncNow} />
+
         <div className="panel" style={{ marginTop: 14 }}>
           <h3 style={{ marginTop: 0 }}>Privacy</h3>
           <div className="hint">
             Screen frames are the most sensitive data a machine holds — passwords, banking,
-            private messages, other people's data in calls. In this build nothing leaves the
-            device: frames live in this browser's storage and are deleted after{' '}
-            {settings.retentionDays} days. Use <b>Pause</b> while recording to stop capture
-            without ending the session.
+            private messages, other people's data in calls. Frames are always written to this
+            browser's storage first and deleted after {settings.retentionDays} days.{' '}
+            {cloud.enabled ? (
+              <>
+                <b>Cloud sync is on</b>, so frames are also uploaded to{' '}
+                <code>{cloud.apiUrl}</code>, where the same {settings.retentionDays}-day ceiling
+                is enforced server-side. Only your own device token can read them back.
+              </>
+            ) : (
+              <>Cloud sync is off, so nothing leaves this device.</>
+            )}{' '}
+            Use <b>Pause</b> while recording to stop capture without ending the session.
             <br /><br />
             The browser gives us pixels but not window titles, so an app or site denylist
             cannot be reliable until frame text extraction lands in a later phase.

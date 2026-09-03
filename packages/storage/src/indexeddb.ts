@@ -1,8 +1,8 @@
 import type { FrameRecord, SessionRecord } from '@sr/schema';
-import type { StorageAdapter, UsageInfo } from './adapter.js';
+import type { OutboxStore, StorageAdapter, UsageInfo } from './adapter.js';
 
 const DB_NAME = 'screenregister';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const SESSIONS = 'sessions';
 const FRAMES = 'frames';
 const BLOBS = 'blobs';
@@ -23,7 +23,7 @@ function done(tx: IDBTransaction): Promise<void> {
 }
 
 /** Phase-1 local store. Also becomes the offline outbox once the cloud adapter lands. */
-export class IndexedDBAdapter implements StorageAdapter {
+export class IndexedDBAdapter implements StorageAdapter, OutboxStore {
   private db: IDBDatabase | null = null;
 
   async init(): Promise<void> {
@@ -34,11 +34,15 @@ export class IndexedDBAdapter implements StorageAdapter {
         if (!db.objectStoreNames.contains(SESSIONS)) {
           db.createObjectStore(SESSIONS, { keyPath: 'session_id' });
         }
-        if (!db.objectStoreNames.contains(FRAMES)) {
-          const s = db.createObjectStore(FRAMES, { keyPath: 'frame_id' });
-          s.createIndex('by_session_seq', ['session_id', 'seq']);
-          s.createIndex('by_time', 'captured_at');
+        const frames = db.objectStoreNames.contains(FRAMES)
+          ? open.transaction!.objectStore(FRAMES)
+          : db.createObjectStore(FRAMES, { keyPath: 'frame_id' });
+        if (!frames.indexNames.contains('by_session_seq')) {
+          frames.createIndex('by_session_seq', ['session_id', 'seq']);
         }
+        if (!frames.indexNames.contains('by_time')) frames.createIndex('by_time', 'captured_at');
+        // v2: drives the outbox drain.
+        if (!frames.indexNames.contains('by_synced')) frames.createIndex('by_synced', 'synced');
         if (!db.objectStoreNames.contains(BLOBS)) {
           db.createObjectStore(BLOBS, { keyPath: 'frame_id' });
         }
@@ -110,7 +114,7 @@ export class IndexedDBAdapter implements StorageAdapter {
     const tx = this.idb.transaction(FRAMES, 'readwrite');
     const store = tx.objectStore(FRAMES);
     const cur = await req<FrameRecord | undefined>(store.get(frameId));
-    if (cur) store.put({ ...cur, hold_ms: holdMs });
+    if (cur) store.put({ ...cur, hold_ms: holdMs });  // keeps synced as-is
     await done(tx);
   }
 
@@ -168,6 +172,39 @@ export class IndexedDBAdapter implements StorageAdapter {
       usageBytes: est?.usage ?? null,
       persisted: (await navigator.storage?.persisted?.().catch(() => false)) ?? false,
     };
+  }
+
+  /**
+   * Frames the server has not acknowledged.
+   *
+   * Only closed frames qualify: hold_ms is unknown until the next frame is stored, and
+   * uploading early would mean a second round trip to patch the duration in. Ordered by
+   * frame_id, which is a ULID, so the backlog drains oldest-first.
+   */
+  async listUnsynced(limit: number): Promise<FrameRecord[]> {
+    const tx = this.idb.transaction(FRAMES, 'readonly');
+    const rows = await req<(FrameRecord & { synced?: number })[]>(
+      tx.objectStore(FRAMES).index('by_synced').getAll(IDBKeyRange.only(0)),
+    );
+    return rows
+      .filter((f) => f.hold_ms !== null && f.hold_ms !== undefined)
+      .sort((a, b) => a.frame_id.localeCompare(b.frame_id))
+      .slice(0, limit);
+  }
+
+  async countUnsynced(): Promise<number> {
+    return (await this.listUnsynced(Number.MAX_SAFE_INTEGER)).length;
+  }
+
+  async markSynced(frameIds: string[]): Promise<void> {
+    if (frameIds.length === 0) return;
+    const tx = this.idb.transaction(FRAMES, 'readwrite');
+    const store = tx.objectStore(FRAMES);
+    for (const id of frameIds) {
+      const cur = await req<FrameRecord | undefined>(store.get(id));
+      if (cur) store.put({ ...cur, synced: 1 });
+    }
+    await done(tx);
   }
 
   async clearAll(): Promise<void> {

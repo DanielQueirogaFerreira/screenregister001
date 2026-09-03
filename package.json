@@ -4,15 +4,21 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "pnpm --filter @sr/web dev",
-    "build": "pnpm --filter @sr/web build",
+    "dev": "pnpm --filter @sr/web run dev",
+    "build": "pnpm run test && pnpm --filter @sr/web run build",
     "test": "vitest run",
-    "typecheck": "tsc -b --pretty false"
+    "typecheck": "tsc -p packages/schema --pretty false && tsc -p packages/core --pretty false && tsc -p packages/storage --pretty false && tsc -p apps/api --pretty false && tsc -p apps/web --pretty false",
+    "dev:api": "pnpm --filter @sr/api run dev",
+    "deploy:api": "pnpm --filter @sr/api run deploy",
+    "migrate:api": "pnpm --filter @sr/api run migrate:remote",
+    "migrate:api:local": "pnpm --filter @sr/api run migrate:local",
+    "deploy": "pnpm --filter @sr/api run deploy"
   },
   "devDependencies": {
     "typescript": "^5.7.2",
     "vite-node": "^6.0.0",
-    "vitest": "^2.1.8"
+    "vitest": "^2.1.8",
+    "wrangler": "^4.127.1"
   },
   "packageManager": "pnpm@10.33.0"
 }

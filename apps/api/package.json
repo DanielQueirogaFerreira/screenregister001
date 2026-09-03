@@ -1,0 +1,24 @@
+{
+  "name": "@sr/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/ensure-dev-vars.mjs && wrangler dev --local --port 8787",
+    "deploy": "node scripts/preflight.mjs && wrangler deploy",
+    "migrate:local": "wrangler d1 migrations apply screenregister001 --local",
+    "migrate:remote": "wrangler d1 migrations apply screenregister001 --remote",
+    "preflight": "node scripts/preflight.mjs",
+    "build": "pnpm -w run test && pnpm --filter @sr/web run build"
+  },
+  "dependencies": {
+    "@sr/schema": "workspace:*",
+    "hono": "^4.6.14",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241230.0",
+    "wrangler": "^4.127.1"
+  }
+}
