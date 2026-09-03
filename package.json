@@ -5,13 +5,14 @@
   "type": "module",
   "scripts": {
     "dev": "pnpm --filter @sr/web run dev",
-    "build": "pnpm --filter @sr/web run build",
+    "build": "pnpm run test && pnpm --filter @sr/web run build",
     "test": "vitest run",
     "typecheck": "tsc -b --pretty false",
     "dev:api": "pnpm --filter @sr/api run dev",
     "deploy:api": "pnpm --filter @sr/api run deploy",
     "migrate:api": "pnpm --filter @sr/api run migrate:remote",
-    "migrate:api:local": "pnpm --filter @sr/api run migrate:local"
+    "migrate:api:local": "pnpm --filter @sr/api run migrate:local",
+    "deploy": "pnpm --filter @sr/api run deploy"
   },
   "devDependencies": {
     "typescript": "^5.7.2",
