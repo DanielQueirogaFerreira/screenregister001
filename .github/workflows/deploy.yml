@@ -1,0 +1,70 @@
+name: Deploy Worker
+
+# Cloudflare's dashboard-driven "Workers Builds" is deliberately not used. The deploy
+# lives here instead so it is version-controlled, reviewable, and debuggable from the run
+# log rather than from build settings nobody can see in a diff.
+#
+# Required repository secret:
+#   CLOUDFLARE_API_TOKEN   token with Workers Scripts:Edit, D1:Edit, Workers R2 Storage:Edit
+# Optional repository secret:
+#   CLOUDFLARE_ACCOUNT_ID  only needed if the token can see more than one account
+#
+# AUTH_SECRET is NOT set from here. It is a Worker secret, managed in Cloudflare, and
+# deliberately never passes through CI.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# One deploy at a time. A queued run is pointless once a newer commit is deploying,
+# but never cancel a run mid-`wrangler deploy`.
+concurrency:
+  group: deploy-worker
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      # Runs the test suite and builds the SPA into apps/web/dist, which the Worker
+      # serves via [assets]. The deploy preflight refuses to run without it.
+      - name: Test and build
+        run: pnpm run build
+
+      - name: Resolve account id
+        env:
+          ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -n "$ACCOUNT_ID" ]; then
+            echo "CLOUDFLARE_ACCOUNT_ID=$ACCOUNT_ID" >> "$GITHUB_ENV"
+          fi
+
+      # Idempotent: D1 records applied migrations, so this is a no-op when there is
+      # nothing new. It runs before the deploy so the schema is never behind the code.
+      - name: Apply D1 migrations
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: pnpm run migrate:api
+
+      - name: Deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: pnpm run deploy

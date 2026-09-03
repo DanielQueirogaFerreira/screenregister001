@@ -28,7 +28,7 @@ Open it on a **desktop** browser, click *Share screen & record*, and leave it al
 few minutes. Watch the `stored` and `sampled` counters diverge.
 
 ```bash
-pnpm test                                   # 89 tests
+pnpm test                                   # 96 tests
 npx vite-node packages/core/src/bench.ts    # threshold tuning bench
 ```
 
@@ -57,8 +57,13 @@ application you meant.
 
 **One Worker serves everything**: the recorder UI at `/`, the API at `/v1/*` and MCP at
 `/mcp`. So a deployment gives you a single URL you can open, share your screen on, and
-point an assistant at. Deploying from the Cloudflare dashboard instead? The build settings
-that work are in [`apps/api/README.md`](apps/api/README.md) — the defaults do not.
+point an assistant at.
+
+Pushes to `main` deploy themselves via
+[`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) — typecheck, tests, SPA
+build, D1 migrations, then `wrangler deploy`. It needs one repository secret; setup and the
+alternative Cloudflare-dashboard build settings are in
+[`apps/api/README.md`](apps/api/README.md).
 
 ### Mobile
 

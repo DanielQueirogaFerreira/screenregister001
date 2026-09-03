@@ -54,7 +54,7 @@ not mention the config file.
 `wrangler deploy` prints the URL. Paste it into the web app under
 **Settings → Cloud sync → Worker API URL**, click *Test & register*, tick *Sync enabled*.
 
-### Deploying from the Cloudflare dashboard (connected to GitHub)
+### Continuous deployment (GitHub Actions)
 
 **One Worker serves everything** — the recorder UI at `/`, the API at `/v1/*`, and MCP at
 `/mcp`. `[assets]` in `wrangler.toml` points at the built SPA, and any request that does
@@ -62,8 +62,23 @@ not match a built file falls through to the Worker. That means one deployment, o
 and the browser client calling the API on the origin it was loaded from, so there is no
 CORS to configure and no second address to keep in sync.
 
-**Do these three once, before connecting the repository.** The dashboard build cannot do
-them for you, and a deploy succeeds without them — it just fails at request time:
+[`.github/workflows/deploy.yml`](../../.github/workflows/deploy.yml) deploys every push to
+`main`: install → typecheck → test → build the SPA → apply D1 migrations → `wrangler
+deploy`. It is a file in the repository rather than settings in a dashboard, so the deploy
+shows up in diffs and its failures show up in a run log you can read.
+
+Add one repository secret under **Settings → Secrets and variables → Actions**:
+
+| secret | value |
+|---|---|
+| `CLOUDFLARE_API_TOKEN` | a token with *Workers Scripts:Edit*, *D1:Edit*, *Workers R2 Storage:Edit* |
+| `CLOUDFLARE_ACCOUNT_ID` | optional — only if the token can see more than one account |
+
+`AUTH_SECRET` is deliberately **not** in that table. It signs every device token, so it is
+a Worker secret set once with `wrangler secret put` and never passed through CI.
+
+**Do these three once, before the first deploy.** CI does not do them for you, and a deploy
+succeeds without them — it just fails at request time:
 
 ```bash
 cd apps/api
@@ -73,15 +88,21 @@ npx wrangler r2 bucket create screenregister-frames
 npx wrangler d1 create screenregister001   # paste the printed id into wrangler.toml,
                                            # then COMMIT it — the build reads the file
                                            # from git, not from your machine
-npx wrangler d1 migrations apply screenregister001 --remote   # creates the tables
 openssl rand -hex 32 | npx wrangler secret put AUTH_SECRET
 ```
 
-The migration step is the one people miss. The build never runs migrations, so without it
-the Worker deploys cleanly and then every request fails with `no such table: frames`,
-which does not obviously mean "you never created the schema".
+`AUTH_SECRET` has to be a **secret**, not a plaintext variable. Piped like that the value
+never reaches your screen, your shell history, or the repository, and it survives redeploys.
 
-Then set the build configuration to exactly this:
+Migrations are the step people miss, so the workflow runs
+`wrangler d1 migrations apply --remote` before every deploy. D1 records what it has
+applied, so that is a no-op when there is nothing new — and it means the schema is never
+behind the code. Skip it and the Worker deploys cleanly, then every request fails with
+`no such table: frames`, which does not obviously mean "you never created the schema".
+
+### If you deploy from the Cloudflare dashboard instead
+
+Workers Builds can do this too, but the defaults do not work. Set exactly:
 
 | setting | value |
 |---|---|
@@ -89,28 +110,24 @@ Then set the build configuration to exactly this:
 | **Build command** | `pnpm run build` |
 | **Deploy command** | `pnpm run deploy` |
 
-Both are package scripts rather than raw wrangler calls, and that is the point:
+Package scripts rather than raw wrangler calls, and that is the point: `pnpm run build`
+runs the full test suite before building the SPA, and `pnpm run deploy` runs the preflight,
+which refuses to ship an unedited `database_id` or a missing web build.
 
-- `pnpm run build` runs the full test suite **before** building the SPA, so a broken commit
-  fails the build instead of reaching production. Nothing else in this pipeline runs tests.
-- `pnpm run deploy` runs the preflight, which refuses to ship an unedited `database_id` or
-  a missing web build.
-
-Three things go wrong if these are left at their defaults:
+Four things go wrong at the defaults:
 
 - **Root directory `/`** makes wrangler run in the workspace root, where there is no
   config, and it fails with *"Missing entry-point to Worker script or to assets
   directory"* — or, for `deploy`, the workspace-detection error above. It has to point at
   the directory holding `wrangler.toml`.
-- **The build command must build the web app**, because the Worker serves it. `pnpm run
-  build` at the root does this too, but naming the filter makes the dependency obvious.
-  Wrangler bundles the Worker itself; the build step exists only to produce `apps/web/dist`.
+- **The build command must build the web app**, because the Worker serves it. Wrangler
+  bundles the Worker itself; the build step exists only to produce `apps/web/dist`.
 - **`wrangler versions upload` uploads a version without sending traffic to it**, so a
-  build can succeed while the live Worker never changes. Use `wrangler deploy`.
-
-`AUTH_SECRET` still has to be set as a secret. The dashboard's build variables are
-plaintext and are not the same thing; a secret set with `wrangler secret put AUTH_SECRET`
-survives redeploys.
+  build can succeed while the live Worker never changes. It is the default for pushes to
+  any branch that is not the configured production branch, which makes a feature-branch
+  build look like a deploy that worked. Both deploy fields — production *and*
+  non-production — have to say `pnpm run deploy`.
+- **Nothing applies migrations.** Run them yourself, or use the workflow above.
 
 ### Check the deploy landed
 
