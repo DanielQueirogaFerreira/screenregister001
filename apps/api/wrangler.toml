@@ -40,3 +40,9 @@ crons = ["0 3 * * *"]
 # retention sweep in particular runs unattended at 03:00 and is otherwise invisible.
 [observability]
 enabled = true
+
+# Fail the deploy if the token-signing key is not configured on the Worker, instead of
+# shipping a Worker that 503s every authenticated route. Validated against the live Worker
+# before upload, so a missing key never reaches production.
+[secrets]
+required = ["AUTH_SECRET"]

@@ -98,9 +98,15 @@ as a Text variable is wiped by the next deploy — and the deploy still reports 
 because wrangler has no idea the key mattered. A real secret is inherited across deploys.
 Piped as above the value also never reaches your screen, your shell history, or the repo.
 
-That failure is why the workflow ends by calling `/v1/health` on the deployed Worker and
-fails the build unless it answers `ok: true`. A deploy that uploads cleanly but serves 503
-on every authenticated route is a failed deploy, and it should look like one.
+Two guards exist because of that failure. `[secrets] required = ["AUTH_SECRET"]` in
+`wrangler.toml` makes `wrangler deploy` validate the key against the live Worker **before**
+uploading, so a Worker missing it never ships. And the workflow ends by calling
+`/v1/health` on the deployed Worker, failing the build unless it answers `ok: true` — which
+also catches a key that exists but is too short. A deploy that uploads cleanly and then
+503s every authenticated route is a failed deploy, and it should look like one.
+
+If the health check does fail, the workflow prints `wrangler secret list` (names only) so
+the log says whether the key is missing entirely or merely rejected.
 
 Migrations are the step people miss, so the workflow runs
 `wrangler d1 migrations apply --remote` before every deploy. D1 records what it has

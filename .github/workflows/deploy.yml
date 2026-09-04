@@ -78,6 +78,8 @@ jobs:
       # 503 on every authenticated route. That happened. Ask the running Worker instead of
       # inferring health from the fact that the upload succeeded.
       - name: Verify the deployment serves
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           if [ -z "$worker_url" ]; then
             echo "::warning::No workers.dev URL in the deploy output; skipping health check."
@@ -89,5 +91,7 @@ jobs:
             case "$body" in *'"ok":true'*) echo "Healthy: $worker_url"; exit 0 ;; esac
             sleep 5
           done
+          echo "Secrets configured on the Worker (names only, no values):"
+          pnpm --filter @sr/api exec wrangler secret list || true
           echo "::error::$worker_url/v1/health never reported ok:true. Last response: $body"
           exit 1
