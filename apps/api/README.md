@@ -91,8 +91,16 @@ npx wrangler d1 create screenregister001   # paste the printed id into wrangler.
 openssl rand -hex 32 | npx wrangler secret put AUTH_SECRET
 ```
 
-`AUTH_SECRET` has to be a **secret**, not a plaintext variable. Piped like that the value
-never reaches your screen, your shell history, or the repository, and it survives redeploys.
+`AUTH_SECRET` has to be type **Secret**, not a plaintext variable, and this bites for a
+non-obvious reason: `wrangler deploy` *replaces* the plaintext variable set with whatever
+`[vars]` in `wrangler.toml` says. `AUTH_SECRET` is deliberately not in there, so one added
+as a Text variable is wiped by the next deploy — and the deploy still reports success,
+because wrangler has no idea the key mattered. A real secret is inherited across deploys.
+Piped as above the value also never reaches your screen, your shell history, or the repo.
+
+That failure is why the workflow ends by calling `/v1/health` on the deployed Worker and
+fails the build unless it answers `ok: true`. A deploy that uploads cleanly but serves 503
+on every authenticated route is a failed deploy, and it should look like one.
 
 Migrations are the step people miss, so the workflow runs
 `wrangler d1 migrations apply --remote` before every deploy. D1 records what it has

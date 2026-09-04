@@ -67,4 +67,27 @@ jobs:
       - name: Deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: pnpm run deploy
+        run: |
+          set -o pipefail
+          pnpm run deploy 2>&1 | tee deploy.log
+          url=$(grep -oE 'https://[A-Za-z0-9.-]+\.workers\.dev' deploy.log | head -1 || true)
+          echo "worker_url=$url" >> "$GITHUB_ENV"
+
+      # A deploy can upload cleanly and still serve a broken service. Wrangler has no idea
+      # whether AUTH_SECRET exists, so a Worker missing it deploys green and then returns
+      # 503 on every authenticated route. That happened. Ask the running Worker instead of
+      # inferring health from the fact that the upload succeeded.
+      - name: Verify the deployment serves
+        run: |
+          if [ -z "$worker_url" ]; then
+            echo "::warning::No workers.dev URL in the deploy output; skipping health check."
+            exit 0
+          fi
+          for attempt in 1 2 3 4 5; do
+            body=$(curl -fsS --max-time 15 "$worker_url/v1/health" || true)
+            echo "attempt $attempt: $body"
+            case "$body" in *'"ok":true'*) echo "Healthy: $worker_url"; exit 0 ;; esac
+            sleep 5
+          done
+          echo "::error::$worker_url/v1/health never reported ok:true. Last response: $body"
+          exit 1
