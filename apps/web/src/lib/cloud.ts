@@ -1,75 +1,39 @@
 import { ApiClient } from '@sr/storage';
 import { deviceId, userId } from './device.js';
 
-const CONFIG_KEY = 'sr.cloud';
-const TOKEN_KEY = 'sr.cloud_token';
-
-export interface CloudConfig {
-  apiUrl: string;
-  enabled: boolean;
-}
+const TOKEN_KEY = 'sr.token';
 
 /**
- * When the Worker serves this page, the API is on the very origin it was loaded from, so
- * defaulting the URL there means a fresh deploy needs no configuration at all.
+ * Connect to the backend that served this page.
  *
- * `enabled` stays false regardless. Uploading screen frames is a decision about some of
- * the most sensitive data a machine holds, and it is not one a default should make on the
- * user's behalf — they tick the box.
- */
-export const DEFAULT_CLOUD: CloudConfig = {
-  apiUrl: typeof location !== 'undefined' ? location.origin : '',
-  enabled: false,
-};
-
-export function loadCloud(): CloudConfig {
-  try {
-    const raw = localStorage.getItem(CONFIG_KEY);
-    return raw ? { ...DEFAULT_CLOUD, ...(JSON.parse(raw) as Partial<CloudConfig>) } : DEFAULT_CLOUD;
-  } catch {
-    return DEFAULT_CLOUD;
-  }
-}
-
-export function saveCloud(c: CloudConfig): void {
-  try {
-    localStorage.setItem(CONFIG_KEY, JSON.stringify(c));
-  } catch {
-    /* private mode */
-  }
-}
-
-/**
- * Build a client, registering this device if we do not hold a token yet.
+ * Every request is a same-origin relative path — the Worker serves the UI at `/`, the API
+ * at `/v1/*` and MCP at `/mcp`, so there is exactly one address and nothing for a user to
+ * configure. There is no URL field and no enable switch: opening the app *is* connecting
+ * to it, and a recording that has not reached the Worker is not stored anywhere.
  *
- * The token is bound to the server that issued it, so changing the API URL must discard
- * it — otherwise a signature from the old deployment would be sent to the new one and
- * every request would 401 with no obvious cause.
+ * The device token is kept in localStorage. That is not a data store — it is this
+ * device's identity, and losing it would lock the user out of their own history on the
+ * next reload rather than merely costing a cache. Accounts replace it in a later phase.
  */
-export async function connect(config: CloudConfig): Promise<ApiClient> {
-  const stored = readToken(config.apiUrl);
-  const api = new ApiClient({ baseUrl: config.apiUrl, token: stored });
+export async function connect(): Promise<ApiClient> {
+  const api = new ApiClient({ token: readToken() });
   await api.health();
-  if (!stored) writeToken(config.apiUrl, await api.registerDevice(userId(), deviceId()));
+  if (!api.token) writeToken(await api.registerDevice(userId(), deviceId()));
   return api;
 }
 
-function tokenStore(): Record<string, string> {
+function readToken(): string | null {
   try {
-    return JSON.parse(localStorage.getItem(TOKEN_KEY) ?? '{}') as Record<string, string>;
+    return localStorage.getItem(TOKEN_KEY);
   } catch {
-    return {};
+    return null; // private mode: a fresh token is issued per page load
   }
 }
 
-const readToken = (url: string): string | null => tokenStore()[normalize(url)] ?? null;
-
-function writeToken(url: string, token: string): void {
+function writeToken(token: string): void {
   try {
-    localStorage.setItem(TOKEN_KEY, JSON.stringify({ ...tokenStore(), [normalize(url)]: token }));
+    localStorage.setItem(TOKEN_KEY, token);
   } catch {
     /* private mode */
   }
 }
-
-const normalize = (url: string): string => url.replace(/\/+$/, '').toLowerCase();

@@ -67,9 +67,11 @@ app.onError((err, c) => {
  * says nothing about migrations never having been run. Reporting both here turns a
  * confusing outage into one curl.
  *
- * `auth_configured` is deliberately public: when it is false the Worker is signing with a
- * key published in this repository, so anyone can already forge a token. Hiding that would
- * protect nobody and would let the misconfiguration go unnoticed.
+ * `auth_configured` reports only whether the Worker will serve authenticated traffic at
+ * all. It deliberately does not distinguish "no key" from "key too weak": this route is
+ * unauthenticated, and telling an anonymous caller that the signing key exists but is
+ * brute-forceable is precisely the hint not to publish. The distinction is available to
+ * an operator through `wrangler secret list`, behind their API token.
  */
 app.get('/v1/health', async (c) => {
   let schema: 'ready' | 'missing' | 'error' = 'ready';
@@ -84,10 +86,13 @@ app.get('/v1/health', async (c) => {
     ok: schema === 'ready' && authConfigured,
     service: 'screenregister-api',
     schema,
+    // The policy the nightly sweep enforces. Not a secret, and the client must not print
+    // a retention promise it invented locally.
+    retention_days: Number(c.env.RETENTION_DAYS || '7'),
     auth_configured: authConfigured,
     cors_localhost: localhostAllowed(c.env),
     ...(schema === 'missing' && {
-      hint: 'Run the D1 migrations: wrangler d1 migrations apply screenregister --remote',
+      hint: 'Run the D1 migrations: wrangler d1 migrations apply screenregister001 --remote',
     }),
     ...(!authConfigured && {
       auth_hint: 'AUTH_SECRET is missing or too short, so the Worker refuses to issue or ' +
@@ -137,6 +142,7 @@ app.use('/v1/sessions', authGuard);
 app.use('/v1/frames/*', authGuard);
 app.use('/v1/frames', authGuard);
 app.use('/v1/usage', authGuard);
+app.use('/v1/data', authGuard);
 app.use('/v1/timeline', authGuard);
 app.use('/v1/scenes', authGuard);
 app.use('/mcp', authGuard);
@@ -192,6 +198,35 @@ app.delete('/v1/sessions/:id', async (c) => {
 });
 
 /**
+ * Erase everything belonging to the caller: objects, frame rows, session rows.
+ *
+ * With the browser holding nothing durable, this is the only way a user can delete their
+ * own history, so it is a first-class route rather than a client-side loop over sessions —
+ * a loop would leave a partial deletion behind if it were interrupted halfway.
+ */
+app.delete('/v1/data', async (c) => {
+  const userId = c.get('me').userId;
+  let frames = 0;
+
+  for (;;) {
+    const { results } = await c.env.DB.prepare(
+      `SELECT frame_id, storage_key FROM frames WHERE user_id = ? LIMIT 500`,
+    ).bind(userId).all<{ frame_id: string; storage_key: string }>();
+    if (results.length === 0) break;
+
+    await deleteObjects(c.env, results.map((r) => r.storage_key));
+    await c.env.DB.prepare(
+      `DELETE FROM frames WHERE frame_id IN (${results.map(() => '?').join(',')})`,
+    ).bind(...results.map((r) => r.frame_id)).run();
+    frames += results.length;
+  }
+
+  const { meta } = await c.env.DB.prepare(`DELETE FROM sessions WHERE user_id = ?`)
+    .bind(userId).run();
+  return c.json({ ok: true, frames, sessions: meta?.changes ?? 0 });
+});
+
+/**
  * Ingest one frame: metadata plus both encoded variants, as multipart.
  *
  * The bytes go through the Worker rather than via a presigned direct-to-R2 PUT. Cloudflare
@@ -233,7 +268,7 @@ app.post('/v1/frames', async (c) => {
        change_score, changed_tiles, reason, width, height, bytes, format, sha256, storage_key,
        ocr_text, caption, enrich_status)
      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,'pending')
-     ON CONFLICT(frame_id) DO UPDATE SET hold_ms = excluded.hold_ms`,
+     ON CONFLICT(frame_id) DO UPDATE SET hold_ms = COALESCE(excluded.hold_ms, frames.hold_ms)`,
   ).bind(
     frameId, sessionId, me.userId, String(m.captured_at ?? ''), Number(m.offset_ms ?? 0),
     Number(m.seq ?? 0), m.hold_ms === null || m.hold_ms === undefined ? null : Number(m.hold_ms),

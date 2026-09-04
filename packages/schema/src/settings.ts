@@ -40,9 +40,8 @@ export interface CaptureSettings {
   quality: number;
   thumbWidth: number;
 
-  // --- Retention ---
-  retentionDays: number;
-  /** Playback: any still longer than this is compressed to this in real-time mode. */
+  // --- Playback ---
+  /** Any still longer than this is compressed to this in real-time mode. */
   skipStillsOverMs: number;
 }
 
@@ -79,7 +78,6 @@ export const DEFAULT_SETTINGS: CaptureSettings = {
   maxWidth: 1920,
   quality: 0.7,
   thumbWidth: 320,
-  retentionDays: 7,
   skipStillsOverMs: 5000,
 };
 

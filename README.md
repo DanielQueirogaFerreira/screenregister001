@@ -2,33 +2,45 @@
 
 A **7-day screen memory** you can hand to an LLM.
 
-Open a URL, share your screen the same way you would in a video call — no install — and
-the system keeps a rolling, frame-addressable record of what was actually on screen.
-Every frame has an ID, a timestamp, and a change score, so Claude, ChatGPT, Gemini or
-anything else can connect and *see* your last seven days instead of being told about them.
+Open a URL, share your screen the same way you would in a video call — no install, no
+configuration — and the system keeps a rolling, frame-addressable record of what was
+actually on screen. Every frame has an ID, a timestamp, and a change score, so Claude,
+ChatGPT, Gemini or anything else can connect and *see* your last seven days instead of
+being told about them.
+
+It is an online service. The browser captures the screen, decides which frames are worth
+keeping and encodes them; **Cloudflare stores them, and is the only place they live** —
+frame images in R2, the session timeline and metadata in D1.
 
 The rule that shapes everything: **do not store what did not change.** A screen that sat
 still for an hour is one frame, and both the player and the API skip straight over it.
 
-> **Status: Phase 3.** Capture, change detection, storage and playback run locally in the
-> browser; frames optionally sync to a Cloudflare Worker backed by R2 and D1; and an LLM
-> can read that history over **MCP** or plain REST. Next up is accounts
-> (see [Roadmap](#roadmap)).
+> **Status: Phase 3.** Capture and change detection run in the browser; every frame that
+> survives is uploaded to a Cloudflare Worker backed by R2 and D1, which also serves the
+> UI and the read API; and an LLM can read that history over **MCP** or plain REST. Next
+> up is accounts (see [Roadmap](#roadmap)).
 
 ---
 
 ## Try it
 
+Open the deployed Worker URL on a **desktop** browser, click *Share screen & record*, and
+leave it alone for a few minutes. Watch the `stored` and `sampled` counters diverge. There
+is nothing to install and no URL to configure — the Worker serves the UI, so the API is the
+origin the page came from.
+
+To work on it locally:
+
 ```bash
 pnpm install
-pnpm dev            # http://localhost:5173
+pnpm dev:api        # the Worker, on http://localhost:8787 — serves the API
+pnpm dev            # the client, on http://localhost:5173
 ```
 
-Open it on a **desktop** browser, click *Share screen & record*, and leave it alone for a
-few minutes. Watch the `stored` and `sampled` counters diverge.
+Local development still talks to a Worker; there is no offline mode to fall back on.
 
 ```bash
-pnpm test                                   # 96 tests
+pnpm test                                   # unit tests
 npx vite-node packages/core/src/bench.ts    # threshold tuning bench
 ```
 
@@ -41,10 +53,6 @@ claude mcp add --transport http screenregister https://<your-worker>/mcp \
 
 Then ask *"what was I working on yesterday afternoon?"* — see
 [`apps/api/README.md`](apps/api/README.md) for the tools and the token.
-
-Cloud sync is off by default. To turn it on, deploy the Worker and paste its URL into
-**Settings → Cloud sync**. Recording never waits on the network: frames are written
-locally first and drain from there, so capture continues through an outage.
 
 ```bash
 pnpm migrate:api     # apply D1 migrations to the remote database
@@ -88,7 +96,7 @@ getDisplayMedia ─► sample at N FPS ─► [worker] luma thumb ─► 16x9 gr
              transient? drop            motion? wait for it to      still? heartbeat
              (tooltip, caret)           settle, keep THAT frame     every N minutes
                                                    │
-                                          WebP ─► IndexedDB
+                                     WebP ─► upload queue ─► R2 + D1
 ```
 
 **1. Diff.** Each sampled frame is reduced to a 160x90 luma plane and split into a 16x9
@@ -143,16 +151,17 @@ covering one static screen, one window switch, and six 200ms flickers — all si
 
 ```
 apps/web            Vite + React client — capture, playback, settings
-apps/api            Cloudflare Worker — ingest, read API, and the MCP server
+apps/api            Cloudflare Worker — UI host, ingest, read API, and the MCP server
 packages/core       diff engine, ring buffer, timeline processor, fixtures, bench
 packages/schema     frame/session types, settings, sensitivity mapping, ULID
-packages/storage    StorageAdapter + IndexedDB store, API client, sync engine
+packages/storage    API client, bounded upload queue, CloudStore
 scripts             repo-wide checks (file encoding)
 ```
 
 `packages/core` is DOM-free and headless-testable — thresholds are tuned against synthetic
-motion fixtures, not by eye. `StorageAdapter` is the seam Cloudflare slots into; the
-IndexedDB implementation was not throwaway — it is now the offline outbox.
+motion fixtures, not by eye. `packages/storage` has exactly one storage implementation,
+`CloudStore`, and it talks to the Worker; there is no local persistent store to fall back
+on, and no code path that would let one accumulate.
 
 ### The frame record
 
@@ -175,8 +184,8 @@ ocr_text, caption, enrich_status    <- reserved for Phase 5, unused today
 
 | | |
 |---|---|
-| **1 — done** | Browser capture, change detection, preroll buffer, WebP, IndexedDB, playback, 7-day prune |
-| **2 — done** | Cloudflare Worker API over R2 (blobs) and D1 (catalogue), signed device tokens, server-side retention sweep; IndexedDB became the offline outbox |
+| **1 — done** | Browser capture, change detection, preroll buffer, WebP encoding, playback |
+| **2 — done** | Cloudflare Worker API over R2 (blobs) and D1 (catalogue), signed device tokens, server-side retention sweep — and R2/D1 became the only store |
 | **3 — done** | MCP server over Streamable HTTP (`list_sessions`, `get_scene_summary`, `search_timeline`, `get_frame`, `get_frames`) plus mirrored REST + OpenAPI for clients without MCP |
 | **4** | Accounts — email magic link, multi-device |
 | **5** | Enrichment — OCR, captions, embeddings; turns "download 400 screenshots" into "search text, fetch 3 images" |
@@ -198,12 +207,19 @@ nothing to serve; on S3 the same access pattern would be dominated by egress. Pr
 ## Privacy
 
 Screen frames are the most sensitive data a machine holds — passwords in plaintext,
-banking, private messages, other people's data visible in calls.
+banking, private messages, other people's data visible in calls. Be deliberate about what
+you share, because this is a service that uploads.
 
-- In this build **nothing leaves the device.** Frames live in browser storage.
-- Retention is a hard ceiling enforced by the storage layer, not by policy.
-- Always-visible recording indicator; **Pause** blacks out capture without ending the session.
-- No cross-user access path exists in the schema.
+- **Capture starts only after you explicitly pick a screen or window** in the browser's own
+  share dialog, and every frame that survives change detection is uploaded to Cloudflare.
+  The UI says so on the Record tab rather than burying it in a settings page.
+- Frames are readable only with the device token that wrote them. No cross-user access path
+  exists in the schema; every query filters on the token's `user_id`.
+- Retention is a hard ceiling enforced **server-side** by a nightly sweep that deletes the
+  D1 row and the R2 object in the same pass, so the catalogue and the images cannot drift
+  apart. There is no client setting that can extend it.
+- **Erase everything** deletes every session, row and object in one server-side operation.
+- Always-visible recording indicator; **Pause** stops capture without ending the session.
 - **Known limitation:** the browser gives us pixels but not window titles, so a reliable
   app/site denylist is not possible until frame text extraction lands in Phase 5.
   Documented rather than pretended.
@@ -216,10 +232,11 @@ banking, private messages, other people's data visible in calls.
   unbounded queue. This is the tradeoff a 3-second lookahead costs at high frame rates.
 - One shared surface per session. Multi-monitor means multiple concurrent sessions.
 - Audio is out of scope.
-- **No offline app shell.** A recording already in progress survives an outage, and its
-  frames queue and drain correctly. But *starting* a new session while offline does not
-  work: each session spawns a fresh capture worker, and without a service worker that
-  script cannot be fetched. Found while testing; a service worker would close it.
+- **A recording needs the network.** The upload queue absorbs a few seconds of bad
+  connectivity — it is capped by frame count, total bytes and age — but when it fills, or
+  when the server rejects an upload outright, capture **pauses** and says so. It does not
+  keep sampling into browser storage, because that would imply a durable local copy that
+  does not exist. Resuming is one click once the connection is back.
 - Device tokens are unforgeable but not revocable, and a token is as good as the device
   holding it. Accounts (Phase 4) replace this.
 - The MCP server authenticates with a bearer token, not OAuth, so any client that can set
