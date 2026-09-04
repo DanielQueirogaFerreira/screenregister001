@@ -51,8 +51,9 @@ but never checks whether the bindings point at resources that exist, so an unedi
 `database_id` passes it and then fails against the Cloudflare API with an error that does
 not mention the config file.
 
-`wrangler deploy` prints the URL. Paste it into the web app under
-**Settings → Cloud sync → Worker API URL**, click *Test & register*, tick *Sync enabled*.
+`wrangler deploy` prints the URL. That single URL is the whole product: it serves the
+recorder UI, the REST API and the MCP endpoint, so there is nothing to paste anywhere and
+no connection for a user to switch on.
 
 ### Continuous deployment (GitHub Actions)
 
@@ -163,9 +164,12 @@ still serves so you can see the failure. Both responses carry the command that f
 accept cross-origin calls from `localhost`, so the posture can be audited with a single
 request rather than by reading the config.
 
-Then open the Worker's URL. **Settings → Cloud sync** already has the API URL filled in
-with that same origin. Tick *Sync enabled* — deliberately not on by default, because
-uploading screen frames is not a decision a default should make for you.
+Then open the Worker's URL and click *Share screen & record*. The client calls `/v1/*` on
+the origin it was loaded from, so there is no address to configure, no CORS to arrange, and
+no second deployment to keep in step. Capture starts only after the browser's own share
+dialog, and from that point every frame that survives change detection is uploaded here —
+R2 holds the images, D1 the timeline. Nothing durable is kept in the browser, so if uploads
+stop the client pauses capture and says so rather than implying a local copy exists.
 
 > **`AUTH_SECRET` is mandatory.** There is no fallback key. An earlier version substituted
 > a hard-coded development secret when the variable was missing, which meant a deploy that
