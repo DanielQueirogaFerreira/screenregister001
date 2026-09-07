@@ -1,18 +1,14 @@
 import { useState } from 'react';
 import { DEFAULT_SETTINGS, validateSettings, withSensitivity, type CaptureSettings } from '@sr/schema';
-import type { StorageAdapter, SyncStatus, UsageInfo } from '@sr/storage';
-import { bytes } from '../lib/format.js';
-import { CloudPanel } from './CloudPanel.js';
-import type { CloudConfig } from '../lib/cloud.js';
+import type { CloudStore, UploadStatus, UsageInfo } from '@sr/storage';
+import { bytes, day } from '../lib/format.js';
+import { CloudStatusPanel } from './CloudStatusPanel.js';
 
 interface Props {
-  store: StorageAdapter;
+  store: CloudStore;
   settings: CaptureSettings;
   usage: UsageInfo | null;
-  cloud: CloudConfig;
-  syncStatus: SyncStatus | null;
-  onCloud: (c: CloudConfig) => void;
-  onSyncNow: () => void;
+  uploads: UploadStatus | null;
   onSettings: (s: CaptureSettings) => void;
   onChanged: () => void;
 }
@@ -34,7 +30,7 @@ function Num({
 }
 
 export function SettingsView({
-  store, settings, usage, cloud, syncStatus, onCloud, onSyncNow, onSettings, onChanged,
+  store, settings, usage, uploads, onSettings, onChanged,
 }: Props) {
   const [busy, setBusy] = useState(false);
   const errors = validateSettings(settings);
@@ -106,65 +102,59 @@ export function SettingsView({
 
       <div style={{ alignSelf: 'start' }}>
         <div className="panel">
-          <h3 style={{ marginTop: 0 }}>Storage</h3>
-          {usage && (
+          <h3 style={{ marginTop: 0 }}>Stored in Cloudflare</h3>
+          {usage ? (
             <div className="stats">
               <div className="stat"><b>{usage.frames}</b><span>frames</span></div>
               <div className="stat"><b>{usage.sessions}</b><span>sessions</span></div>
-              <div className="stat"><b>{bytes(usage.bytes)}</b><span>stored</span></div>
+              <div className="stat"><b>{bytes(usage.bytes)}</b><span>in R2</span></div>
               <div className="stat">
-                <b>{usage.quotaBytes ? bytes(usage.quotaBytes) : '—'}</b><span>quota</span>
+                <b>{usage.oldest ? day(usage.oldest) : '\u2014'}</b><span>oldest kept</span>
               </div>
             </div>
-          )}
-          {usage && !usage.persisted && (
-            <div className="banner warn" style={{ marginTop: 12 }}>
-              Storage is not marked persistent — the browser may evict these frames under disk
-              pressure before the {settings.retentionDays}-day window is up.
-            </div>
+          ) : (
+            <div className="hint">Usage is unavailable right now.</div>
           )}
 
-          <Num label="Retention (days)" min={1} value={settings.retentionDays}
-            hint="Frames older than this are deleted on load and hourly. Enforced by the store, not by policy."
-            onChange={(retentionDays) => set({ retentionDays })} />
+          <div className="hint" style={{ marginTop: 12 }}>
+            These are the counts the server holds, not an estimate from this browser.
+            Retention is enforced on the server: a nightly sweep deletes every frame older
+            than {store.retentionDays} days, removing the D1 row and the R2 object in the
+            same pass so the catalogue and the images can never drift apart. The setting
+            below controls playback only; the server\u2019s ceiling is authoritative.
+          </div>
 
-          <div className="row">
-            <button disabled={busy} onClick={async () => {
-              setBusy(true);
-              const cutoff = new Date(Date.now() - settings.retentionDays * 86400_000).toISOString();
-              const n = await store.pruneOlderThan(cutoff);
-              setBusy(false);
-              onChanged();
-              alert(`Pruned ${n} frame(s) older than ${settings.retentionDays} days.`);
-            }}>Prune now</button>
+          <div className="row" style={{ marginTop: 12 }}>
             <button className="danger" disabled={busy} onClick={async () => {
-              if (!confirm('Delete every recorded frame on this device?')) return;
+              if (!confirm('Permanently delete every session, frame and image you have stored? This cannot be undone.')) return;
               setBusy(true);
-              await store.clearAll();
-              setBusy(false);
-              onChanged();
+              try {
+                await store.eraseAll();
+                onChanged();
+              } catch (err) {
+                alert(err instanceof Error ? err.message : String(err));
+              } finally {
+                setBusy(false);
+              }
             }}>Erase everything</button>
           </div>
         </div>
 
-        <CloudPanel cloud={cloud} status={syncStatus} onCloud={onCloud} onSyncNow={onSyncNow} />
+        <CloudStatusPanel status={uploads} />
 
         <div className="panel" style={{ marginTop: 14 }}>
           <h3 style={{ marginTop: 0 }}>Privacy</h3>
           <div className="hint">
-            Screen frames are the most sensitive data a machine holds — passwords, banking,
-            private messages, other people's data in calls. Frames are always written to this
-            browser's storage first and deleted after {settings.retentionDays} days.{' '}
-            {cloud.enabled ? (
-              <>
-                <b>Cloud sync is on</b>, so frames are also uploaded to{' '}
-                <code>{cloud.apiUrl}</code>, where the same {settings.retentionDays}-day ceiling
-                is enforced server-side. Only your own device token can read them back.
-              </>
-            ) : (
-              <>Cloud sync is off, so nothing leaves this device.</>
-            )}{' '}
-            Use <b>Pause</b> while recording to stop capture without ending the session.
+            Screen frames are the most sensitive data a machine holds \u2014 passwords, banking,
+            private messages, other people\u2019s data in calls. Capture starts only after you
+            explicitly pick a screen or window to share, and{' '}
+            <b>every frame that survives change detection is uploaded to Cloudflare</b>,
+            where it is kept for {store.retentionDays} days and then deleted. Only your
+            own device token can read it back; there is no cross-user access path in the
+            schema.
+            <br /><br />
+            Use <b>Pause</b> while recording to stop capture without ending the session, and
+            the browser\u2019s own \u201cStop sharing\u201d control to end it entirely.
             <br /><br />
             The browser gives us pixels but not window titles, so an app or site denylist
             cannot be reliable until frame text extraction lands in a later phase.

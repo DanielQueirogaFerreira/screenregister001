@@ -1,60 +1,55 @@
 import type { FrameRecord, SessionRecord } from '@sr/schema';
 
+/** What the account holds server-side. Reported by the Worker, not by the browser. */
 export interface UsageInfo {
   frames: number;
   bytes: number;
   sessions: number;
-  /** Browser-reported quota, when available. */
-  quotaBytes: number | null;
-  usageBytes: number | null;
-  persisted: boolean;
+  /** Oldest frame still inside the retention window, ISO-8601, or null when empty. */
+  oldest: string | null;
 }
 
 /**
- * The seam between the recorder and wherever frames actually live.
+ * The recorder's view of storage. Cloudflare is the only implementation.
  *
- * Phase 1 implements this over IndexedDB so the whole pipeline can be proven with no
- * server and no cost. Phase 2 adds a Cloudflare implementation (R2 for blobs, D1 for
- * the catalogue) behind the identical interface — at which point the IndexedDB one is
- * not discarded but demoted to the offline outbox, which is why `putFrame` records a
- * `synced` flag from the very beginning.
+ * There is deliberately no local persistent implementation. R2 and D1 are the system of
+ * record: a frame that has not reached the Worker is not stored, and the UI says so rather
+ * than implying a durable local copy exists. The browser's role is bounded to capture,
+ * change detection, encoding, and a short in-memory queue that smooths uploads and retries
+ * transient failures — see `UploadQueue`.
+ *
+ * `getFullBlob`/`getThumbBlob` return bytes fetched from the Worker, so playback reads the
+ * same objects any other client would. They are not a cache of something held locally.
  */
-export interface StorageAdapter {
+export interface FrameStore {
+  /** Fail fast if the backend is unreachable or unauthenticated. */
   init(): Promise<void>;
 
   createSession(session: SessionRecord): Promise<void>;
-  updateSession(id: string, patch: Partial<SessionRecord>): Promise<void>;
+  /** Full record, not a patch: the server route is an upsert, and sending a partial one
+   *  would blank the columns it omits. */
+  updateSession(session: SessionRecord): Promise<void>;
   listSessions(): Promise<SessionRecord[]>;
-  getSession(id: string): Promise<SessionRecord | null>;
   deleteSession(id: string): Promise<void>;
 
+  /**
+   * Accept a newly encoded frame. It is held in memory only until its `hold_ms` is known,
+   * at which point `setHold` releases it to the upload queue — so each frame is uploaded
+   * exactly once, complete, instead of being patched afterwards.
+   */
   putFrame(record: FrameRecord, full: Blob, thumb: Blob): Promise<void>;
-  /** Close out a frame once we know how long it stayed on screen. */
+  /** Close out a frame once we know how long it stayed on screen, and queue it for upload. */
   setHold(frameId: string, holdMs: number): Promise<void>;
+  /** Wait for the queue to drain. Called when a session ends. */
+  flush(): Promise<void>;
+
   listFrames(sessionId: string): Promise<FrameRecord[]>;
   getFullBlob(frameId: string): Promise<Blob | null>;
   getThumbBlob(frameId: string): Promise<Blob | null>;
 
-  /** Enforce the retention ceiling. Returns how many frames were removed. */
-  pruneOlderThan(cutoffIso: string): Promise<number>;
   usage(): Promise<UsageInfo>;
-  clearAll(): Promise<void>;
-}
-
-/**
- * The subset of a local store that the sync engine needs.
- *
- * Split out from StorageAdapter because it is meaningful only for a store that queues
- * work for somewhere else — a pure cloud-backed adapter has no outbox.
- */
-export interface OutboxStore {
-  /** Frames not yet on the server. Only closed frames (hold_ms set) are eligible. */
-  listUnsynced(limit: number): Promise<FrameRecord[]>;
-  countUnsynced(): Promise<number>;
-  markSynced(frameIds: string[]): Promise<void>;
-  getSession(id: string): Promise<SessionRecord | null>;
-  getFullBlob(frameId: string): Promise<Blob | null>;
-  getThumbBlob(frameId: string): Promise<Blob | null>;
+  /** Delete every session, frame row and object belonging to this device's user. */
+  eraseAll(): Promise<void>;
 }
 
 export async function sha256Hex(blob: Blob): Promise<string> {

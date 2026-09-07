@@ -1,6 +1,6 @@
 import { ulid, type CaptureSettings, type FrameRecord, type SessionRecord } from '@sr/schema';
 import type { ProcessorStats, ActivityPoint } from '@sr/core';
-import { sha256Hex, type StorageAdapter } from '@sr/storage';
+import { sha256Hex, type FrameStore } from '@sr/storage';
 import { deviceId, userId } from '../lib/device.js';
 import type { FromWorker, ToWorker } from './protocol.js';
 
@@ -59,7 +59,7 @@ export class Recorder {
   private openFrame: { id: string; tMs: number } | null = null;
 
   constructor(
-    private store: StorageAdapter,
+    private store: FrameStore,
     private settings: CaptureSettings,
     private events: RecorderEvents = {},
   ) {}
@@ -166,12 +166,19 @@ export class Recorder {
       this.openFrame = null;
     }
     if (this.session) {
-      await this.store.updateSession(this.session.session_id, {
+      this.session = {
+        ...this.session,
         ended_at: new Date().toISOString(),
         frames_stored: this.stored,
         bytes_stored: this.bytesStored,
-      });
+      };
+      await this.store.updateSession(this.session);
     }
+
+    // Push the last frame out and wait for the backlog. Until this resolves the tail of
+    // the session exists only in memory, so reporting "stopped" any earlier would claim a
+    // recording that is not yet stored.
+    await this.store.flush();
 
     this.worker?.terminate();
     this.worker = null;

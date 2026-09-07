@@ -2,13 +2,17 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CaptureSettings, FrameRecord } from '@sr/schema';
 import { withSensitivity } from '@sr/schema';
 import type { ActivityPoint, ProcessorStats } from '@sr/core';
-import type { StorageAdapter } from '@sr/storage';
+import type { CloudStore, UploadStatus } from '@sr/storage';
 import { Recorder, detectSupport } from '../capture/recorder.js';
 import { bytes, clock } from '../lib/format.js';
 
 interface Props {
-  store: StorageAdapter;
+  store: CloudStore;
   settings: CaptureSettings;
+  uploads: UploadStatus | null;
+  /** Set when uploads stopped; capture is paused until the user retries. */
+  stalled: string | null;
+  onRetryUploads: () => void;
   onSettings: (s: CaptureSettings) => void;
   onSessionEnd: () => void;
 }
@@ -17,7 +21,9 @@ const EMPTY: ProcessorStats = {
   sampled: 0, stored: 0, skippedNoChange: 0, skippedTransient: 0, skippedBurstCap: 0,
 };
 
-export function RecordView({ store, settings, onSettings, onSessionEnd }: Props) {
+export function RecordView({
+  store, settings, uploads, stalled, onRetryUploads, onSettings, onSessionEnd,
+}: Props) {
   const support = useMemo(detectSupport, []);
   const recorder = useRef<Recorder | null>(null);
   const [running, setRunning] = useState(false);
@@ -37,6 +43,18 @@ export function RecordView({ store, settings, onSettings, onSessionEnd }: Props)
     const t = window.setInterval(() => setElapsed((e) => e + 1), 1000);
     return () => window.clearInterval(t);
   }, [running]);
+
+  /**
+   * The cloud is the only store, so a frame that cannot be uploaded is a frame that is not
+   * recorded. Rather than let capture run on and quietly discard it, stop sampling and say
+   * so. The session stays open, so Retry resumes it where it left off.
+   */
+  useEffect(() => {
+    if (stalled && running) {
+      recorder.current?.setPaused(true);
+      setPaused(true);
+    }
+  }, [stalled, running]);
 
   // Revoke the previous preview URL; without this a long session leaks one blob URL
   // per stored frame.
@@ -75,6 +93,19 @@ export function RecordView({ store, settings, onSettings, onSessionEnd }: Props)
       <div>
         {!support.supported && <div className="banner bad">{support.reason}</div>}
         {error && <div className="banner bad">{error}</div>}
+        {stalled && (
+          <div className="banner bad">
+            <b>Capture paused — uploads have stopped.</b> {stalled}. Recording is stored in
+            Cloudflare, so nothing is being captured while uploads are down.{' '}
+            <button style={{ marginLeft: 8 }} onClick={() => {
+              onRetryUploads();
+              recorder.current?.setPaused(false);
+              setPaused(false);
+            }}>
+              Retry &amp; resume
+            </button>
+          </div>
+        )}
         {backlog > 12 && (
           <div className="banner warn">
             Encoder is {backlog} frames behind — samples are being skipped to protect memory.
@@ -191,8 +222,15 @@ export function RecordView({ store, settings, onSettings, onSessionEnd }: Props)
         </div>
 
         <div className="banner info" style={{ margin: 0 }}>
-          Frames are written to this device first and kept for {settings.retentionDays} days.
-          Whether they are also uploaded is controlled by Cloud sync in Settings.
+          Frames are processed in this browser and uploaded to Cloudflare, where they are
+          kept for {store.retentionDays} days and then deleted. Nothing durable is stored
+          in the browser.
+          {uploads && (
+            <>
+              {' '}Right now: <b>{uploads.uploaded}</b> uploaded, <b>{uploads.queued}</b> waiting
+              {uploads.dropped > 0 && <>, <b>{uploads.dropped}</b> lost</>}.
+            </>
+          )}
         </div>
       </div>
     </div>

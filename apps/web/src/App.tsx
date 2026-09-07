@@ -1,10 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import {
-  IndexedDBAdapter, SyncEngine, type StorageAdapter, type SyncStatus, type UsageInfo,
-} from '@sr/storage';
+import { CloudStore, type UploadStatus, type UsageInfo } from '@sr/storage';
 import type { CaptureSettings, SessionRecord } from '@sr/schema';
 import { loadSettings, saveSettings } from './lib/settings.js';
-import { connect, loadCloud, saveCloud, type CloudConfig } from './lib/cloud.js';
+import { connect } from './lib/cloud.js';
 import { RecordView } from './views/RecordView.js';
 import { LibraryView } from './views/LibraryView.js';
 import { PlayerView } from './views/PlayerView.js';
@@ -12,86 +10,73 @@ import { SettingsView } from './views/SettingsView.js';
 
 type Tab = 'record' | 'library' | 'settings';
 
-/** Retention is checked on boot and hourly — a 7-day ceiling that is not merely a policy. */
-const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
-
 export function App() {
-  const [store, setStore] = useState<StorageAdapter | null>(null);
+  const [store, setStore] = useState<CloudStore | null>(null);
   const [tab, setTab] = useState<Tab>('record');
   const [settings, setSettings] = useState<CaptureSettings>(loadSettings);
   const [playing, setPlaying] = useState<SessionRecord | null>(null);
   const [usage, setUsage] = useState<UsageInfo | null>(null);
-  const [booted, setBooted] = useState(false);
-  const [cloud, setCloud] = useState<CloudConfig>(loadCloud);
-  const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
-  const syncer = useRef<SyncEngine | null>(null);
+  const [uploads, setUploads] = useState<UploadStatus | null>(null);
+  const [stalled, setStalled] = useState<string | null>(null);
+  const [bootError, setBootError] = useState<string | null>(null);
+  const storeRef = useRef<CloudStore | null>(null);
 
-  const refreshUsage = useCallback(async (s: StorageAdapter) => {
-    setUsage(await s.usage());
+  const refreshUsage = useCallback(async (s: CloudStore) => {
+    setUsage(await s.usage().catch(() => null));
   }, []);
 
+  // One connection for the life of the page. There is no target to switch between —
+  // the backend is the origin that served this bundle.
   useEffect(() => {
-    let timer: number | undefined;
-    void (async () => {
-      const s = new IndexedDBAdapter();
-      await s.init();
-      const cutoff = () => new Date(Date.now() - settings.retentionDays * 86400_000).toISOString();
-      await s.pruneOlderThan(cutoff());
-      timer = window.setInterval(() => void s.pruneOlderThan(cutoff()), PRUNE_INTERVAL_MS);
-      setStore(s);
-      await refreshUsage(s);
-      setBooted(true);
-    })();
-    return () => window.clearInterval(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // The sync engine is torn down and rebuilt whenever the target changes, so a stale
-  // engine can never keep uploading to a server the user has switched away from.
-  useEffect(() => {
-    syncer.current?.stop();
-    syncer.current = null;
-    setSyncStatus(null);
-    if (!store || !cloud.enabled || !cloud.apiUrl) return;
-
     let cancelled = false;
     void (async () => {
       try {
-        const api = await connect(cloud);
+        const api = await connect();
+        const s = new CloudStore(api, setUploads, setStalled);
+        await s.init();
         if (cancelled) return;
-        const engine = new SyncEngine(store as IndexedDBAdapter, api, setSyncStatus);
-        syncer.current = engine;
-        engine.start();
+        storeRef.current = s;
+        setStore(s);
+        await refreshUsage(s);
       } catch (err) {
-        if (!cancelled) {
-          setSyncStatus({
-            state: 'error', pending: 0, uploaded: 0, failed: 0, lastSyncAt: null,
-            lastError: err instanceof Error ? err.message : String(err),
-          });
-        }
+        if (!cancelled) setBootError(err instanceof Error ? err.message : String(err));
       }
     })();
     return () => {
       cancelled = true;
-      syncer.current?.stop();
-      syncer.current = null;
+      storeRef.current?.dispose();
+      storeRef.current = null;
     };
-  }, [store, cloud]);
-
-  const updateCloud = useCallback((c: CloudConfig) => {
-    setCloud(c);
-    saveCloud(c);
-  }, []);
+  }, [refreshUsage]);
 
   const update = useCallback((s: CaptureSettings) => {
     setSettings(s);
     saveSettings(s);
   }, []);
 
-  if (!booted || !store) {
+  if (bootError) {
     return (
       <div className="app">
-        <div className="empty">Opening local store…</div>
+        <div className="panel">
+          <h3 style={{ marginTop: 0 }}>Cannot reach the recording service</h3>
+          <div className="banner bad">{bootError}</div>
+          <div className="hint">
+            ScreenRegister stores recordings in Cloudflare, so it cannot record while the
+            service is unavailable. Nothing was captured, and no data was lost. Reload once
+            the service is back.
+          </div>
+          <div className="row" style={{ marginTop: 12 }}>
+            <button className="primary" onClick={() => location.reload()}>Reload</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!store) {
+    return (
+      <div className="app">
+        <div className="empty">Connecting to the recording service…</div>
       </div>
     );
   }
@@ -129,6 +114,9 @@ export function App() {
         <RecordView
           store={store}
           settings={settings}
+          uploads={uploads}
+          stalled={stalled}
+          onRetryUploads={() => { setStalled(null); store.retryUploads(); }}
           onSettings={update}
           onSessionEnd={() => void refreshUsage(store)}
         />
@@ -139,10 +127,7 @@ export function App() {
           store={store}
           settings={settings}
           usage={usage}
-          cloud={cloud}
-          syncStatus={syncStatus}
-          onCloud={updateCloud}
-          onSyncNow={() => void syncer.current?.syncOnce()}
+          uploads={uploads}
           onSettings={update}
           onChanged={() => void refreshUsage(store)}
         />

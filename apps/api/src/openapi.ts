@@ -47,6 +47,12 @@ export const OPENAPI = (origin: string) => ({
     '/v1/sessions': {
       get: { summary: "The caller's recording sessions, newest first", responses: { 200: { description: 'Sessions' } } },
     },
+    '/v1/data': {
+      delete: {
+        summary: "Permanently delete every session, frame row and stored image belonging to the caller",
+        responses: { 200: { description: 'Counts of what was removed' } },
+      },
+    },
     '/v1/scenes': {
       get: {
         summary: 'Collapse a period into scenes',

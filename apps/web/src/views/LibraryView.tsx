@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { SessionRecord } from '@sr/schema';
-import type { StorageAdapter } from '@sr/storage';
+import type { CloudStore } from '@sr/storage';
 import { bytes, day, clock, duration } from '../lib/format.js';
 
 interface Props {
-  store: StorageAdapter;
+  store: CloudStore;
   onOpen: (s: SessionRecord) => void;
   onChanged: () => void;
 }

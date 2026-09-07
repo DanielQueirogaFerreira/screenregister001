@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CaptureSettings, FrameRecord, SessionRecord } from '@sr/schema';
-import type { StorageAdapter } from '@sr/storage';
+import type { CloudStore } from '@sr/storage';
 import { bytes, clock, day, duration } from '../lib/format.js';
 
 interface Props {
-  store: StorageAdapter;
+  store: CloudStore;
   session: SessionRecord;
   settings: CaptureSettings;
   onBack: () => void;
@@ -66,7 +66,9 @@ export function PlayerView({ store, session, settings, onBack }: Props) {
     async (f: FrameRecord): Promise<ImageBitmap | null> => {
       const hit = cache.current.get(f.frame_id);
       if (hit) return hit;
-      const blob = await store.getFullBlob(f.frame_id);
+      // Fetched from R2 through the Worker, with this device's token. The cache below
+      // is a decode cache for the current playback pass, not a copy of the recording.
+      const blob = await store.getFullBlob(f.frame_id).catch(() => null);
       if (!blob) return null;
       const bmp = await createImageBitmap(blob);
       cache.current.set(f.frame_id, bmp);
@@ -82,7 +84,7 @@ export function PlayerView({ store, session, settings, onBack }: Props) {
     [store],
   );
 
-  // Decode ahead so playback never stalls waiting on IndexedDB.
+  // Decode ahead so playback never stalls waiting on a frame fetch.
   useEffect(() => {
     for (let i = index; i < Math.min(frames.length, index + PREFETCH); i++) {
       const f = frames[i];
