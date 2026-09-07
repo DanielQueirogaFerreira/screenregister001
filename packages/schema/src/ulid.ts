@@ -16,7 +16,10 @@ let lastRandom: number[] = [];
 function randomChars(n: number): number[] {
   const out = new Array<number>(n);
   const bytes = new Uint8Array(n);
-  globalThis.crypto.getRandomValues(bytes);
+  // The bare global, not `globalThis.crypto`: this module is compiled under both the DOM
+  // lib (browser) and @cloudflare/workers-types (Worker), and only the bare form is
+  // declared in both.
+  crypto.getRandomValues(bytes);
   for (let i = 0; i < n; i++) out[i] = bytes[i]! % 32;
   return out;
 }

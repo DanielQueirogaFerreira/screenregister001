@@ -1,14 +1,15 @@
-import { Hono, type MiddlewareHandler } from 'hono';
+import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { Env, Principal } from './types.js';
-import {
-  AuthNotConfiguredError, bearer, isAuthConfigured, issueToken, verifyToken,
-} from './auth.js';
+import { AuthNotConfiguredError, isAuthConfigured } from './auth.js';
+import { authRoutes, requireAuth } from './auth-routes.js';
+import { mailConfigured } from './mailer.js';
+import { pruneAuthTables } from './accounts.js';
 import { handleMcp } from './mcp.js';
 import { buildScenes, listFrames, resolveWindow } from './queries.js';
 import { OPENAPI } from './openapi.js';
 
-type Ctx = { Bindings: Env; Variables: { me: Principal } };
+type Ctx = { Bindings: Env; Variables: { me: Principal; scope: 'read' | 'write'; sessionHash?: string } };
 
 const app = new Hono<Ctx>();
 
@@ -91,6 +92,9 @@ app.get('/v1/health', async (c) => {
     retention_days: Number(c.env.RETENTION_DAYS || '7'),
     auth_configured: authConfigured,
     cors_localhost: localhostAllowed(c.env),
+    // Whether self-service verification and password reset can actually deliver. Not a
+    // secret, and a signup flow that silently cannot email is worth surfacing.
+    email_configured: mailConfigured(c.env),
     ...(schema === 'missing' && {
       hint: 'Run the D1 migrations: wrangler d1 migrations apply screenregister001 --remote',
     }),
@@ -106,46 +110,29 @@ app.get('/v1/health', async (c) => {
 app.get('/v1/openapi.json', (c) => c.json(OPENAPI(new URL(c.req.url).origin)));
 
 /**
- * Register a device and get a token. The client supplies the ids it already generated
- * locally; the server's contribution is the signature that makes them unforgeable.
+ * Device registration is deliberately absent.
+ *
+ * Anonymous device tokens used to be the whole identity model. They were unforgeable but
+ * unrevocable, and anyone holding one could read the screen recordings it covered forever.
+ * Accounts replace them. An existing token is still honoured for exactly one thing —
+ * proving ownership of pre-account recordings at POST /v1/account/claim — and grants
+ * nothing else.
  */
-app.post('/v1/devices', async (c) => {
-  const { user_id, device_id } = await c.req.json<{ user_id?: string; device_id?: string }>();
-  if (!user_id || !device_id) return c.json({ error: 'user_id and device_id are required' }, 400);
 
-  await c.env.DB.prepare(
-    `INSERT INTO devices (device_id, user_id, created_at, last_seen_at) VALUES (?, ?, ?, ?)
-     ON CONFLICT(device_id) DO UPDATE SET last_seen_at = excluded.last_seen_at`,
-  ).bind(device_id, user_id, new Date().toISOString(), new Date().toISOString()).run();
+// Auth routes carry their own guards, so they mount before the blanket one below.
+app.route('/', authRoutes);
 
-  return c.json({ token: await issueToken(c.env, { userId: user_id, deviceId: device_id }) });
-});
-
-const authGuard: MiddlewareHandler<Ctx> = async (c, next) => {
-  // Checked before the token is even parsed. A malformed token would otherwise short out
-  // to 401 without consulting the key, telling an operator their token is bad when the
-  // real problem is that the server has no key at all.
-  if (!isAuthConfigured(c.env)) throw new AuthNotConfiguredError();
-
-  const token = bearer(c.req.header('Authorization'));
-  const me = token ? await verifyToken(c.env, token) : null;
-  if (!me) return c.json({ error: 'unauthorized' }, 401);
-  c.set('me', me);
-  await next();
-  return undefined;
-};
-
-// Everything below is scoped to the token holder. Every query filters on `me.userId`;
+// Everything below is scoped to the signed-in account. Every query filters on `me.userId`;
 // there is no code path that reads another user's rows.
-app.use('/v1/sessions/*', authGuard);
-app.use('/v1/sessions', authGuard);
-app.use('/v1/frames/*', authGuard);
-app.use('/v1/frames', authGuard);
-app.use('/v1/usage', authGuard);
-app.use('/v1/data', authGuard);
-app.use('/v1/timeline', authGuard);
-app.use('/v1/scenes', authGuard);
-app.use('/mcp', authGuard);
+app.use('/v1/sessions/*', requireAuth);
+app.use('/v1/sessions', requireAuth);
+app.use('/v1/frames/*', requireAuth);
+app.use('/v1/frames', requireAuth);
+app.use('/v1/usage', requireAuth);
+app.use('/v1/data', requireAuth);
+app.use('/v1/timeline', requireAuth);
+app.use('/v1/scenes', requireAuth);
+app.use('/mcp', requireAuth);
 
 /**
  * MCP endpoint. Same device token as the REST API — an MCP client that can send an
@@ -399,7 +386,8 @@ export default {
   fetch: app.fetch,
   async scheduled(_evt: ScheduledController, env: Env): Promise<void> {
     const n = await prune(env);
-    console.log(`retention sweep removed ${n} frames`);
+    await pruneAuthTables(env);
+    console.log(`retention sweep removed ${n} frames; auth tables pruned`);
   },
 };
 

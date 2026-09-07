@@ -1,39 +1,18 @@
 import { ApiClient } from '@sr/storage';
-import { deviceId, userId } from './device.js';
-
-const TOKEN_KEY = 'sr.token';
 
 /**
  * Connect to the backend that served this page.
  *
  * Every request is a same-origin relative path — the Worker serves the UI at `/`, the API
- * at `/v1/*` and MCP at `/mcp`, so there is exactly one address and nothing for a user to
- * configure. There is no URL field and no enable switch: opening the app *is* connecting
- * to it, and a recording that has not reached the Worker is not stored anywhere.
+ * at `/v1/*` and MCP at `/mcp`, so there is one address and nothing to configure.
  *
- * The device token is kept in localStorage. That is not a data store — it is this
- * device's identity, and losing it would lock the user out of their own history on the
- * next reload rather than merely costing a cache. Accounts replace it in a later phase.
+ * There is no token to pass. The browser holds an HttpOnly session cookie it attaches
+ * automatically and script cannot read, so a scripting bug in this app cannot steal a
+ * login. Authentication is entirely the cookie's job; `ApiClient` sends credentials on
+ * every call and carries no bearer token of its own.
  */
 export async function connect(): Promise<ApiClient> {
-  const api = new ApiClient({ token: readToken() });
+  const api = new ApiClient({ token: null, credentials: 'same-origin' });
   await api.health();
-  if (!api.token) writeToken(await api.registerDevice(userId(), deviceId()));
   return api;
-}
-
-function readToken(): string | null {
-  try {
-    return localStorage.getItem(TOKEN_KEY);
-  } catch {
-    return null; // private mode: a fresh token is issued per page load
-  }
-}
-
-function writeToken(token: string): void {
-  try {
-    localStorage.setItem(TOKEN_KEY, token);
-  } catch {
-    /* private mode */
-  }
 }

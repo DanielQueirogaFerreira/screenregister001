@@ -8,6 +8,7 @@ import { bytes, clock } from '../lib/format.js';
 
 interface Props {
   store: CloudStore;
+  accountId: string;
   settings: CaptureSettings;
   uploads: UploadStatus | null;
   /** Set when uploads stopped; capture is paused until the user retries. */
@@ -22,7 +23,7 @@ const EMPTY: ProcessorStats = {
 };
 
 export function RecordView({
-  store, settings, uploads, stalled, onRetryUploads, onSettings, onSessionEnd,
+  store, accountId, settings, uploads, stalled, onRetryUploads, onSettings, onSessionEnd,
 }: Props) {
   const support = useMemo(detectSupport, []);
   const recorder = useRef<Recorder | null>(null);
@@ -62,7 +63,7 @@ export function RecordView({
 
   async function start() {
     setError(null);
-    const r = new Recorder(store, settings, {
+    const r = new Recorder(store, settings, accountId, {
       onStats: (s, a, b) => { setStats(s); setActivity(a); setBacklog(b); },
       onStored: (record, thumb) =>
         setLast((prev) => {

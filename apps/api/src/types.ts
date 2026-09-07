@@ -12,6 +12,13 @@ export interface Env {
    * from whatever else happens to be listening on a developer's machine.
    */
   ALLOW_LOCALHOST_ORIGINS?: string;
+  /**
+   * Transactional email, for verification and password reset. Both must be set before any
+   * mail is sent; with either missing the Worker logs the link instead and says so, rather
+   * than silently dropping the message.
+   */
+  RESEND_API_KEY?: string;
+  MAIL_FROM?: string;
 }
 
 export interface Principal {

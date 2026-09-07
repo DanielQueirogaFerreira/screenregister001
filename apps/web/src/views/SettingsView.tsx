@@ -3,12 +3,17 @@ import { DEFAULT_SETTINGS, validateSettings, withSensitivity, type CaptureSettin
 import type { CloudStore, UploadStatus, UsageInfo } from '@sr/storage';
 import { bytes, day } from '../lib/format.js';
 import { CloudStatusPanel } from './CloudStatusPanel.js';
+import { AccountPanel } from './AccountPanel.js';
+import type { Account } from '../lib/auth.js';
 
 interface Props {
   store: CloudStore;
   settings: CaptureSettings;
   usage: UsageInfo | null;
   uploads: UploadStatus | null;
+  account: Account;
+  emailConfigured: boolean;
+  onSignedOut: () => void;
   onSettings: (s: CaptureSettings) => void;
   onChanged: () => void;
 }
@@ -30,7 +35,7 @@ function Num({
 }
 
 export function SettingsView({
-  store, settings, usage, uploads, onSettings, onChanged,
+  store, settings, usage, uploads, account, emailConfigured, onSignedOut, onSettings, onChanged,
 }: Props) {
   const [busy, setBusy] = useState(false);
   const errors = validateSettings(settings);
@@ -141,6 +146,13 @@ export function SettingsView({
         </div>
 
         <CloudStatusPanel status={uploads} />
+
+        <AccountPanel
+          account={account}
+          emailConfigured={emailConfigured}
+          onSignedOut={onSignedOut}
+          onEraseRecordings={() => store.eraseAll()}
+        />
 
         <div className="panel" style={{ marginTop: 14 }}>
           <h3 style={{ marginTop: 0 }}>Privacy</h3>

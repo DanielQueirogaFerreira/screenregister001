@@ -1,7 +1,7 @@
 import { ulid, type CaptureSettings, type FrameRecord, type SessionRecord } from '@sr/schema';
 import type { ProcessorStats, ActivityPoint } from '@sr/core';
 import { sha256Hex, type FrameStore } from '@sr/storage';
-import { deviceId, userId } from '../lib/device.js';
+import { deviceId } from '../lib/device.js';
 import type { FromWorker, ToWorker } from './protocol.js';
 
 export interface RecorderEvents {
@@ -61,6 +61,12 @@ export class Recorder {
   constructor(
     private store: FrameStore,
     private settings: CaptureSettings,
+    /**
+     * The signed-in account. The server stamps ownership from the session cookie
+     * regardless of what is sent, so this is for the local record only — but sending the
+     * right value keeps the in-memory session object honest.
+     */
+    private accountId: string,
     private events: RecorderEvents = {},
   ) {}
 
@@ -110,7 +116,7 @@ export class Recorder {
 
     this.session = {
       session_id: ulid(),
-      user_id: userId(),
+      user_id: this.accountId,
       device_id: deviceId(),
       started_at: this.startedIso,
       ended_at: null,
