@@ -41,6 +41,22 @@ export interface HealthReport {
 }
 
 /** Thin client over the Worker API. Deliberately dumb — retry policy lives in UploadQueue. */
+/** A recording that is happening right now, as the server sees it. */
+export interface LiveSessionRow {
+  session_id: string;
+  device_id: string;
+  started_at: string;
+  last_seen_at: string;
+  capture_fps: number;
+  sensitivity: number;
+  screen_w: number;
+  screen_h: number;
+  frames_stored: number;
+  bytes_stored: number;
+  label: string | null;
+  stop_requested: boolean;
+}
+
 export class ApiClient {
   constructor(private config: ApiConfig) {}
 
@@ -119,6 +135,28 @@ export class ApiClient {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ hold_ms: holdMs }),
+    });
+  }
+
+  /** "Still recording." Returns any stop asked for from another device. */
+  heartbeat(
+    sessionId: string, counts: { frames_stored: number; bytes_stored: number },
+  ): Promise<{ ok: boolean; stop_requested?: boolean }> {
+    return this.request(`/v1/sessions/${encodeURIComponent(sessionId)}/heartbeat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(counts),
+    });
+  }
+
+  /** What this account is recording right now, on any device including this one. */
+  liveSessions(): Promise<{ sessions: LiveSessionRow[]; live_window_ms: number }> {
+    return this.request('/v1/sessions/live');
+  }
+
+  requestStop(sessionId: string): Promise<{ ok: boolean }> {
+    return this.request(`/v1/sessions/${encodeURIComponent(sessionId)}/request-stop`, {
+      method: 'POST',
     });
   }
 

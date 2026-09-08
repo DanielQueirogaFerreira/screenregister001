@@ -18,6 +18,8 @@ export interface MeResponse {
   user: Account;
   scope: 'read' | 'write';
   email_configured: boolean;
+  /** Resolved from the Worker's ADMIN_EMAILS on every call; never stored client-side. */
+  is_admin: boolean;
 }
 
 export class AuthError extends Error {

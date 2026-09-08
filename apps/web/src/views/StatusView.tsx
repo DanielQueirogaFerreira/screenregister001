@@ -358,7 +358,9 @@ export function StatusView() {
       <header>
         <h1>ScreenRegister <span>· status</span></h1>
         <nav>
-          <a href="/" className="linkish">Open the recorder</a>
+          {/* Styled as a button rather than a link: this is the way back, and on a phone
+              a text link tucked in the header is easy to miss entirely. */}
+          <a href="/" className="button-link">&larr; Back to the recorder</a>
         </nav>
       </header>
 

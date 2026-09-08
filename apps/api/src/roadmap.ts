@@ -102,6 +102,19 @@ export const ROADMAP: Phase[] = [
   },
   {
     id: 7,
+    title: 'Multi-device and operations',
+    status: 'done',
+    summary: 'A recording is visible from any browser signed in as its owner, and operable.',
+    items: [
+      { text: 'Heartbeat, so a live capture is distinguishable from an abandoned row', done: true },
+      { text: 'Live recordings visible across devices for the same account', done: true },
+      { text: 'Stop asked for from one device, collected by the recording one', done: true },
+      { text: 'Operator view of every account\u2019s recordings, with an audit log', done: true },
+      { text: 'Operator access from a Worker variable, never a database role', done: true },
+    ],
+  },
+  {
+    id: 8,
     title: 'Enrichment',
     status: 'planned',
     summary: 'Turn "download 400 screenshots" into "search text, fetch three images".',
@@ -115,7 +128,7 @@ export const ROADMAP: Phase[] = [
     ],
   },
   {
-    id: 8,
+    id: 9,
     title: 'Native mobile capture',
     status: 'planned',
     summary: 'iOS and Android, posting to the same ingest contract.',

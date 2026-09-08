@@ -11,12 +11,13 @@ import { AuthView } from './views/AuthView.js';
 import { RecordView } from './views/RecordView.js';
 import { LibraryView } from './views/LibraryView.js';
 import { PlayerView } from './views/PlayerView.js';
+import { AdminView } from './views/AdminView.js';
 import { InspectView } from './views/InspectView.js';
 import { SettingsView } from './views/SettingsView.js';
 import { VersionBadge } from './views/VersionBadge.js';
 import { StatusView } from './views/StatusView.js';
 
-type Tab = 'record' | 'library' | 'inspect' | 'settings';
+type Tab = 'record' | 'library' | 'inspect' | 'settings' | 'admin';
 
 export function App() {
   // The status page is deliberately outside the auth gate, and checked before any of it
@@ -36,6 +37,7 @@ export function App() {
 function RecorderApp() {
   const [account, setAccount] = useState<Account | null>(null);
   const [emailConfigured, setEmailConfigured] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [checkingAuth, setCheckingAuth] = useState(true);
 
   const [store, setStore] = useState<CloudStore | null>(null);
@@ -74,6 +76,7 @@ function RecorderApp() {
   if (sessionsRef.current === null) sessionsRef.current = new CaptureSessions(settings);
   const sessions = sessionsRef.current;
   const live = useSyncExternalStore(sessions.subscribe, sessions.getSnapshot);
+  const remote = useSyncExternalStore(sessions.subscribe, sessions.getRemotes);
 
   const refreshUsage = useCallback(async (s: CloudStore) => {
     setUsage(await s.usage().catch(() => null));
@@ -88,6 +91,9 @@ function RecorderApp() {
         if (cancelled) return;
         setAccount(me?.user ?? null);
         setEmailConfigured(me?.email_configured ?? false);
+        // Only decides whether to draw the tab. Every operator route re-checks it, so a
+        // client that lies to itself here gains nothing but an empty page.
+        setIsAdmin(me?.is_admin ?? false);
       } catch (err) {
         if (!cancelled) setBootError(err instanceof Error ? err.message : String(err));
       } finally {
@@ -139,6 +145,19 @@ function RecorderApp() {
       if (s) void refreshUsage(s);
     };
   }, [sessions, refreshUsage]);
+
+  /**
+   * The heartbeat and the live poll belong to the whole app, not to the Record tab.
+   *
+   * The case that has to work is a second browser that has just signed in and is recording
+   * nothing itself — which is exactly when it used to report that nothing was happening
+   * anywhere. It cannot learn otherwise without asking the server.
+   */
+  useEffect(() => {
+    if (!store) return;
+    sessions.attach(store);
+    return () => sessions.detach();
+  }, [store, sessions]);
 
   /**
    * Uploads have stopped, so every capture pauses — not just the one on screen.
@@ -226,7 +245,10 @@ function RecorderApp() {
           ScreenRegister <span>· 7-day screen memory</span>
         </h1>
         <nav>
-          {(['record', 'library', 'inspect', 'settings'] as Tab[]).map((t) => (
+          {([
+            'record', 'library', 'inspect', 'settings',
+            ...(isAdmin ? (['admin'] as Tab[]) : []),
+          ] as Tab[]).map((t) => (
             <button
               key={t}
               className={tab === t && !playing ? 'on' : ''}
@@ -239,36 +261,51 @@ function RecorderApp() {
               {/* Capture no longer stops when you leave this tab, so the tab has to say
                   so — an indicator that only appears on the screen it describes is not an
                   indicator. */}
-              {t === 'record' && live.length > 0 && (
+              {t === 'record' && live.length + remote.length > 0 && (
                 <span className="tab-live" aria-hidden="true">
-                  <span className={`dot ${live.some((x) => !x.paused) ? 'live' : ''}`} />
-                  {live.length > 1 && live.length}
+                  <span className={`dot ${live.some((x) => !x.paused) || remote.length > 0 ? 'live' : ''}`} />
+                  {live.length + remote.length > 1 && live.length + remote.length}
                 </span>
               )}
             </button>
           ))}
+          {/* The status page is a sibling route, not a tab: it is served outside the auth
+              gate and must stay reachable when signing in is the thing that is broken.
+              A plain link rather than a tab button says that. */}
+          <a className="linkish nav-link" href="/status">Status</a>
           <span className="who" title={account.email}>{account.email}</span>
           <button onClick={signOut}>Sign out</button>
         </nav>
       </header>
 
-      {live.length > 0 && tab !== 'record' && !playing && (
+      {live.length + remote.length > 0 && tab !== 'record' && !playing && (
         <div className="banner info recording-bar">
-          <span className={`dot ${live.some((x) => !x.paused) ? 'live' : ''}`} />
+          <span className={`dot ${live.some((x) => !x.paused) || remote.length > 0 ? 'live' : ''}`} />
           <b>
-            {live.length} screen{live.length === 1 ? '' : 's'} recording
+            {live.length + remote.length} screen
+            {live.length + remote.length === 1 ? '' : 's'} recording
+            {remote.length > 0 && (
+              <span style={{ fontWeight: 400, color: 'var(--dim)' }}>
+                {' '}({remote.length} on another device)
+              </span>
+            )}
           </b>
           <span style={{ color: 'var(--dim)' }}>
-            {live.reduce((n, x) => n + x.stats.stored, 0)} frames stored this session
+            {live.reduce((n, x) => n + x.stats.stored, 0)
+              + remote.reduce((n, x) => n + x.frames_stored, 0)} frames stored
           </span>
           <div className="row" style={{ marginLeft: 'auto' }}>
             <button onClick={() => setTab('record')}>Manage</button>
-            <button
-              onClick={() => sessions.setAllPaused(!live.every((x) => x.paused))}
-            >
-              {live.every((x) => x.paused) ? 'Resume all' : 'Pause all'}
-            </button>
-            <button className="danger" onClick={() => void sessions.stopAll()}>Stop all</button>
+            {live.length > 0 && (
+              <>
+                <button onClick={() => sessions.setAllPaused(!live.every((x) => x.paused))}>
+                  {live.every((x) => x.paused) ? 'Resume all' : 'Pause all'}
+                </button>
+                <button className="danger" onClick={() => void sessions.stopAll()}>
+                  Stop {live.length > 1 ? 'all here' : 'this one'}
+                </button>
+              </>
+            )}
           </div>
         </div>
       )}
@@ -335,6 +372,8 @@ function RecorderApp() {
           onInspect={inspect}
           onChanged={() => void refreshUsage(store)}
         />
+      ) : tab === 'admin' ? (
+        <AdminView />
       ) : tab === 'inspect' ? (
         <InspectView
           store={store}

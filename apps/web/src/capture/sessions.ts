@@ -1,6 +1,6 @@
 import type { ActivityPoint, ProcessorStats } from '@sr/core';
 import { encodeStamp, type CaptureSettings, type FrameRecord } from '@sr/schema';
-import type { CloudStore } from '@sr/storage';
+import type { CloudStore, LiveSessionRow } from '@sr/storage';
 import { Recorder } from './recorder.js';
 
 /**
@@ -34,6 +34,8 @@ export interface LiveSession {
   stats: ProcessorStats;
   activity: ActivityPoint[];
   backlog: number;
+  /** Summed from the frames actually stored, so the heartbeat reports a fact. */
+  bytes: number;
   /**
    * The most recent stored frame, with its stamp. The stamp is computed here rather than
    * in the view so it exists the moment the frame does — "transmit the metadata live"
@@ -51,13 +53,33 @@ interface Entry extends LiveSession {
   recorder: Recorder;
 }
 
+/**
+ * A capture running somewhere else — another browser, another machine — signed in as the
+ * same account. Read-only here: nothing outside the browser holding a screen-capture
+ * stream can release it, so the only control available is to ask.
+ */
+export interface RemoteSession extends LiveSessionRow {
+  remote: true;
+}
+
+/** How often to tell the server this capture is still going. Matches the server's window. */
+const HEARTBEAT_MS = 15_000;
+/** How often to ask what else is recording. Slower: it is a background fact, not a control. */
+const LIVE_POLL_MS = 10_000;
+
 export class CaptureSessions {
   private entries = new Map<string, Entry>();
   private listeners = new Set<() => void>();
   /** Rebuilt only when something changes, so useSyncExternalStore does not loop. */
   private snapshot: LiveSession[] = [];
   private ticker: number | null = null;
+  private beat: number | null = null;
+  private poll: number | null = null;
   private nextKey = 1;
+  private store: CloudStore | null = null;
+  /** Captures on other devices. Empty until the first poll answers. */
+  private remotes: RemoteSession[] = [];
+  private remoteSnapshot: RemoteSession[] = [];
 
   constructor(private settings: CaptureSettings) {}
 
@@ -67,6 +89,10 @@ export class CaptureSessions {
   };
 
   getSnapshot = (): LiveSession[] => this.snapshot;
+
+  /** Recordings on other devices. Separate from the local snapshot because they are not
+   *  the same kind of thing: these cannot be paused, and their controls are requests. */
+  getRemotes = (): RemoteSession[] => this.remoteSnapshot;
 
   get anyRunning(): boolean {
     return this.snapshot.some((s) => s.running);
@@ -101,7 +127,83 @@ export class CaptureSessions {
 
   private flush(): void {
     this.snapshot = [...this.entries.values()].map(({ recorder: _r, ...rest }) => ({ ...rest }));
+    // Anything this browser is recording is already in the local snapshot with live stats;
+    // showing it twice, once as a "remote", would be wrong and confusing.
+    const mine = new Set(this.snapshot.map((s) => s.sessionId));
+    this.remoteSnapshot = this.remotes.filter((r) => !mine.has(r.session_id));
     for (const fn of this.listeners) fn();
+  }
+
+  /**
+   * Start watching what else is recording, and keep this browser's own captures alive.
+   *
+   * Called once the store exists. The poll runs whether or not this browser is recording:
+   * the case that has to work is a second browser that has just signed in and is recording
+   * nothing itself, which is precisely when it reported that nothing was happening at all.
+   */
+  attach(store: CloudStore): void {
+    this.store = store;
+    if (this.poll === null) {
+      void this.refreshRemotes();
+      this.poll = setInterval(() => void this.refreshRemotes(), LIVE_POLL_MS);
+    }
+    if (this.beat === null) {
+      this.beat = setInterval(() => void this.sendHeartbeats(), HEARTBEAT_MS);
+    }
+  }
+
+  detach(): void {
+    if (this.poll !== null) { clearInterval(this.poll); this.poll = null; }
+    if (this.beat !== null) { clearInterval(this.beat); this.beat = null; }
+    this.store = null;
+    this.remotes = [];
+    this.publish(true);
+  }
+
+  private async refreshRemotes(): Promise<void> {
+    const store = this.store;
+    if (!store) return;
+    try {
+      const { sessions } = await store.liveSessions();
+      this.remotes = sessions.map((s) => ({ ...s, remote: true as const }));
+      this.publish(true);
+    } catch {
+      // A failed poll is not worth surfacing: the next one is ten seconds away, and an
+      // error banner for a background fact would be noise during an ordinary blip.
+    }
+  }
+
+  /**
+   * Tell the server each local capture is still going, and obey any stop asked for
+   * elsewhere.
+   *
+   * The stop arrives as a reply rather than a push because nothing outside this browser
+   * can release its capture stream — a remote control here can only ever be a request that
+   * this side chooses to honour.
+   */
+  private async sendHeartbeats(): Promise<void> {
+    const store = this.store;
+    if (!store) return;
+    for (const e of [...this.entries.values()]) {
+      if (!e.running || !e.sessionId) continue;
+      try {
+        const res = await store.heartbeat(e.sessionId, {
+          frames_stored: e.stats.stored,
+          bytes_stored: e.bytes,
+        });
+        if (res.stop_requested) await this.stop(e.key);
+      } catch {
+        // Losing a beat is not losing the recording. Capture continues locally and the
+        // frames still queue for upload; the session simply reads as stale elsewhere until
+        // the next beat lands.
+      }
+    }
+  }
+
+  /** Ask a capture running on another device to stop. */
+  async requestRemoteStop(sessionId: string): Promise<void> {
+    await this.store?.requestStop(sessionId);
+    await this.refreshRemotes();
   }
 
   /** One timer for every session, rather than one per view that happens to be mounted. */
@@ -145,6 +247,7 @@ export class CaptureSessions {
       stats: EMPTY_STATS,
       activity: [],
       backlog: 0,
+      bytes: 0,
       last: null,
       error: null,
       recorder: null as unknown as Recorder,
@@ -163,6 +266,7 @@ export class CaptureSessions {
         // One blob URL is alive per session at a time; a long recording would otherwise
         // leak one per stored frame.
         if (e.last) URL.revokeObjectURL(e.last.url);
+        e.bytes += record.bytes;
         e.last = { record, url: URL.createObjectURL(thumb), stamp: '' };
         this.publish();
         // Hashing is async, so the frame appears immediately and its stamp lands a tick
@@ -209,6 +313,9 @@ export class CaptureSessions {
     entry.label = entry.recorder.surfaceLabel;
     this.ensureTicker();
     this.publish(true);
+    // Beat immediately rather than waiting up to fifteen seconds: a recording that another
+    // device cannot see for a quarter of a minute looks like the bug this replaces.
+    void this.sendHeartbeats();
   }
 
   /** Called after a session closes, so the app can refresh stored usage. */

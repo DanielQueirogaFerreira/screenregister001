@@ -336,6 +336,73 @@ jobs:
           [ "$code" = "400" ] || fail "a malformed stamp returned HTTP $code, expected 400"
 
           echo
+          echo "--- a live recording is visible to a second sign-in"
+          # The bug this covers: capture lives in browser memory, so a second browser
+          # signed in as the same person saw nothing and reported that nothing was
+          # recording. Only the server can carry that fact between two devices, and only a
+          # heartbeat can tell a running capture from an abandoned row.
+          curl -fsS -b "$JAR" "$BASE/v1/sessions/live" -o /tmp/live0.json \
+            || fail "/v1/sessions/live failed"
+          grep -q '"sessions":\[\]' /tmp/live0.json \
+            || fail "a session with no heartbeat is being reported as live"
+          echo "  before any heartbeat: nothing live, correctly"
+
+          curl -fsS -b "$JAR" -X POST "$BASE/v1/sessions/$SESSION_ID/heartbeat" \
+            -H 'Content-Type: application/json' -H "Origin: $BASE" \
+            -d '{"frames_stored":7,"bytes_stored":2048}' -o /tmp/hb.json \
+            || fail "heartbeat failed"
+          cat /tmp/hb.json; echo
+
+          # JAR2 is a separate sign-in — a different login session, as a second browser is.
+          curl -fsS -b "$JAR2" "$BASE/v1/sessions/live" -o /tmp/live1.json \
+            || fail "the second sign-in could not read live sessions"
+          python3 - <<PY || exit 1
+          import json
+          d = json.load(open('/tmp/live1.json'))
+          ids = [s['session_id'] for s in d['sessions']]
+          print('  second sign-in sees:', ids)
+          assert '$SESSION_ID' in ids, 'the second sign-in cannot see the live recording'
+          s = next(x for x in d['sessions'] if x['session_id'] == '$SESSION_ID')
+          assert s['frames_stored'] == 7, f"counts did not carry: {s['frames_stored']}"
+          assert s['stop_requested'] is False
+          PY
+
+          echo "  a stop asked for from the second sign-in reaches the first"
+          curl -fsS -b "$JAR2" -X POST "$BASE/v1/sessions/$SESSION_ID/request-stop" \
+            -H "Origin: $BASE" -o /dev/null || fail "request-stop failed"
+          curl -fsS -b "$JAR" -X POST "$BASE/v1/sessions/$SESSION_ID/heartbeat" \
+            -H 'Content-Type: application/json' -H "Origin: $BASE" \
+            -d '{"frames_stored":8,"bytes_stored":2048}' -o /tmp/hb2.json || fail "heartbeat failed"
+          grep -q '"stop_requested":true' /tmp/hb2.json \
+            || fail "the recording device was not told to stop"
+          echo "  the recording side collects the stop on its next beat"
+
+          echo
+          echo "--- the operator surface is closed to an ordinary account"
+          # A 404 rather than a 403: whether this deployment has an operator surface at all
+          # is not something a signed-in stranger needs confirmed.
+          for path in /v1/admin/overview /v1/admin/users /v1/admin/events; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR" "$BASE$path")
+            [ "$code" = "404" ] || fail "$path returned HTTP $code to a non-admin, expected 404"
+            echo "  $path -> 404"
+          done
+          code=$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR" -X DELETE \
+            -H "Origin: $BASE" "$BASE/v1/admin/sessions/$SESSION_ID")
+          [ "$code" = "404" ] || fail "a non-admin could reach the admin delete (HTTP $code)"
+          echo "  admin delete -> 404"
+          # And the session it tried to delete is still there.
+          curl -fsS -b "$JAR" "$BASE/v1/sessions/$SESSION_ID/frames" -o /tmp/still.json \
+            || fail "the session vanished after a refused admin delete"
+          grep -q "$FRAME_ID" /tmp/still.json \
+            || fail "a refused admin delete removed frames anyway"
+          echo "  and the frames it targeted are untouched"
+
+          echo "  /v1/auth/me does not claim admin for an ordinary account"
+          curl -fsS -b "$JAR" "$BASE/v1/auth/me" -o /tmp/me2.json || fail "/v1/auth/me failed"
+          grep -q '"is_admin":false' /tmp/me2.json \
+            || fail "an ordinary account is being told it is an admin"
+
+          echo
           echo "--- clean up: delete the throwaway account"
           curl -fsS -b "$JAR" -X DELETE "$BASE/v1/account" -H "Origin: $BASE" -o /tmp/del.json \
             || fail "account deletion failed"

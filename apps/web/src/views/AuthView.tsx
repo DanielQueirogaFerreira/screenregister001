@@ -196,6 +196,12 @@ export function AuthView({ onSignedIn }: Props) {
             </button>
           )}
         </div>
+
+        {/* Being unable to sign in is the commonest reason to want the status page, and
+            it is the one screen that could not previously reach it. */}
+        <div className="hint" style={{ marginTop: 12, textAlign: 'center' }}>
+          Trouble signing in? <a className="linkish" href="/status">Check service status</a>
+        </div>
       </div>
     </div>
   );

@@ -21,6 +21,13 @@ export interface Env {
    */
   RESEND_API_KEY?: string;
   MAIL_FROM?: string;
+  /**
+   * Comma-separated addresses allowed operator access.
+   *
+   * A Worker variable rather than a column on purpose — see admin.ts. Unset means nobody
+   * is an admin, which is the correct default for a deployment nobody has configured.
+   */
+  ADMIN_EMAILS?: string;
 }
 
 export interface Principal {

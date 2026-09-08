@@ -2,9 +2,9 @@ import { useMemo, useState, useSyncExternalStore } from 'react';
 import type { CaptureSettings } from '@sr/schema';
 import { withSensitivity } from '@sr/schema';
 import type { CloudStore, UploadStatus } from '@sr/storage';
-import type { CaptureSessions, LiveSession } from '../capture/sessions.js';
+import type { CaptureSessions, LiveSession, RemoteSession } from '../capture/sessions.js';
 import { detectSupport } from '../capture/recorder.js';
-import { bytes, clock } from '../lib/format.js';
+import { bytes, clock, duration } from '../lib/format.js';
 
 interface Props {
   store: CloudStore;
@@ -109,12 +109,59 @@ function SessionCard({
   );
 }
 
+/**
+ * A capture running on another browser or machine, signed in as this account.
+ *
+ * Deliberately not shaped like the local card. It has no Pause, no live activity graph and
+ * no preview, because none of those exist here — the frames are being decided somewhere
+ * else. Pretending otherwise would be a control that does nothing. The one thing that can
+ * be done is to ask it to stop, and the wording says it is a request.
+ */
+function RemoteCard({ live, onRequestStop }: { live: RemoteSession; onRequestStop: () => void }) {
+  const runningFor = Date.now() - Date.parse(live.started_at);
+  const seenAgo = Date.now() - Date.parse(live.last_seen_at);
+
+  return (
+    <div className="panel remote-card" style={{ marginBottom: 14 }}>
+      <div className="row" style={{ marginBottom: 10 }}>
+        <span className="dot live" />
+        <b>Recording on another device</b>
+        <span className="surface" title={live.device_id}>
+          <code>{live.device_id.replace(/^dev_/, '').slice(0, 8)}</code>
+        </span>
+        <span style={{ color: 'var(--dim)' }}>{duration(runningFor)}</span>
+        <div className="row" style={{ marginLeft: 'auto' }}>
+          <button className="danger" disabled={live.stop_requested} onClick={onRequestStop}>
+            {live.stop_requested ? 'Stop requested…' : 'Ask it to stop'}
+          </button>
+        </div>
+      </div>
+
+      <div className="stats">
+        <div className="stat"><b>{live.frames_stored}</b><span>stored</span></div>
+        <div className="stat"><b>{bytes(live.bytes_stored)}</b><span>uploaded</span></div>
+        <div className="stat"><b>{live.capture_fps}</b><span>FPS</span></div>
+        <div className="stat"><b>{live.screen_w}×{live.screen_h}</b><span>screen</span></div>
+      </div>
+
+      <div className="hint" style={{ marginTop: 10 }}>
+        Started {clock(live.started_at)} · reported in {Math.round(seenAgo / 1000)}s ago.
+        {live.stop_requested
+          ? ' It stops on its next heartbeat.'
+          : ' Stopping is a request: only the browser holding the screen-capture stream can'
+            + ' release it, so it acts on this within a few seconds.'}
+      </div>
+    </div>
+  );
+}
+
 export function RecordView({
   store, sessions, accountId, settings, uploads, stalled, onRetryUploads, onSettings,
 }: Props) {
   const support = useMemo(detectSupport, []);
   const [error, setError] = useState<string | null>(null);
   const live = useSyncExternalStore(sessions.subscribe, sessions.getSnapshot);
+  const remote = useSyncExternalStore(sessions.subscribe, sessions.getRemotes);
 
   async function addScreen() {
     setError(null);
@@ -155,19 +202,31 @@ export function RecordView({
             </button>
           )}
           <span style={{ color: 'var(--dim)' }}>
-            {live.length === 0 ? support.reason
-              : `${live.length} capture${live.length === 1 ? '' : 's'} running`}
+            {live.length === 0 && remote.length === 0 ? support.reason
+              : [
+                  live.length > 0 && `${live.length} here`,
+                  remote.length > 0 && `${remote.length} on another device`,
+                ].filter(Boolean).join(' · ')}
           </span>
         </div>
 
-        {live.length === 0 ? (
+        {remote.map((r) => (
+          <RemoteCard
+            key={r.session_id}
+            live={r}
+            onRequestStop={() => void sessions.requestRemoteStop(r.session_id)}
+          />
+        ))}
+
+        {live.length === 0 && remote.length === 0 ? (
           <div className="panel">
             <div className="empty">
               Nothing is being captured.
               <div className="hint" style={{ marginTop: 8 }}>
                 Each screen or window you share becomes its own recording, and they run at
                 the same time — the browser asks separately for each one, so nothing is
-                captured that you have not explicitly picked.
+                captured that you have not explicitly picked. A capture running in another
+                browser signed in as you appears here too, within a few seconds.
               </div>
             </div>
           </div>

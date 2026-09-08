@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { cors } from 'hono/cors';
 import type { Env, Principal } from './types.js';
 import { AuthNotConfiguredError, isAuthConfigured } from './auth.js';
@@ -9,6 +9,9 @@ import { buildStatus, pruneStatusTables, recordProbes, runProbes } from './statu
 import { handleMcp } from './mcp.js';
 import { buildScenes, listFrames, resolveWindow } from './queries.js';
 import { StampError, decodeStamp } from '@sr/schema';
+import {
+  HEARTBEAT_INTERVAL_MS, LIVE_WINDOW_MS, adminAudit, liveCutoff, resolveAdmin,
+} from './admin.js';
 import { OPENAPI } from './openapi.js';
 
 type Ctx = { Bindings: Env; Variables: { me: Principal; scope: 'read' | 'write'; sessionHash?: string } };
@@ -110,6 +113,124 @@ app.get('/v1/status', async (c) => {
   return c.json(payload);
 });
 
+/**
+ * Operator routes.
+ *
+ * Every one of these resolves the admin from ADMIN_EMAILS on the way in — there is no
+ * middleware that sets a flag once and no role on the request context, because a
+ * capability this large should be re-established at the point of use rather than carried
+ * around. An unauthorised caller gets 404 rather than 403: whether this deployment has an
+ * admin surface at all is not something a signed-in stranger needs confirmed.
+ *
+ * There is deliberately no route here that returns frame images. See admin.ts.
+ */
+function adminOnly(
+  handler: (c: Context<Ctx>, admin: { userId: string; email: string }) => Promise<Response>,
+) {
+  return async (c: Context<Ctx>): Promise<Response> => {
+    const admin = await resolveAdmin(c.env, c.get('me').userId);
+    if (!admin) return c.json({ error: 'not_found' }, 404);
+    return handler(c, admin);
+  };
+}
+
+/** Totals, plus everything recording right now across every account. */
+app.get('/v1/admin/overview', adminOnly(async (c, admin) => {
+  const [totals, live, recent] = await Promise.all([
+    c.env.DB.prepare(
+      `SELECT (SELECT COUNT(*) FROM users WHERE disabled_at IS NULL) AS users,
+              (SELECT COUNT(*) FROM sessions) AS sessions,
+              (SELECT COUNT(*) FROM frames) AS frames,
+              (SELECT COALESCE(SUM(bytes), 0) FROM frames) AS bytes,
+              (SELECT COUNT(*) FROM frames WHERE redacted = 1) AS redacted_frames`,
+    ).first<Record<string, number>>(),
+
+    c.env.DB.prepare(
+      `SELECT s.session_id, s.user_id, u.email, s.device_id, s.started_at, s.last_seen_at,
+              s.frames_stored, s.bytes_stored, s.screen_w, s.screen_h, s.stop_requested_at
+         FROM sessions s JOIN users u ON u.user_id = s.user_id
+        WHERE s.ended_at IS NULL AND s.last_seen_at >= ?
+        ORDER BY s.started_at ASC`,
+    ).bind(liveCutoff()).all(),
+
+    c.env.DB.prepare(
+      `SELECT s.session_id, s.user_id, u.email, s.device_id, s.started_at, s.ended_at,
+              s.frames_stored, s.bytes_stored
+         FROM sessions s JOIN users u ON u.user_id = s.user_id
+        ORDER BY s.started_at DESC LIMIT 50`,
+    ).all(),
+  ]);
+
+  // Reading every account's recording list is itself worth a log line.
+  await adminAudit(c.env, c.req.raw, admin, 'view_overview');
+
+  return c.json({
+    totals,
+    live: live.results.map((r) => ({ ...r, stop_requested: Boolean(r.stop_requested_at) })),
+    recent: recent.results,
+    live_window_ms: LIVE_WINDOW_MS,
+  });
+}));
+
+/** Every account, with what it is actually using. */
+app.get('/v1/admin/users', adminOnly(async (c, admin) => {
+  const { results } = await c.env.DB.prepare(
+    `SELECT u.user_id, u.email, u.created_at, u.email_verified_at, u.disabled_at,
+            u.locked_until,
+            COUNT(DISTINCT s.session_id) AS sessions,
+            COALESCE(SUM(s.frames_stored), 0) AS frames,
+            COALESCE(SUM(s.bytes_stored), 0) AS bytes,
+            MAX(s.started_at) AS last_recording
+       FROM users u LEFT JOIN sessions s ON s.user_id = u.user_id
+      GROUP BY u.user_id ORDER BY u.created_at DESC LIMIT 500`,
+  ).all();
+  await adminAudit(c.env, c.req.raw, admin, 'view_users');
+  return c.json({ users: results });
+}));
+
+/**
+ * Ask any account's running capture to stop.
+ *
+ * The gentler of the two operator powers, and the one worth reaching for first: it ends a
+ * runaway recording without destroying what it has already stored.
+ */
+app.post('/v1/admin/sessions/:id/request-stop', adminOnly(async (c, admin) => {
+  const id = c.req.param('id');
+  const res = await c.env.DB.prepare(
+    `UPDATE sessions SET stop_requested_at = ? WHERE session_id = ? AND ended_at IS NULL`,
+  ).bind(new Date().toISOString(), id).run();
+  await adminAudit(c.env, c.req.raw, admin, 'request_stop', id,
+    res.meta.changes ? 'stop requested' : 'session was not recording');
+  if (!res.meta.changes) return c.json({ error: 'not_recording' }, 404);
+  return c.json({ ok: true, note: 'The recording device stops on its next heartbeat.' });
+}));
+
+/** Delete any account's session and its images. Irreversible, and logged with its size. */
+app.delete('/v1/admin/sessions/:id', adminOnly(async (c, admin) => {
+  const id = c.req.param('id');
+  const { results } = await c.env.DB.prepare(
+    `SELECT storage_key FROM frames WHERE session_id = ?`,
+  ).bind(id).all<{ storage_key: string }>();
+
+  await deleteObjects(c.env, results.map((r) => r.storage_key));
+  await c.env.DB.batch([
+    c.env.DB.prepare(`DELETE FROM frames WHERE session_id = ?`).bind(id),
+    c.env.DB.prepare(`DELETE FROM sessions WHERE session_id = ?`).bind(id),
+  ]);
+  await adminAudit(c.env, c.req.raw, admin, 'delete_session', id,
+    `${results.length} frame(s) deleted`);
+  return c.json({ ok: true, deleted: results.length });
+}));
+
+/** What operators have been doing. Visible to operators, which is the point of having it. */
+app.get('/v1/admin/events', adminOnly(async (c) => {
+  const { results } = await c.env.DB.prepare(
+    `SELECT at, actor_email, action, subject_id, detail, ip
+       FROM admin_events ORDER BY at DESC LIMIT 200`,
+  ).all();
+  return c.json({ events: results });
+}));
+
 /** Machine-readable description of this API, for clients that do not speak MCP. */
 app.get('/v1/openapi.json', (c) => c.json(OPENAPI(new URL(c.req.url).origin)));
 
@@ -136,6 +257,7 @@ app.use('/v1/usage', requireAuth);
 app.use('/v1/data', requireAuth);
 app.use('/v1/timeline', requireAuth);
 app.use('/v1/scenes', requireAuth);
+app.use('/v1/admin/*', requireAuth);
 app.use('/mcp', requireAuth);
 
 /**
@@ -164,6 +286,86 @@ app.put('/v1/sessions/:id', async (c) => {
     Number(s.frames_skipped ?? 0), Number(s.bytes_stored ?? 0), s.label ?? null,
   ).run();
   return c.json({ ok: true });
+});
+
+/**
+ * "Still recording." Sent every few seconds by the browser that holds the capture.
+ *
+ * This is the only thing that can distinguish a recording in progress from one whose
+ * browser was closed, crashed, or went to sleep — those are identical in the table
+ * otherwise, and stay identical forever. Liveness that decays on its own needs no cleanup
+ * process, and a cleanup process that has to be right is a cleanup process that will one
+ * day be wrong.
+ *
+ * The response carries back any stop asked for elsewhere. A remote stop cannot be pushed:
+ * nothing outside the recording browser can release its screen-capture stream, so the
+ * request is left here and the browser collects it on its next beat.
+ */
+app.post('/v1/sessions/:id/heartbeat', async (c) => {
+  const me = c.get('me');
+  const id = c.req.param('id');
+  const body = await c.req.json<{ frames_stored?: number; bytes_stored?: number }>()
+    .catch(() => ({} as { frames_stored?: number; bytes_stored?: number }));
+
+  // Counts come along for the ride so another device watching this session sees it grow.
+  // Scoped to the owner and to an unfinished session: a heartbeat must never resurrect a
+  // recording that has already been stopped.
+  const res = await c.env.DB.prepare(
+    `UPDATE sessions
+        SET last_seen_at = ?,
+            frames_stored = MAX(frames_stored, ?),
+            bytes_stored = MAX(bytes_stored, ?)
+      WHERE session_id = ? AND user_id = ? AND ended_at IS NULL`,
+  ).bind(
+    new Date().toISOString(),
+    Number(body.frames_stored ?? 0), Number(body.bytes_stored ?? 0),
+    id, me.userId,
+  ).run();
+
+  if (!res.meta.changes) return c.json({ ok: false, reason: 'not_recording' }, 404);
+
+  const row = await c.env.DB.prepare(
+    `SELECT stop_requested_at FROM sessions WHERE session_id = ? AND user_id = ?`,
+  ).bind(id, me.userId).first<{ stop_requested_at: string | null }>();
+
+  return c.json({
+    ok: true,
+    stop_requested: Boolean(row?.stop_requested_at),
+    interval_ms: HEARTBEAT_INTERVAL_MS,
+  });
+});
+
+/**
+ * What this account is recording right now, on any device.
+ *
+ * The client holds capture entirely in memory, so a second browser signed in as the same
+ * person has no other way to learn that the first one is recording — which is what made it
+ * report "nothing is being captured" while a capture was plainly running.
+ */
+app.get('/v1/sessions/live', async (c) => {
+  const { results } = await c.env.DB.prepare(
+    `SELECT session_id, device_id, started_at, last_seen_at, capture_fps, sensitivity,
+            screen_w, screen_h, frames_stored, bytes_stored, label, stop_requested_at
+       FROM sessions
+      WHERE user_id = ? AND ended_at IS NULL AND last_seen_at >= ?
+      ORDER BY started_at ASC`,
+  ).bind(c.get('me').userId, liveCutoff()).all();
+
+  return c.json({
+    sessions: results.map((r) => ({ ...r, stop_requested: Boolean(r.stop_requested_at) })),
+    live_window_ms: LIVE_WINDOW_MS,
+  });
+});
+
+/** Ask the browser holding this capture to stop it. Collected on its next heartbeat. */
+app.post('/v1/sessions/:id/request-stop', async (c) => {
+  const me = c.get('me');
+  const res = await c.env.DB.prepare(
+    `UPDATE sessions SET stop_requested_at = ?
+      WHERE session_id = ? AND user_id = ? AND ended_at IS NULL`,
+  ).bind(new Date().toISOString(), c.req.param('id'), me.userId).run();
+  if (!res.meta.changes) return c.json({ error: 'not_recording' }, 404);
+  return c.json({ ok: true, note: 'The recording device stops on its next heartbeat.' });
 });
 
 app.get('/v1/sessions', async (c) => {

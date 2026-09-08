@@ -75,6 +75,18 @@ export class CloudStore implements FrameStore {
     return (await this.api.listSessions()).sessions;
   }
 
+  heartbeat(sessionId: string, counts: { frames_stored: number; bytes_stored: number }) {
+    return this.api.heartbeat(sessionId, counts);
+  }
+
+  liveSessions() {
+    return this.api.liveSessions();
+  }
+
+  requestStop(sessionId: string) {
+    return this.api.requestStop(sessionId);
+  }
+
   async deleteSession(id: string): Promise<void> {
     await this.api.deleteSession(id);
   }
