@@ -18,6 +18,14 @@ on:
         description: 'How many requests to send'
         required: false
         default: '25'
+      method:
+        description: 'HTTP method'
+        required: false
+        default: 'GET'
+      body:
+        description: 'JSON body, for a POST. Never put a real password here — the run log is kept.'
+        required: false
+        default: '{}'
 
 jobs:
   diagnose:
@@ -30,11 +38,13 @@ jobs:
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
 
-      - name: Tail the Worker while hammering the endpoint
+      - name: Tail the Worker while provoking the failure
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           TARGET: ${{ inputs.path }}
           COUNT: ${{ inputs.count }}
+          METHOD: ${{ inputs.method }}
+          BODY: ${{ inputs.body }}
         working-directory: apps/api
         run: |
           set -uo pipefail
@@ -44,17 +54,23 @@ jobs:
           TAIL_PID=$!
           sleep 12   # let the tail session attach before generating traffic
 
-          echo "--- $COUNT requests to $TARGET"
+          echo "--- $COUNT x $METHOD $TARGET"
           : > /tmp/codes.txt
           for i in $(seq 1 "$COUNT"); do
-            # Cache-bust, so a 15s edge cache cannot hide an intermittent failure.
-            code=$(curl -s -o "/tmp/body_$i.txt" -w '%{http_code} %{time_total} %{size_download}' \
-              --max-time 30 "$BASE$TARGET?_cb=$i-$RANDOM" || echo "000 0 0")
+            if [ "$METHOD" = "GET" ]; then
+              code=$(curl -s -o "/tmp/body_$i.txt" -w '%{http_code} %{time_total}' \
+                --max-time 30 "$BASE$TARGET?_cb=$i-$RANDOM" || echo "000 0")
+            else
+              # Cache-busting is pointless on a POST; the body is what varies.
+              code=$(curl -s -o "/tmp/body_$i.txt" -w '%{http_code} %{time_total}' \
+                --max-time 30 -X "$METHOD" "$BASE$TARGET" \
+                -H 'Content-Type: application/json' -H "Origin: $BASE" \
+                -d "$BODY" || echo "000 0")
+            fi
             echo "$i $code" | tee -a /tmp/codes.txt
-            # Anything that is not a 200 is the thing we came for; print it in full.
             case "$code" in
-              200\ *) : ;;
-              *) echo "    body: $(head -c 400 "/tmp/body_$i.txt")" ;;
+              2*) : ;;
+              *) echo "    body: $(head -c 500 "/tmp/body_$i.txt")" ;;
             esac
             sleep 1
           done
@@ -62,10 +78,6 @@ jobs:
           echo
           echo "--- status code distribution"
           awk '{print $2}' /tmp/codes.txt | sort | uniq -c | sort -rn
-
-          echo
-          echo "--- slowest responses"
-          sort -k3 -rn /tmp/codes.txt | head -5
 
           sleep 10
           kill $TAIL_PID 2>/dev/null || true
@@ -98,7 +110,6 @@ jobs:
               outcome = e.get('outcome')
               exc = e.get('exceptions') or []
               logs = e.get('logs') or []
-              # An 'ok' request with nothing logged is noise; print the interesting ones.
               if outcome == 'ok' and not exc and not logs:
                   seen += 1
                   continue
@@ -107,10 +118,10 @@ jobs:
                     ' wall_ms:', (e.get('wallTime') or e.get('wall_time')))
               for ex in exc:
                   print('  EXCEPTION:', ex.get('name'), '-', ex.get('message'))
-                  for s in str(ex.get('stack') or '').splitlines()[:12]:
+                  for s in str(ex.get('stack') or '').splitlines()[:20]:
                       print('     ', s)
               for lg in logs:
                   msg = ' '.join(str(m) for m in (lg.get('message') or []))
-                  print(f"  {lg.get('level')}: {msg[:600]}")
+                  print(f"  {lg.get('level')}: {msg[:900]}")
           print(f'({seen} clean requests with no logs, not shown)')
           PY
