@@ -15,23 +15,57 @@
 
 const enc = new TextEncoder();
 
-const ALGORITHM = 'pbkdf2-sha256';
+const ALGORITHM = 'pbkdf2-sha256-chain';
 
 /**
- * OWASP's floor for PBKDF2-HMAC-SHA256 is 600,000, and that is what this uses.
+ * The Workers runtime refuses more than this in a single PBKDF2 call:
  *
- * Measured at ~108ms per hash on Node's WebCrypto; the Workers runtime is the same V8 and
- * BoringSSL, so expect the same order. Cloudflare's published CPU limits are **10ms per
- * request on Workers Free** and **30 seconds by default on Workers Paid**. So this cost is
- * comfortable on paid and impossible on free: a login on the free plan would die with
- * Error 1102, "Worker exceeded resource limits". Accounts therefore require the paid plan,
- * which is documented rather than worked around — lowering the work factor to fit 10ms
- * would mean roughly 50,000 iterations, an order of magnitude under the floor, and a
- * password database that is meaningfully cheaper to crack.
+ *   Pbkdf2 failed: iteration counts above 100000 are not supported (requested 600000).
  *
- * The cost is paid only on signup, login and password change. No read path hashes anything.
+ * Discovered in production, not locally — `workerd` under `wrangler dev` does **not**
+ * enforce the cap, so a full local end-to-end suite passed while every real signup
+ * returned 500. That divergence is the reason `probeKdf` exists in status.ts and why the
+ * test below asserts the per-call count rather than only the total.
  */
-export const DEFAULT_ITERATIONS = 600_000;
+export const MAX_ITERATIONS_PER_CALL = 100_000;
+
+/**
+ * OWASP's floor for PBKDF2-HMAC-SHA256. Above the platform's per-call cap, so it is
+ * reached by chaining instead.
+ */
+export const TOTAL_ITERATIONS = 600_000;
+
+export const ROUNDS = TOTAL_ITERATIONS / MAX_ITERATIONS_PER_CALL;
+
+/**
+ * Six chained PBKDF2 calls, each of 100,000 iterations, feeding one output into the next
+ * as the input key.
+ *
+ * The attacker's cost is what a work factor buys, and that is unchanged: recovering the
+ * password still requires 600,000 HMAC-SHA256 iterations per guess, because every round
+ * must be computed in order. It is not bit-identical to a single 600,000-iteration call —
+ * PBKDF2 XORs its internal chain — but it is the same amount of unavoidable serial work,
+ * which is the property being bought.
+ *
+ * Argon2id would be better on every axis and does not exist in this runtime. That remains
+ * the honest limitation; chaining recovers the iteration count, not the memory hardness.
+ */
+async function deriveChained(
+  password: string, salt: Uint8Array, perRound: number, rounds: number,
+): Promise<ArrayBuffer> {
+  let input: BufferSource = enc.encode(password);
+  let out: ArrayBuffer = new ArrayBuffer(0);
+  for (let i = 0; i < rounds; i++) {
+    const key = await crypto.subtle.importKey('raw', input, 'PBKDF2', false, ['deriveBits']);
+    out = await crypto.subtle.deriveBits(
+      { name: 'PBKDF2', hash: 'SHA-256', salt: salt as unknown as BufferSource, iterations: perRound },
+      key,
+      KEY_BITS,
+    );
+    input = out;
+  }
+  return out;
+}
 
 const SALT_BYTES = 16;
 const KEY_BITS = 256;
@@ -42,25 +76,15 @@ const b64 = (buf: ArrayBuffer): string =>
 const unb64 = (s: string): Uint8Array =>
   Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 
-async function derive(password: string, salt: Uint8Array, iterations: number): Promise<ArrayBuffer> {
-  const key = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, [
-    'deriveBits',
-  ]);
-  return crypto.subtle.deriveBits(
-    { name: 'PBKDF2', hash: 'SHA-256', salt: salt as unknown as BufferSource, iterations },
-    key,
-    KEY_BITS,
-  );
-}
-
-/** `pbkdf2-sha256$<iterations>$<salt-b64>$<digest-b64>` */
+/** `pbkdf2-sha256-chain$<rounds>x<iterationsPerRound>$<salt-b64>$<digest-b64>` */
 export async function hashPassword(
   password: string,
-  iterations: number = DEFAULT_ITERATIONS,
+  perRound: number = MAX_ITERATIONS_PER_CALL,
+  rounds: number = ROUNDS,
 ): Promise<string> {
   const salt = crypto.getRandomValues(new Uint8Array(SALT_BYTES));
-  const digest = await derive(password, salt, iterations);
-  return `${ALGORITHM}$${iterations}$${b64(salt.buffer as ArrayBuffer)}$${b64(digest)}`;
+  const digest = await deriveChained(password, salt, perRound, rounds);
+  return `${ALGORITHM}$${rounds}x${perRound}$${b64(salt.buffer as ArrayBuffer)}$${b64(digest)}`;
 }
 
 export interface VerifyResult {
@@ -77,8 +101,12 @@ export async function verifyPassword(password: string, stored: string): Promise<
   const parts = stored.split('$');
   if (parts.length !== 4 || parts[0] !== ALGORITHM) return { valid: false, needsRehash: false };
 
-  const iterations = Number(parts[1]);
-  if (!Number.isInteger(iterations) || iterations < 1) return { valid: false, needsRehash: false };
+  const [roundsRaw, perRoundRaw] = (parts[1] ?? '').split('x');
+  const rounds = Number(roundsRaw);
+  const perRound = Number(perRoundRaw);
+  if (!Number.isInteger(rounds) || rounds < 1 || !Number.isInteger(perRound) || perRound < 1) {
+    return { valid: false, needsRehash: false };
+  }
 
   let expected: Uint8Array;
   let salt: Uint8Array;
@@ -89,10 +117,10 @@ export async function verifyPassword(password: string, stored: string): Promise<
     return { valid: false, needsRehash: false };
   }
 
-  const actual = new Uint8Array(await derive(password, salt, iterations));
+  const actual = new Uint8Array(await deriveChained(password, salt, perRound, rounds));
   return {
     valid: timingSafeEqual(actual, expected),
-    needsRehash: iterations < DEFAULT_ITERATIONS,
+    needsRehash: rounds * perRound < TOTAL_ITERATIONS,
   };
 }
 

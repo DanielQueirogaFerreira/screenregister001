@@ -1,7 +1,7 @@
 import type { Env } from './types.js';
 import { isAuthConfigured } from './auth.js';
 import { mailConfigured } from './mailer.js';
-import { DEFAULT_ITERATIONS, hashPassword } from './password.js';
+import { TOTAL_ITERATIONS, hashPassword } from './password.js';
 import { ROADMAP, roadmapProgress } from './roadmap.js';
 
 /**
@@ -127,14 +127,14 @@ async function probeKdf(): Promise<ProbeResult> {
       latencyMs: ms,
       // The runtime's own words. Not sensitive: it describes a platform capability, and
       // no password, salt or digest is involved.
-      detail: `password hashing failed at ${DEFAULT_ITERATIONS} iterations: ${message(error)}`,
+      detail: `password hashing failed at ${TOTAL_ITERATIONS} iterations: ${message(error)}`,
     };
   }
   return {
     service: 'kdf',
     status: ms > SLOW_MS ? 'degraded' : 'up',
     latencyMs: ms,
-    detail: ms > SLOW_MS ? `slow: ${ms}ms for ${DEFAULT_ITERATIONS} iterations` : null,
+    detail: ms > SLOW_MS ? `slow: ${ms}ms for ${TOTAL_ITERATIONS} iterations` : null,
   };
 }
 
