@@ -1,4 +1,6 @@
 export interface Env {
+  /** The built client. Used to serve the app shell for client-side routes. */
+  ASSETS: Fetcher;
   FRAMES: R2Bucket;
   DB: D1Database;
   RETENTION_DAYS: string;

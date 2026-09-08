@@ -358,6 +358,26 @@ app.get('/v1/usage', async (c) => {
   return c.json(row ?? {});
 });
 
+/**
+ * Anything not matched above is a client-side route, so serve the app shell.
+ *
+ * `not_found_handling = "single-page-application"` alone does not do this. Cloudflare
+ * applies it only when there is no Worker, or when the Worker defers back through the
+ * assets binding — and this Worker answers first, so every unmatched path was reaching
+ * Hono and 404ing. That silently broke /status and the /verify and /reset links the
+ * account emails send.
+ *
+ * API paths keep their JSON 404: a client calling /v1/nonsense wants an error it can
+ * parse, not a page.
+ */
+app.notFound((c) => {
+  const { pathname } = new URL(c.req.url);
+  if (pathname.startsWith('/v1/') || pathname === '/mcp') {
+    return c.json({ error: 'not_found' }, 404);
+  }
+  return c.env.ASSETS.fetch(c.req.raw);
+});
+
 /** Must match the nightly entry in wrangler.toml's `crons`. */
 const RETENTION_CRON = '0 3 * * *';
 

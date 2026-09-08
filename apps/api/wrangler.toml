@@ -26,6 +26,10 @@ directory = "../web/dist"
 # /status, and the /verify and /reset links sent by email — misses the assets, falls
 # through to the Worker, and 404s. Serving index.html lets the app route them.
 not_found_handling = "single-page-application"
+# The binding is what makes not_found_handling reachable at all. Cloudflare only applies it
+# when there is no Worker, or when the Worker defers back via this binding — and there is a
+# Worker here, so without it every client-side route lands on Hono and 404s.
+binding = "ASSETS"
 
 [vars]
 RETENTION_DAYS = "7"
