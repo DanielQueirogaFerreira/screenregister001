@@ -1,6 +1,7 @@
 import type { Env } from './types.js';
 import { isAuthConfigured } from './auth.js';
 import { mailConfigured } from './mailer.js';
+import { DEFAULT_ITERATIONS, hashPassword } from './password.js';
 import { ROADMAP, roadmapProgress } from './roadmap.js';
 
 /**
@@ -109,9 +110,37 @@ function probeEmail(env: Env): ProbeResult {
   };
 }
 
+/**
+ * Can this Worker actually hash a password?
+ *
+ * Every other check here can pass while signup returns 500, because nothing else spends
+ * the key-derivation cost — which is exactly how a broken signup reached production. The
+ * runtime is the only authority on whether the configured work factor is permitted, so
+ * ask it, and put the answer where the dashboard can show it.
+ */
+async function probeKdf(): Promise<ProbeResult> {
+  const { ms, error } = await timed(() => hashPassword('probe-not-a-real-password'));
+  if (error) {
+    return {
+      service: 'kdf',
+      status: 'down',
+      latencyMs: ms,
+      // The runtime's own words. Not sensitive: it describes a platform capability, and
+      // no password, salt or digest is involved.
+      detail: `password hashing failed at ${DEFAULT_ITERATIONS} iterations: ${message(error)}`,
+    };
+  }
+  return {
+    service: 'kdf',
+    status: ms > SLOW_MS ? 'degraded' : 'up',
+    latencyMs: ms,
+    detail: ms > SLOW_MS ? `slow: ${ms}ms for ${DEFAULT_ITERATIONS} iterations` : null,
+  };
+}
+
 export async function runProbes(env: Env): Promise<ProbeResult[]> {
-  const [d1, r2] = await Promise.all([probeD1(env), probeR2(env)]);
-  return [d1, r2, probeAuth(env), probeEmail(env)];
+  const [d1, r2, kdf] = await Promise.all([probeD1(env), probeR2(env), probeKdf()]);
+  return [d1, r2, probeAuth(env), kdf, probeEmail(env)];
 }
 
 /** Record a probe pass. Failing to record must never take the Worker down with it. */

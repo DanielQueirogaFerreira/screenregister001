@@ -65,6 +65,7 @@ const TITLES: Record<string, string> = {
   d1: 'D1 — timeline & metadata',
   r2: 'R2 — frame images',
   auth: 'Authentication',
+  kdf: 'Password hashing',
   email: 'Transactional email',
 };
 
@@ -72,6 +73,7 @@ const DESCRIPTIONS: Record<string, string> = {
   d1: 'Read against a real table, so a missing migration shows up as a failure rather than passing.',
   r2: 'Writes an object, reads it back, compares the bytes, deletes it. A put that succeeds while the object is unreadable still counts as down.',
   auth: 'Whether the Worker holds a usable signing key. When this is down, every authenticated route returns 503.',
+  kdf: 'Runs a real password hash at the configured work factor. Everything else here can pass while signup still fails, because nothing else spends this cost.',
   email: 'Whether a mail provider is configured. Degraded rather than down: recording works, self-service password recovery does not.',
 };
 
