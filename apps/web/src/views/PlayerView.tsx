@@ -19,6 +19,23 @@ const FADE_MS = 80;
 const PREFETCH = 6;
 const CACHE_MAX = 48;
 
+/**
+ * Columns in the scrub bar, regardless of how many frames there are.
+ *
+ * The bar used to draw one element per frame at `flex: 1 0 1px` with a 1px gap. A session
+ * of 1,623 frames therefore demanded 3,200px it was not allowed to shrink below, so the
+ * track ran off the side of the window, took the page's horizontal scrollbar with it, and
+ * put most of the timeline somewhere you could not reach. Worse, the click handler divides
+ * by the element's width — which was the overflowed width — so seeking landed in the wrong
+ * place even for the part you could see.
+ *
+ * A fixed column count also fixes a second, quieter bug: the ticks were spaced by frame
+ * index while the playhead was positioned by elapsed time. Those are different axes
+ * whenever frames are unevenly spaced, which is always, so the highlighted tick and the
+ * playhead disagreed. Both are now positions on the same time axis.
+ */
+const TICKS = 240;
+
 export function PlayerView({ store, session, settings, onBack }: Props) {
   const [frames, setFrames] = useState<FrameRecord[]>([]);
   const [mode, setMode] = useState<Mode>('realtime');
@@ -32,6 +49,13 @@ export function PlayerView({ store, session, settings, onBack }: Props) {
   const playhead = useRef(0);
   const fadeFrom = useRef<{ bitmap: ImageBitmap; at: number } | null>(null);
   const drawnIndex = useRef(-1);
+  /**
+   * The playhead is written straight to the DOM from the animation loop. Driving it
+   * through state would mean a React render per frame, and the position only changed when
+   * the picture did — so during a long still the marker sat frozen while time ran on.
+   */
+  const headRef = useRef<HTMLDivElement>(null);
+  const trackRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     void (async () => {
@@ -61,6 +85,24 @@ export function PlayerView({ store, session, settings, onBack }: Props) {
     }
     return { starts, spans, total: acc };
   }, [frames, mode, settings.skipStillsOverMs]);
+
+  /** One column per slice of elapsed time, carrying the strongest change inside it. */
+  const ticks = useMemo(() => {
+    const height = new Float32Array(TICKS);
+    if (!timeline.total) return height;
+    frames.forEach((f, i) => {
+      const col = Math.min(
+        TICKS - 1,
+        Math.floor((timeline.starts[i]! / timeline.total) * TICKS),
+      );
+      height[col] = Math.max(height[col]!, f.change_score);
+    });
+    return height;
+  }, [frames, timeline]);
+
+  const currentTick = timeline.total
+    ? Math.min(TICKS - 1, Math.floor((timeline.starts[index]! / timeline.total) * TICKS))
+    : 0;
 
   const bitmapFor = useCallback(
     async (f: FrameRecord): Promise<ImageBitmap | null> => {
@@ -150,6 +192,10 @@ export function PlayerView({ store, session, settings, onBack }: Props) {
         drawnIndex.current = i;
         setIndex(i);
       }
+      if (headRef.current) {
+        const at = timeline.total ? (playhead.current / timeline.total) * 100 : 0;
+        headRef.current.style.left = `${at}%`;
+      }
       void paint(i);
       raf = requestAnimationFrame(tick);
     };
@@ -158,9 +204,22 @@ export function PlayerView({ store, session, settings, onBack }: Props) {
     return () => cancelAnimationFrame(raf);
   }, [frames, playing, speed, timeline, paint]);
 
-  const seek = (ms: number) => {
+  const seek = useCallback((ms: number) => {
     playhead.current = Math.max(0, Math.min(timeline.total, ms));
-  };
+  }, [timeline.total]);
+
+  /**
+   * Pointer events rather than click, so dragging scrubs and a finger works the same as a
+   * mouse. Capturing the pointer keeps the drag alive when it leaves the bar, which on a
+   * 40px-tall control on a phone is most of the time.
+   */
+  const scrubTo = useCallback((clientX: number) => {
+    const el = trackRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const fraction = Math.max(0, Math.min(1, (clientX - r.left) / r.width));
+    seek(fraction * timeline.total);
+  }, [seek, timeline.total]);
 
   if (loading) return <div className="panel"><div className="empty">Loading frames…</div></div>;
   if (frames.length === 0) {
@@ -205,24 +264,41 @@ export function PlayerView({ store, session, settings, onBack }: Props) {
       </div>
 
       <div
+        ref={trackRef}
         className="track"
-        onClick={(e) => {
-          const r = e.currentTarget.getBoundingClientRect();
-          seek(((e.clientX - r.left) / r.width) * timeline.total);
+        role="slider"
+        tabIndex={0}
+        aria-label="Playback position"
+        aria-valuemin={0}
+        aria-valuemax={Math.round(timeline.total)}
+        aria-valuenow={Math.round(playhead.current)}
+        aria-valuetext={`${clock(current.captured_at)}, frame ${index + 1} of ${frames.length}`}
+        onPointerDown={(e) => {
+          e.currentTarget.setPointerCapture(e.pointerId);
+          scrubTo(e.clientX);
+        }}
+        onPointerMove={(e) => {
+          if (e.currentTarget.hasPointerCapture(e.pointerId)) scrubTo(e.clientX);
+        }}
+        onKeyDown={(e) => {
+          const step = timeline.total / 50;
+          if (e.key === 'ArrowLeft') seek(playhead.current - step);
+          else if (e.key === 'ArrowRight') seek(playhead.current + step);
+          else if (e.key === 'Home') seek(0);
+          else if (e.key === 'End') seek(timeline.total);
+          else if (e.key === ' ') setPlaying((p) => !p);
+          else return;
+          e.preventDefault();
         }}
       >
-        {frames.map((f, i) => (
+        {Array.from(ticks, (score, i) => (
           <i
-            key={f.frame_id}
-            className={i === index ? 'on' : ''}
-            title={`${clock(f.captured_at)} · ${f.reason} · held ${duration(f.hold_ms ?? 0)}`}
-            style={{ height: `${Math.max(8, Math.min(100, f.change_score * 160))}%` }}
+            key={i}
+            className={i === currentTick ? 'on' : ''}
+            style={{ height: `${Math.max(8, Math.min(100, score * 160))}%` }}
           />
         ))}
-        <div
-          className="head"
-          style={{ left: `${timeline.total ? (playhead.current / timeline.total) * 100 : 0}%` }}
-        />
+        <div ref={headRef} className="head" style={{ left: 0 }} />
       </div>
 
       <div className="row" style={{ marginTop: 12 }}>

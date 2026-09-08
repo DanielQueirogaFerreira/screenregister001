@@ -1,13 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import type { CaptureSettings, FrameRecord } from '@sr/schema';
+import { useMemo, useState, useSyncExternalStore } from 'react';
+import type { CaptureSettings } from '@sr/schema';
 import { withSensitivity } from '@sr/schema';
-import type { ActivityPoint, ProcessorStats } from '@sr/core';
 import type { CloudStore, UploadStatus } from '@sr/storage';
-import { Recorder, detectSupport } from '../capture/recorder.js';
+import type { CaptureSessions, LiveSession } from '../capture/sessions.js';
+import { detectSupport } from '../capture/recorder.js';
 import { bytes, clock } from '../lib/format.js';
 
 interface Props {
   store: CloudStore;
+  sessions: CaptureSessions;
   accountId: string;
   settings: CaptureSettings;
   uploads: UploadStatus | null;
@@ -15,79 +16,102 @@ interface Props {
   stalled: string | null;
   onRetryUploads: () => void;
   onSettings: (s: CaptureSettings) => void;
-  onSessionEnd: () => void;
 }
 
-const EMPTY: ProcessorStats = {
-  sampled: 0, stored: 0, skippedNoChange: 0, skippedTransient: 0, skippedBurstCap: 0,
-};
+function SessionCard({
+  live, onPause, onStop,
+}: {
+  live: LiveSession;
+  onPause: (paused: boolean) => void;
+  onStop: () => void;
+}) {
+  const perMin = live.elapsedSec > 0 ? (live.stats.stored / live.elapsedSec) * 60 : 0;
+  const kept = live.stats.sampled > 0 ? (live.stats.stored / live.stats.sampled) * 100 : 0;
+
+  return (
+    <div className="panel" style={{ marginBottom: 14 }}>
+      <div className="row" style={{ marginBottom: 14 }}>
+        <span className={`dot ${live.paused || !live.running ? '' : 'live'}`} />
+        <b>{live.paused ? 'Paused' : live.running ? 'Recording' : 'Starting…'}</b>
+        <span className="surface" title={live.label}>{live.label}</span>
+        <span style={{ color: 'var(--dim)' }}>
+          {Math.floor(live.elapsedSec / 60)}m {live.elapsedSec % 60}s
+        </span>
+        <div style={{ marginLeft: 'auto' }} className="row">
+          <button disabled={!live.running} onClick={() => onPause(!live.paused)}>
+            {live.paused ? 'Resume' : 'Pause'}
+          </button>
+          <button className="danger" disabled={!live.running} onClick={onStop}>Stop</button>
+        </div>
+      </div>
+
+      {live.error && <div className="banner bad">{live.error}</div>}
+      {live.backlog > 12 && (
+        <div className="banner warn">
+          Encoder is {live.backlog} frames behind — samples are being skipped to protect
+          memory. Lower the capture rate.
+        </div>
+      )}
+
+      <div className="stats">
+        <div className="stat"><b>{live.stats.stored}</b><span>stored</span></div>
+        <div className="stat"><b>{live.stats.sampled}</b><span>sampled</span></div>
+        <div className="stat"><b>{kept.toFixed(1)}%</b><span>kept</span></div>
+        <div className="stat"><b>{perMin.toFixed(1)}</b><span>frames/min</span></div>
+        <div className="stat"><b>{live.stats.skippedTransient}</b><span>transient</span></div>
+        <div className="stat"><b>{live.stats.skippedNoChange}</b><span>unchanged</span></div>
+      </div>
+
+      <div style={{ marginTop: 16 }}>
+        <div className="hint" style={{ marginBottom: 6 }}>
+          Change over time — blue marks a frame that was kept
+        </div>
+        <div className="spark">
+          {live.activity.slice(-160).map((a, i) => (
+            <i
+              key={i}
+              className={a.stored ? 'hit' : ''}
+              style={{ height: `${Math.max(4, Math.min(100, a.score * 100))}%` }}
+            />
+          ))}
+        </div>
+      </div>
+
+      {live.last && (
+        <div style={{ marginTop: 14 }}>
+          <div className="row" style={{ marginBottom: 10 }}>
+            <b>Last kept frame</b>
+            <span className={`tag ${live.last.record.reason}`}>{live.last.record.reason}</span>
+            <span style={{ color: 'var(--dim)' }}>{clock(live.last.record.captured_at)}</span>
+            <span style={{ marginLeft: 'auto', color: 'var(--dim)' }}>
+              {bytes(live.last.record.bytes)} · change{' '}
+              {(live.last.record.change_score * 100).toFixed(1)}%
+            </span>
+          </div>
+          <img className="shot" src={live.last.url} alt="most recently stored frame" />
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function RecordView({
-  store, accountId, settings, uploads, stalled, onRetryUploads, onSettings, onSessionEnd,
+  store, sessions, accountId, settings, uploads, stalled, onRetryUploads, onSettings,
 }: Props) {
   const support = useMemo(detectSupport, []);
-  const recorder = useRef<Recorder | null>(null);
-  const [running, setRunning] = useState(false);
-  const [paused, setPaused] = useState(false);
-  const [stats, setStats] = useState<ProcessorStats>(EMPTY);
-  const [activity, setActivity] = useState<ActivityPoint[]>([]);
-  const [backlog, setBacklog] = useState(0);
-  const [last, setLast] = useState<{ record: FrameRecord; url: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [elapsed, setElapsed] = useState(0);
+  const live = useSyncExternalStore(sessions.subscribe, sessions.getSnapshot);
 
-  // Keep the live recorder in step with the sliders, so tuning is immediate.
-  useEffect(() => recorder.current?.updateSettings(settings), [settings]);
-
-  useEffect(() => {
-    if (!running) return;
-    const t = window.setInterval(() => setElapsed((e) => e + 1), 1000);
-    return () => window.clearInterval(t);
-  }, [running]);
-
-  /**
-   * The cloud is the only store, so a frame that cannot be uploaded is a frame that is not
-   * recorded. Rather than let capture run on and quietly discard it, stop sampling and say
-   * so. The session stays open, so Retry resumes it where it left off.
-   */
-  useEffect(() => {
-    if (stalled && running) {
-      recorder.current?.setPaused(true);
-      setPaused(true);
-    }
-  }, [stalled, running]);
-
-  // Revoke the previous preview URL; without this a long session leaks one blob URL
-  // per stored frame.
-  useEffect(() => () => { if (last) URL.revokeObjectURL(last.url); }, [last]);
-
-  async function start() {
+  async function addScreen() {
     setError(null);
-    const r = new Recorder(store, settings, accountId, {
-      onStats: (s, a, b) => { setStats(s); setActivity(a); setBacklog(b); },
-      onStored: (record, thumb) =>
-        setLast((prev) => {
-          if (prev) URL.revokeObjectURL(prev.url);
-          return { record, url: URL.createObjectURL(thumb) };
-        }),
-      onStopped: () => { setRunning(false); setPaused(false); onSessionEnd(); },
-      onError: setError,
-    });
-    recorder.current = r;
     try {
-      await r.start();
-      setElapsed(0);
-      setStats(EMPTY);
-      setRunning(true);
+      await sessions.start(store, accountId);
     } catch (err) {
       // Cancelling the browser's own share picker lands here; that is not an error.
       const m = err instanceof Error ? err.message : String(err);
       if (!/Permission denied|NotAllowed/i.test(m)) setError(m);
     }
   }
-
-  const perMin = elapsed > 0 ? (stats.stored / elapsed) * 60 : 0;
-  const kept = stats.sampled > 0 ? (stats.stored / stats.sampled) * 100 : 0;
 
   return (
     <div className="grid cols">
@@ -100,83 +124,48 @@ export function RecordView({
             Cloudflare, so nothing is being captured while uploads are down.{' '}
             <button style={{ marginLeft: 8 }} onClick={() => {
               onRetryUploads();
-              recorder.current?.setPaused(false);
-              setPaused(false);
+              sessions.setAllPaused(false);
             }}>
               Retry &amp; resume
             </button>
           </div>
         )}
-        {backlog > 12 && (
-          <div className="banner warn">
-            Encoder is {backlog} frames behind — samples are being skipped to protect memory.
-            Lower the capture rate.
-          </div>
-        )}
 
-        <div className="panel">
-          <div className="row" style={{ marginBottom: 16 }}>
-            {running ? (
-              <>
-                <span className={`dot ${paused ? '' : 'live'}`} />
-                <b>{paused ? 'Paused' : 'Recording'}</b>
-                <span style={{ color: 'var(--dim)' }}>
-                  {Math.floor(elapsed / 60)}m {elapsed % 60}s
-                </span>
-                <div style={{ marginLeft: 'auto' }} className="row">
-                  <button onClick={() => { const p = !paused; setPaused(p); recorder.current?.setPaused(p); }}>
-                    {paused ? 'Resume' : 'Pause'}
-                  </button>
-                  <button className="danger" onClick={() => void recorder.current?.stop()}>Stop</button>
-                </div>
-              </>
-            ) : (
-              <>
-                <button className="primary" disabled={!support.supported} onClick={() => void start()}>
-                  Share screen &amp; record
-                </button>
-                <span style={{ color: 'var(--dim)' }}>{support.reason}</span>
-              </>
-            )}
-          </div>
-
-          <div className="stats">
-            <div className="stat"><b>{stats.stored}</b><span>stored</span></div>
-            <div className="stat"><b>{stats.sampled}</b><span>sampled</span></div>
-            <div className="stat"><b>{kept.toFixed(1)}%</b><span>kept</span></div>
-            <div className="stat"><b>{perMin.toFixed(1)}</b><span>frames/min</span></div>
-            <div className="stat"><b>{stats.skippedTransient}</b><span>transient</span></div>
-            <div className="stat"><b>{stats.skippedNoChange}</b><span>unchanged</span></div>
-          </div>
-
-          <div style={{ marginTop: 16 }}>
-            <div className="hint" style={{ marginBottom: 6 }}>
-              Change over time — blue marks a frame that was kept
-            </div>
-            <div className="spark">
-              {activity.slice(-160).map((a, i) => (
-                <i
-                  key={i}
-                  className={a.stored ? 'hit' : ''}
-                  style={{ height: `${Math.max(4, Math.min(100, a.score * 100))}%` }}
-                />
-              ))}
-            </div>
-          </div>
+        <div className="row" style={{ marginBottom: 14 }}>
+          <button className="primary" disabled={!support.supported} onClick={() => void addScreen()}>
+            {live.length === 0 ? 'Share screen & record' : 'Add another screen'}
+          </button>
+          {live.length > 1 && (
+            <button className="danger" onClick={() => void sessions.stopAll()}>
+              Stop all {live.length}
+            </button>
+          )}
+          <span style={{ color: 'var(--dim)' }}>
+            {live.length === 0 ? support.reason
+              : `${live.length} capture${live.length === 1 ? '' : 's'} running`}
+          </span>
         </div>
 
-        {last && (
-          <div className="panel" style={{ marginTop: 14 }}>
-            <div className="row" style={{ marginBottom: 10 }}>
-              <b>Last kept frame</b>
-              <span className={`tag ${last.record.reason}`}>{last.record.reason}</span>
-              <span style={{ color: 'var(--dim)' }}>{clock(last.record.captured_at)}</span>
-              <span style={{ marginLeft: 'auto', color: 'var(--dim)' }}>
-                {bytes(last.record.bytes)} · change {(last.record.change_score * 100).toFixed(1)}%
-              </span>
+        {live.length === 0 ? (
+          <div className="panel">
+            <div className="empty">
+              Nothing is being captured.
+              <div className="hint" style={{ marginTop: 8 }}>
+                Each screen or window you share becomes its own recording, and they run at
+                the same time — the browser asks separately for each one, so nothing is
+                captured that you have not explicitly picked.
+              </div>
             </div>
-            <img className="shot" src={last.url} alt="most recently stored frame" />
           </div>
+        ) : (
+          live.map((s) => (
+            <SessionCard
+              key={s.key}
+              live={s}
+              onPause={(p) => sessions.setPaused(s.key, p)}
+              onStop={() => void sessions.stop(s.key)}
+            />
+          ))
         )}
       </div>
 
@@ -206,7 +195,7 @@ export function RecordView({
           <div className="hint">
             How much must change before a frame is worth keeping. Now: a frame is kept once{' '}
             <code>{(settings.sceneThreshold * 100).toFixed(1)}%</code> of the screen moves.
-            Adjustable while recording.
+            Adjustable while recording, and applies to every capture at once.
           </div>
         </div>
 
@@ -225,7 +214,7 @@ export function RecordView({
         <div className="banner info" style={{ margin: 0 }}>
           Frames are processed in this browser and uploaded to Cloudflare, where they are
           kept for {store.retentionDays} days and then deleted. Nothing durable is stored
-          in the browser.
+          in the browser. Recording continues while you use the Library and Settings tabs.
           {uploads && (
             <>
               {' '}Right now: <b>{uploads.uploaded}</b> uploaded, <b>{uploads.queued}</b> waiting

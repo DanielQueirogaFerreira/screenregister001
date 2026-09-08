@@ -59,7 +59,12 @@ export function thresholdsFor(sensitivity: number): Pick<
   const tileThreshold = 2 * Math.pow(12, k);        // 2 (max) .. 24 (min), ~7 at 50
   const sceneThreshold = 0.002 * Math.pow(125, k);  // 0.2% .. 25% of screen, ~2.2% at 50
   return {
-    tileThreshold: Math.round(tileThreshold * 10) / 10,
+    // Two decimals, not one. At the sensitive end a slider step moves the tile threshold
+    // by about 0.05, so rounding to 0.1 collapses adjacent slider positions onto the same
+    // threshold and the inverse cannot tell them apart — eight of the 101 positions failed
+    // to round-trip. The extra digit costs nothing and makes the two views of this setting
+    // exactly reversible.
+    tileThreshold: Math.round(tileThreshold * 100) / 100,
     sceneThreshold: Math.round(sceneThreshold * 10000) / 10000,
     strongTileMad: Math.round(Math.min(255, tileThreshold * 6)),
   };
@@ -81,8 +86,71 @@ export const DEFAULT_SETTINGS: CaptureSettings = {
   skipStillsOverMs: 5000,
 };
 
+/** The range `thresholdsFor` can produce, and therefore the range the inverse can accept. */
+export const TILE_THRESHOLD_MIN = 2;   // sensitivity 100
+export const TILE_THRESHOLD_MAX = 24;  // sensitivity 0
+
+/**
+ * The inverse of `thresholdsFor`, over the tile threshold.
+ *
+ * The slider and the advanced thresholds are two views of one decision, and until now the
+ * arrow only pointed one way: moving the slider rewrote the thresholds, but typing a tile
+ * threshold left the slider reading whatever it read before. That is not a cosmetic
+ * mismatch — the settings object then holds a `sensitivity` that no longer describes its
+ * own thresholds, and the next touch of the slider silently discards the typed value.
+ *
+ * Inverting `tileThreshold = 2 * 12^k`, where `k = (100 - s) / 100`, gives
+ * `s = 100 * (1 - ln(tile / 2) / ln(12))`. The tile threshold is the right knob to invert
+ * because it is the one the sensitivity slider is really about — how different a patch of
+ * screen has to look before it counts as different.
+ */
+export function sensitivityFor(tileThreshold: number): number {
+  const clamped = Math.min(TILE_THRESHOLD_MAX, Math.max(TILE_THRESHOLD_MIN, tileThreshold));
+  const k = Math.log(clamped / TILE_THRESHOLD_MIN) / Math.log(12);
+  return Math.round(100 * (1 - k));
+}
+
 export function withSensitivity(s: CaptureSettings, sensitivity: number): CaptureSettings {
   return { ...s, sensitivity, ...thresholdsFor(sensitivity) };
+}
+
+/**
+ * Set the tile threshold and move the slider to match.
+ *
+ * `strongTileMad` follows too, because it is defined as a multiple of the tile threshold —
+ * leaving it behind would mean a single tile could count as a strong change at a level the
+ * user has just declared unremarkable.
+ */
+export function withTileThreshold(s: CaptureSettings, tileThreshold: number): CaptureSettings {
+  const tile = Math.max(0, tileThreshold);
+  return {
+    ...s,
+    tileThreshold: tile,
+    strongTileMad: Math.round(Math.min(255, tile * 6)),
+    sensitivity: sensitivityFor(tile),
+  };
+}
+
+/**
+ * Set the scene threshold on its own.
+ *
+ * This one deliberately does not move the slider. Sensitivity is inverted from the tile
+ * threshold, and back-computing it from two different knobs would make the last one you
+ * touched win and the other one jump. `settingsAreCustom` reports the resulting mismatch
+ * instead, so the interface can say so rather than hide it.
+ */
+export function withSceneThreshold(s: CaptureSettings, sceneThreshold: number): CaptureSettings {
+  return { ...s, sceneThreshold: Math.max(0, sceneThreshold) };
+}
+
+/** Whether the thresholds still say what the slider position says they say. */
+export function settingsAreCustom(s: CaptureSettings): boolean {
+  const derived = thresholdsFor(s.sensitivity);
+  return (
+    Math.abs(derived.tileThreshold - s.tileThreshold) > 0.05 ||
+    Math.abs(derived.sceneThreshold - s.sceneThreshold) > 0.0005 ||
+    Math.abs(derived.strongTileMad - s.strongTileMad) > 1
+  );
 }
 
 /** Guard the invariant the lookahead depends on: the buffer must outlast the settle window. */

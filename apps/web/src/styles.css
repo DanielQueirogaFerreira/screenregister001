@@ -73,9 +73,12 @@ nav button.on { background: var(--accent); border-color: var(--accent); color: #
 .dot.live { animation: pulse 1.4s infinite; }
 @keyframes pulse { 50% { opacity: .25; } }
 .shot { width: 100%; border-radius: var(--radius); border: 1px solid var(--line); display: block; background: #000; }
-.spark { display: flex; align-items: flex-end; gap: 1px; height: 46px; background: var(--panel-2);
+.spark { display: flex; align-items: flex-end; height: 46px; background: var(--panel-2);
   border: 1px solid var(--line); border-radius: var(--radius); padding: 4px; overflow: hidden; }
-.spark i { flex: 1 0 2px; min-width: 2px; background: var(--line); border-radius: 1px; }
+/* Same shrink rule as the scrub bar: 160 bars that refuse to shrink overflow a narrow
+   sidebar, and `overflow: hidden` on the parent would silently cut the newest ones off. */
+.spark i { flex: 1 1 0; min-width: 0; background: var(--line); border-radius: 1px; margin-right: 1px; }
+.spark i:last-child { margin-right: 0; }
 .spark i.hit { background: var(--accent); }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th { text-align: left; color: var(--dim); font-weight: 500; font-size: 11px;
@@ -87,15 +90,56 @@ tbody tr:hover { background: var(--panel-2); cursor: pointer; }
 .tag.scene_change, .tag.settled { border-color: var(--accent); color: var(--accent); }
 .tag.heartbeat { border-color: var(--good); color: var(--good); }
 .tag.burst { border-color: var(--warn); color: var(--warn); }
-.stage { position: relative; background: #000; border-radius: 12px; overflow: hidden; border: 1px solid var(--line); }
-.stage canvas { display: block; width: 100%; }
+.stage {
+  position: relative; background: #000; border-radius: 12px; overflow: hidden;
+  border: 1px solid var(--line);
+  /* Centres a frame that is narrower than the panel, which a 9:16 phone recording on a
+     desktop always is. */
+  display: flex; justify-content: center;
+}
+/*
+ * `width: 100%` alone forced the canvas to the panel's width and let height follow the
+ * aspect ratio — so a 1080x1920 portrait recording rendered about 1.8 times taller than
+ * it was wide, ran off the bottom of the window, and put the transport controls out of
+ * reach. Bounding both axes and letting the intrinsic size decide scales any shape to fit.
+ */
+.stage canvas {
+  display: block;
+  max-width: 100%;
+  max-height: 68vh;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+}
 .skip { position: absolute; inset: auto 0 0 0; background: rgba(0,0,0,.72);
   padding: 8px 12px; font-size: 13px; color: var(--warn); }
-.track { position: relative; height: 40px; background: var(--panel-2); border: 1px solid var(--line);
-  border-radius: var(--radius); margin-top: 10px; display: flex; align-items: flex-end; gap: 1px; padding: 3px; cursor: pointer; }
-.track i { flex: 1 0 1px; background: var(--line); border-radius: 1px; min-height: 3px; }
+/*
+ * The scrub bar.
+ *
+ * `flex: 1 1 0` with `min-width: 0` is the fix for the bar running off the left of the
+ * screen: the old `flex: 1 0 1px` forbade shrinking, so N ticks demanded at least N pixels
+ * and the track simply grew past the viewport. The tick count is bounded in the component
+ * as well, but the rule below is what makes the track fit its container whatever it is
+ * handed. `touch-action: none` lets a finger drag the playhead instead of scrolling the
+ * page out from under it.
+ */
+.track {
+  position: relative; height: 40px; background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: var(--radius); margin-top: 10px; display: flex; align-items: flex-end;
+  padding: 3px; cursor: pointer; overflow: hidden; touch-action: none;
+}
+.track i { flex: 1 1 0; min-width: 0; background: var(--line); border-radius: 1px; min-height: 3px; }
+.track i + i { margin-left: 1px; }
 .track i.on { background: var(--accent); }
 .track .head { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--fg); pointer-events: none; }
+.track:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* A narrow phone in portrait: give the picture the room and let the controls stack. */
+@media (max-width: 640px) {
+  .app { padding: 12px 12px 52px; }
+  .stage canvas { max-height: 56vh; }
+  .track { height: 34px; }
+}
 .empty { text-align: center; color: var(--dim); padding: 44px 20px; }
 code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
 
@@ -269,3 +313,13 @@ code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-si
 .health-mark { text-align: center; font-size: 12px; }
 .health-value { color: var(--fg); font-variant-numeric: tabular-nums; }
 .health-note { grid-column: 2 / -1; color: var(--dim); font-size: 12px; }
+
+/* Recording indicators that have to read from any tab. */
+.tab-live { display: inline-flex; align-items: center; gap: 4px; margin-left: 7px; font-size: 11px; }
+.recording-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+/* The browser's name for the shared surface — a window title can be long, so it truncates
+   rather than pushing the controls off the row. */
+.surface {
+  color: var(--dim); font-size: 12px; max-width: 26ch;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}

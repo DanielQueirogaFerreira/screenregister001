@@ -1,5 +1,8 @@
 import { useState } from 'react';
-import { DEFAULT_SETTINGS, validateSettings, withSensitivity, type CaptureSettings } from '@sr/schema';
+import {
+  DEFAULT_SETTINGS, settingsAreCustom, thresholdsFor, validateSettings, withSceneThreshold,
+  withSensitivity, withTileThreshold, type CaptureSettings,
+} from '@sr/schema';
 import type { CloudStore, UploadStatus, UsageInfo } from '@sr/storage';
 import { bytes, day } from '../lib/format.js';
 import { CloudStatusPanel } from './CloudStatusPanel.js';
@@ -40,6 +43,7 @@ export function SettingsView({
   const [busy, setBusy] = useState(false);
   const errors = validateSettings(settings);
   const set = (patch: Partial<CaptureSettings>) => onSettings({ ...settings, ...patch });
+  const custom = settingsAreCustom(settings);
 
   return (
     <div className="grid cols">
@@ -52,21 +56,42 @@ export function SettingsView({
           onChange={(captureFps) => set({ captureFps })} />
 
         <div className="field">
-          <label>Sensitivity <b>{settings.sensitivity}</b></label>
+          <label>
+            Sensitivity <b>{settings.sensitivity}</b>
+          </label>
           <input type="range" min={0} max={100} value={settings.sensitivity}
             onChange={(e) => onSettings(withSensitivity(settings, Number(e.target.value)))} />
           <div className="hint">
-            Drives the two thresholds below. Moving this slider overwrites them.
+            The slider and the two thresholds below are one setting seen two ways, and they
+            now move together in both directions — typing a tile threshold slides this, and
+            sliding this rewrites both thresholds.
           </div>
         </div>
 
         <Num label="Tile threshold (0–255)" step={0.5} value={settings.tileThreshold}
           hint="How different a tile must look before it counts as changed. Low values pick up compression noise."
-          onChange={(tileThreshold) => set({ tileThreshold })} />
+          onChange={(tileThreshold) => onSettings(withTileThreshold(settings, tileThreshold))} />
 
         <Num label="Scene threshold (fraction of screen)" step={0.001} value={settings.sceneThreshold}
           hint={`Currently ${(settings.sceneThreshold * 100).toFixed(1)}% of the screen must move to keep a frame.`}
-          onChange={(sceneThreshold) => set({ sceneThreshold })} />
+          onChange={(sceneThreshold) => onSettings(withSceneThreshold(settings, sceneThreshold))} />
+
+        {custom && (
+          <div className="banner info" style={{ marginTop: -4 }}>
+            These thresholds no longer match sensitivity&nbsp;{settings.sensitivity}. That is
+            allowed — the detector uses the numbers, not the slider — but the slider is now
+            only an approximation of what is running.
+            <div className="row" style={{ marginTop: 10 }}>
+              <button onClick={() => onSettings(withSensitivity(settings, settings.sensitivity))}>
+                Snap to sensitivity {settings.sensitivity}
+              </button>
+              <span className="hint" style={{ margin: 0 }}>
+                would set tile {thresholdsFor(settings.sensitivity).tileThreshold} · scene{' '}
+                {(thresholdsFor(settings.sensitivity).sceneThreshold * 100).toFixed(1)}%
+              </span>
+            </div>
+          </div>
+        )}
 
         <h3>Preroll buffer</h3>
         <Num label="Buffer (ms)" step={100} value={settings.bufferMs}

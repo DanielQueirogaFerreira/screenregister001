@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { CloudStore, type UploadStatus, type UsageInfo } from '@sr/storage';
 import type { CaptureSettings, SessionRecord } from '@sr/schema';
 import { loadSettings, saveSettings } from './lib/settings.js';
@@ -6,6 +6,7 @@ import { connect } from './lib/cloud.js';
 import {
   claimHistory, fetchMe, forgetLegacyToken, legacyDeviceToken, logout, type Account,
 } from './lib/auth.js';
+import { CaptureSessions } from './capture/sessions.js';
 import { AuthView } from './views/AuthView.js';
 import { RecordView } from './views/RecordView.js';
 import { LibraryView } from './views/LibraryView.js';
@@ -47,6 +48,19 @@ function RecorderApp() {
   const [claimable, setClaimable] = useState<string | null>(null);
   const [claimNotice, setClaimNotice] = useState<string | null>(null);
   const storeRef = useRef<CloudStore | null>(null);
+
+  /**
+   * Capture lives here, not inside RecordView.
+   *
+   * The tabs render as `tab === 'record' ? <RecordView/> : …`, so anything the record
+   * screen owned was destroyed the moment you opened the library — which is exactly how a
+   * recording could vanish mid-session and leave a zero-frame row behind. A ref created
+   * once, above the switch, is never unmounted by navigation.
+   */
+  const sessionsRef = useRef<CaptureSessions | null>(null);
+  if (sessionsRef.current === null) sessionsRef.current = new CaptureSessions(settings);
+  const sessions = sessionsRef.current;
+  const live = useSyncExternalStore(sessions.subscribe, sessions.getSnapshot);
 
   const refreshUsage = useCallback(async (s: CloudStore) => {
     setUsage(await s.usage().catch(() => null));
@@ -103,14 +117,47 @@ function RecorderApp() {
   const update = useCallback((s: CaptureSettings) => {
     setSettings(s);
     saveSettings(s);
-  }, []);
+    sessions.updateSettings(s);
+  }, [sessions]);
+
+  useEffect(() => {
+    sessions.onSessionEnd = () => {
+      const s = storeRef.current;
+      if (s) void refreshUsage(s);
+    };
+  }, [sessions, refreshUsage]);
+
+  /**
+   * Uploads have stopped, so every capture pauses — not just the one on screen.
+   *
+   * The cloud is the only store: a frame that cannot be uploaded is a frame that is not
+   * recorded, and capturing on into a dead queue would quietly discard it.
+   */
+  useEffect(() => {
+    if (stalled) sessions.setAllPaused(true);
+  }, [stalled, sessions]);
+
+  /**
+   * Closing the tab ends every recording, and the tail of a session exists only in memory
+   * until it is flushed. Warn rather than lose it. Browsers ignore custom text here and
+   * show their own wording, which is why none is supplied.
+   */
+  useEffect(() => {
+    if (live.length === 0) return;
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [live.length]);
 
   const signOut = useCallback(() => {
+    // Stop first: these recordings belong to the account that is being signed out of, and
+    // a capture left running would keep uploading into a session that can no longer be read.
+    void sessions.stopAll().catch(() => undefined);
     void logout().catch(() => undefined);
     setAccount(null);
     setPlaying(null);
     setTab('record');
-  }, []);
+  }, [sessions]);
 
   if (checkingAuth) {
     return (
@@ -176,12 +223,42 @@ function RecorderApp() {
               }}
             >
               {t[0]!.toUpperCase() + t.slice(1)}
+              {/* Capture no longer stops when you leave this tab, so the tab has to say
+                  so — an indicator that only appears on the screen it describes is not an
+                  indicator. */}
+              {t === 'record' && live.length > 0 && (
+                <span className="tab-live" aria-hidden="true">
+                  <span className={`dot ${live.some((x) => !x.paused) ? 'live' : ''}`} />
+                  {live.length > 1 && live.length}
+                </span>
+              )}
             </button>
           ))}
           <span className="who" title={account.email}>{account.email}</span>
           <button onClick={signOut}>Sign out</button>
         </nav>
       </header>
+
+      {live.length > 0 && tab !== 'record' && !playing && (
+        <div className="banner info recording-bar">
+          <span className={`dot ${live.some((x) => !x.paused) ? 'live' : ''}`} />
+          <b>
+            {live.length} screen{live.length === 1 ? '' : 's'} recording
+          </b>
+          <span style={{ color: 'var(--dim)' }}>
+            {live.reduce((n, x) => n + x.stats.stored, 0)} frames stored this session
+          </span>
+          <div className="row" style={{ marginLeft: 'auto' }}>
+            <button onClick={() => setTab('record')}>Manage</button>
+            <button
+              onClick={() => sessions.setAllPaused(!live.every((x) => x.paused))}
+            >
+              {live.every((x) => x.paused) ? 'Resume all' : 'Pause all'}
+            </button>
+            <button className="danger" onClick={() => void sessions.stopAll()}>Stop all</button>
+          </div>
+        </div>
+      )}
 
       {claimNotice && <div className="banner info">{claimNotice}</div>}
 
@@ -226,13 +303,13 @@ function RecorderApp() {
       ) : tab === 'record' ? (
         <RecordView
           store={store}
+          sessions={sessions}
           accountId={account.user_id}
           settings={settings}
           uploads={uploads}
           stalled={stalled}
           onRetryUploads={() => { setStalled(null); store.retryUploads(); }}
           onSettings={update}
-          onSessionEnd={() => void refreshUsage(store)}
         />
       ) : tab === 'library' ? (
         <LibraryView store={store} onOpen={setPlaying} onChanged={() => void refreshUsage(store)} />

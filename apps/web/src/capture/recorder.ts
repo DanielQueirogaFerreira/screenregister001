@@ -55,6 +55,12 @@ export class Recorder {
   private lastSampleMs = -Infinity;
   private backlog = 0;
   private session: SessionRecord | null = null;
+  /**
+   * What the browser called the shared surface. Chrome gives a window or tab title here
+   * and something like "screen:0:0" for a whole display; Firefox and Safari often give
+   * nothing at all, so this is a hint for telling captures apart, never an identifier.
+   */
+  private label = '';
   /** The frame currently on screen. Its hold_ms is unknown until the next one lands. */
   private openFrame: { id: string; tMs: number } | null = null;
 
@@ -78,6 +84,9 @@ export class Recorder {
   }
   get sessionId(): string | null {
     return this.session?.session_id ?? null;
+  }
+  get surfaceLabel(): string {
+    return this.label;
   }
 
   updateSettings(s: CaptureSettings): void {
@@ -105,6 +114,8 @@ export class Recorder {
 
     const track = this.stream.getVideoTracks()[0]!;
     const s = track.getSettings();
+    this.label = track.label
+      || (s.width && s.height ? `${s.width}\u00d7${s.height}` : 'Shared screen');
 
     this.startedMs = performance.now();
     this.startedIso = new Date().toISOString();
