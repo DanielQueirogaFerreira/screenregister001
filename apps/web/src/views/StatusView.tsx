@@ -310,6 +310,25 @@ function Roadmap({ roadmap, progress }: { roadmap: Phase[]; progress: StatusPayl
 export function StatusView() {
   const [data, setData] = useState<StatusPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
+
+  /**
+   * Ask, once, whether whoever is looking is an operator — and never let the answer matter.
+   *
+   * This page exists to work when authentication is broken, so the check is deliberately
+   * fire-and-forget: no loading state, no error surface, nothing gating the render. A 401
+   * from being signed out and a 500 from a Worker that cannot verify a cookie both land in
+   * the same place, which is silence and no button. The button is a convenience; the page
+   * reporting the outage is the job.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    void fetch('/v1/auth/me', { credentials: 'same-origin' })
+      .then((res) => (res.ok ? res.json() as Promise<{ is_admin?: boolean }> : null))
+      .then((me) => { if (!cancelled) setIsAdmin(Boolean(me?.is_admin)); })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -358,6 +377,11 @@ export function StatusView() {
       <header>
         <h1>ScreenRegister <span>· status</span></h1>
         <nav>
+          {/* Only for operators, and only once the account has confirmed it. Showing this
+              to everyone would send most people to a page that answers 404 by design. */}
+          {isAdmin && (
+            <a href="/admin" className="button-link">Operator view</a>
+          )}
           {/* Styled as a button rather than a link: this is the way back, and on a phone
               a text link tucked in the header is easy to miss entirely. */}
           <a href="/" className="button-link">&larr; Back to the recorder</a>

@@ -41,7 +41,15 @@ function RecorderApp() {
   const [checkingAuth, setCheckingAuth] = useState(true);
 
   const [store, setStore] = useState<CloudStore | null>(null);
-  const [tab, setTab] = useState<Tab>('record');
+  /**
+   * The operator view has a URL so the status page can link to it. It is the only tab that
+   * does: the others are reached from here, but /status is served outside the auth gate
+   * and has nothing else to point at.
+   */
+  const [tab, setTab] = useState<Tab>(
+    typeof location !== 'undefined' && location.pathname.replace(/\/+$/, '') === '/admin'
+      ? 'admin' : 'record',
+  );
   const [settings, setSettings] = useState<CaptureSettings>(loadSettings);
   /** Recordings open in the player. More than one plays them together or in sequence. */
   const [playing, setPlaying] = useState<SessionRecord[]>([]);
@@ -95,6 +103,12 @@ function RecorderApp() {
         // Only decides whether to draw the tab. Every operator route re-checks it, so a
         // client that lies to itself here gains nothing but an empty page.
         setIsAdmin(me?.is_admin ?? false);
+        // Arriving at /admin without operator access lands on the recorder instead of a
+        // page whose every request would 404. The server check is what actually protects
+        // the data; this only keeps the interface from lying about what is available.
+        if (!me?.is_admin) {
+          setTab((t) => (t === 'admin' ? 'record' : t));
+        }
       } catch (err) {
         if (!cancelled) setBootError(err instanceof Error ? err.message : String(err));
       } finally {
@@ -256,6 +270,9 @@ function RecorderApp() {
               onClick={() => {
                 setPlaying([]);
                 setTab(t);
+                if (t !== 'admin' && location.pathname.replace(/\/+$/, '') === '/admin') {
+                  history.replaceState(null, '', '/');
+                }
               }}
             >
               {t[0]!.toUpperCase() + t.slice(1)}

@@ -111,7 +111,7 @@ jobs:
 
           echo
           echo "--- client-side routes serve the app rather than 404"
-          for path in '/status' '/verify?token=x' '/reset?token=x'; do
+          for path in '/status' '/admin' '/verify?token=x' '/reset?token=x'; do
             code=$(curl -s -o /tmp/page.html -w '%{http_code}' "$BASE$path")
             grep -q 'id="root"' /tmp/page.html || fail "$path did not serve the app shell (HTTP $code)"
             echo "  $path -> HTTP $code, app shell served"
