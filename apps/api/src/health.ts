@@ -14,7 +14,16 @@ import { mailConfigured } from './mailer.js';
 export interface HealthFacts {
   ok: boolean;
   service: 'screenregister-api';
-  schema: 'ready' | 'missing' | 'error';
+  /**
+   * `over_quota` is its own answer, not a flavour of `error`.
+   *
+   * A database refusing every query because the account's daily allowance is spent looks
+   * identical to a broken schema from here — both are "the query threw" — and reporting it
+   * as `error` sent an investigation towards migrations while the real answer was billing.
+   * This endpoint needs no signing key and no database read to answer, so when everything
+   * else is failing it is the one thing that can still say why.
+   */
+  schema: 'ready' | 'missing' | 'error' | 'over_quota';
   retention_days: number;
   auth_configured: boolean;
   cors_localhost: boolean;
@@ -48,7 +57,10 @@ export async function healthFacts(env: Env): Promise<HealthFacts> {
   try {
     await env.DB.prepare('SELECT 1 FROM frames LIMIT 1').all();
   } catch (err) {
-    schema = /no such table/i.test(String(err)) ? 'missing' : 'error';
+    const text = String(err);
+    schema = /no such table/i.test(text) ? 'missing'
+      : /daily row (read|write) limit|code: 7500/i.test(text) ? 'over_quota'
+        : 'error';
   }
   const authConfigured = isAuthConfigured(env);
 
@@ -66,6 +78,11 @@ export async function healthFacts(env: Env): Promise<HealthFacts> {
     email_configured: mailConfigured(env),
     ...(schema === 'missing' && {
       hint: 'Run the D1 migrations: wrangler d1 migrations apply screenregister001 --remote',
+    }),
+    ...(schema === 'over_quota' && {
+      hint: 'D1 has exceeded its daily allowance and is refusing queries, so signing in and '
+        + 'recording cannot work. It clears at midnight UTC, or immediately on a paid D1 '
+        + 'plan. Nothing is lost meanwhile; nothing new can be written either.',
     }),
     ...(!authConfigured && {
       auth_hint: 'AUTH_SECRET is missing or too short, so the Worker refuses to issue or ' +

@@ -21,7 +21,7 @@ interface HistoryRow {
 
 interface HealthFacts {
   ok: boolean;
-  schema: 'ready' | 'missing' | 'error';
+  schema: 'ready' | 'missing' | 'error' | 'over_quota';
   retention_days: number;
   auth_configured: boolean;
   cors_localhost: boolean;
