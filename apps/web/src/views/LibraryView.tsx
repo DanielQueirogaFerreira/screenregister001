@@ -9,7 +9,8 @@ interface Props {
   store: CloudStore;
   sessions: CaptureSessions;
   accountId: string;
-  onOpen: (s: SessionRecord) => void;
+  /** One or several recordings to open in the player. */
+  onOpen: (s: SessionRecord[]) => void;
   onInspect: (stamp: string) => void;
   onChanged: () => void;
 }
@@ -17,6 +18,42 @@ interface Props {
 export function LibraryView({ store, sessions, accountId, onOpen, onInspect, onChanged }: Props) {
   const [rows, setRows] = useState<SessionRecord[]>([]);
   const [busy, setBusy] = useState(false);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const toggle = (id: string) => setPicked((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    return next;
+  });
+
+  const chosen = rows.filter((r) => picked.has(r.session_id));
+
+  /**
+   * Close a recording whose browser never did.
+   *
+   * Deleting was the only thing on offer, and it is the wrong remedy for a session that
+   * holds real frames: the capture happened, and what it stored is worth keeping. The
+   * server picks the end time from the last frame rather than from now — a laptop closed
+   * on Friday and reopened on Monday did not record for three days.
+   */
+  async function finish(id: string) {
+    setBusy(true);
+    setNotice(null);
+    try {
+      const res = await store.finishSession(id);
+      setNotice(res.frames > 0
+        ? `Closed with ${res.frames} frame(s), ending at its last one.`
+        : 'Closed. It had stored nothing, so it shows as zero length.');
+      await load();
+      onChanged();
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   const load = useCallback(async () => setRows(await store.listSessions()), [store]);
   useEffect(() => { void load(); }, [load]);
@@ -68,16 +105,52 @@ export function LibraryView({ store, sessions, accountId, onOpen, onInspect, onC
           nothing.</b>{' '}
           A row is written when capture begins and completed when it stops, so these are
           sessions that never finished — a closed tab, a crash, or the tab-switch bug that
-          used to stop a recording when you opened this page. There is nothing inside them.
+          used to stop a recording when you opened this page. There is nothing inside these
+          ones, so removing them loses nothing; a recording that <i>did</i> store frames
+          should be closed with <b>Finish</b> instead.
           <button style={{ marginLeft: 8 }} disabled={busy} onClick={() => void removeEmpty()}>
             {busy ? 'Removing…' : `Remove ${empty.length}`}
           </button>
         </div>
       )}
+      {notice && <div className="banner info">{notice}</div>}
+
+      {/* Opening several at once is the point of the checkboxes: two screens recorded over
+          the same period are far more use side by side than one after the other. */}
+      {picked.size > 0 && (
+        <div className="banner info recording-bar">
+          <b>{picked.size} selected</b>
+          <span style={{ color: 'var(--dim)' }}>
+            {chosen.reduce((n, r) => n + r.frames_stored, 0)} frames ·{' '}
+            {bytes(chosen.reduce((n, r) => n + r.bytes_stored, 0))}
+          </span>
+          <div className="row" style={{ marginLeft: 'auto' }}>
+            <button className="primary" onClick={() => onOpen(chosen)}>
+              Play {picked.size} together
+            </button>
+            <button onClick={() => setPicked(new Set())}>Clear</button>
+          </div>
+        </div>
+      )}
+
       <div className="table-scroll">
       <table>
         <thead>
           <tr>
+            <th style={{ width: 28 }}>
+              <input
+                type="checkbox"
+                aria-label="Select every recording"
+                checked={picked.size > 0 && picked.size === rows.length}
+                ref={(el) => {
+                  // Some are picked but not all: neither ticked nor empty is honest.
+                  if (el) el.indeterminate = picked.size > 0 && picked.size < rows.length;
+                }}
+                onChange={(e) => setPicked(
+                  e.target.checked ? new Set(rows.map((r) => r.session_id)) : new Set(),
+                )}
+              />
+            </th>
             <th>Started</th><th>Length</th><th>Frames</th><th>Size</th>
             <th>Rate</th><th>Screen</th><th>Device</th><th></th>
           </tr>
@@ -88,10 +161,18 @@ export function LibraryView({ store, sessions, accountId, onOpen, onInspect, onC
             return (
               <tr
                 key={s.session_id}
-                onClick={() => onOpen(s)}
+                onClick={() => onOpen([s])}
                 tabIndex={0}
-                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(s); } }}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen([s]); } }}
               >
+                <td onClick={(e) => e.stopPropagation()}>
+                  <input
+                    type="checkbox"
+                    aria-label={`Select the recording from ${day(s.started_at)} ${clock(s.started_at)}`}
+                    checked={picked.has(s.session_id)}
+                    onChange={() => toggle(s.session_id)}
+                  />
+                </td>
                 <td>{day(s.started_at)} <span style={{ color: 'var(--dim)' }}>{clock(s.started_at)}</span></td>
                 <td>{s.ended_at ? duration(len) : <span style={{ color: 'var(--bad)' }}>unfinished</span>}</td>
                 <td>{s.frames_stored}</td>
@@ -101,18 +182,38 @@ export function LibraryView({ store, sessions, accountId, onOpen, onInspect, onC
                 <td style={{ color: 'var(--dim)' }} title={s.device_id}>
                   <code>{s.device_id.replace(/^dev_/, '').slice(0, 8) || '—'}</code>
                 </td>
-                <td>
-                  <button
-                    className="danger"
-                    onClick={async (e) => {
-                      e.stopPropagation();
-                      await store.deleteSession(s.session_id);
-                      await load();
-                      onChanged();
-                    }}
-                  >
-                    Delete
-                  </button>
+                <td onClick={(e) => e.stopPropagation()}>
+                  <div className="row" style={{ gap: 6, flexWrap: 'nowrap' }}>
+                    {!s.ended_at && (
+                      <button
+                        disabled={busy}
+                        title="Close this recording, ending it at its last frame"
+                        onClick={() => void finish(s.session_id)}
+                      >
+                        Finish
+                      </button>
+                    )}
+                    <button
+                      className="danger"
+                      disabled={busy}
+                      onClick={async () => {
+                        if (!confirm(
+                          `Permanently delete this recording of ${s.frames_stored} frame(s)? `
+                          + 'The images go too, and this cannot be undone.',
+                        )) return;
+                        await store.deleteSession(s.session_id);
+                        setPicked((prev) => {
+                          const next = new Set(prev);
+                          next.delete(s.session_id);
+                          return next;
+                        });
+                        await load();
+                        onChanged();
+                      }}
+                    >
+                      Delete
+                    </button>
+                  </div>
                 </td>
               </tr>
             );

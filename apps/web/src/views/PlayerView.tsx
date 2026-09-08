@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { encodeStamp, type CaptureSettings, type FrameRecord, type SessionRecord } from '@sr/schema';
+import { buildSteps, stepAt, totalSpan, type Step } from '@sr/core';
 import type { CloudStore } from '@sr/storage';
 import { bytes, clock, day, duration } from '../lib/format.js';
 
 interface Props {
   store: CloudStore;
-  session: SessionRecord;
+  /** One or several recordings, played together or one after another. */
+  sessions: SessionRecord[];
   settings: CaptureSettings;
   accountId: string;
   onBack: () => void;
@@ -15,6 +17,17 @@ interface Props {
 type Mode = 'realtime' | 'condensed';
 /** Which of a frame's two images to draw. */
 type Variant = 'full' | 'original';
+/**
+ * How several recordings share the player.
+ *
+ *   sequence  one after another, on a single screen — the whole period as one run
+ *   together  all at once, each on its own pane, aligned by the clock
+ *
+ * They answer different questions. Sequence answers "what happened over this stretch of
+ * time"; together answers "what was on my other screen while this was going on", which
+ * needs the panes lined up on the same instant rather than on the same frame number.
+ */
+type Layout = 'sequence' | 'together';
 
 /** Screen time each frame gets in condensed mode — a whole day in about a minute. */
 const CONDENSED_MS = 200;
@@ -28,128 +41,64 @@ const CACHE_MAX = 48;
  *
  * The bar used to draw one element per frame at `flex: 1 0 1px` with a 1px gap. A session
  * of 1,623 frames therefore demanded 3,200px it was not allowed to shrink below, so the
- * track ran off the side of the window, took the page's horizontal scrollbar with it, and
- * put most of the timeline somewhere you could not reach. Worse, the click handler divides
- * by the element's width — which was the overflowed width — so seeking landed in the wrong
- * place even for the part you could see.
- *
- * A fixed column count also fixes a second, quieter bug: the ticks were spaced by frame
- * index while the playhead was positioned by elapsed time. Those are different axes
- * whenever frames are unevenly spaced, which is always, so the highlighted tick and the
- * playhead disagreed. Both are now positions on the same time axis.
+ * track ran off the side of the window and put most of the timeline out of reach.
  */
 const TICKS = 240;
 
-export function PlayerView({ store, session, settings, accountId, onBack, onInspect }: Props) {
-  const [frames, setFrames] = useState<FrameRecord[]>([]);
-  const [mode, setMode] = useState<Mode>('realtime');
-  const [speed, setSpeed] = useState(1);
-  const [playing, setPlaying] = useState(false);
-  const [index, setIndex] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [variant, setVariant] = useState<Variant>('full');
-
+/**
+ * One recording's picture.
+ *
+ * Each pane owns its decode cache and its own canvas, because the panes show different
+ * recordings at different resolutions and sharing either would mean one pane's prefetch
+ * evicting another's current frame.
+ */
+function Pane({
+  store, frame, variant, label, onDoubleClick,
+}: {
+  store: CloudStore;
+  frame: FrameRecord | null;
+  variant: Variant;
+  label: string | null;
+  onDoubleClick: () => void;
+}) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const cache = useRef(new Map<string, ImageBitmap>());
-  const playhead = useRef(0);
   const fadeFrom = useRef<{ bitmap: ImageBitmap; at: number } | null>(null);
-  const drawnIndex = useRef(-1);
-  /**
-   * The playhead is written straight to the DOM from the animation loop. Driving it
-   * through state would mean a React render per frame, and the position only changed when
-   * the picture did — so during a long still the marker sat frozen while time ran on.
-   */
-  const headRef = useRef<HTMLDivElement>(null);
-  const trackRef = useRef<HTMLDivElement>(null);
+  const drawn = useRef<string | null>(null);
 
   useEffect(() => {
-    void (async () => {
-      const f = await store.listFrames(session.session_id);
-      setFrames(f);
-      setLoading(false);
-    })();
     const c = cache.current;
     return () => { c.forEach((b) => b.close()); c.clear(); };
-  }, [store, session.session_id]);
+  }, []);
 
-  /**
-   * Screen time per frame. Real-time honours how long each frame actually stayed up, but
-   * compresses anything longer than `skipStillsOverMs` — that is what turns a motionless
-   * hour into a five-second skip instead of an hour of watching nothing.
-   */
-  const timeline = useMemo(() => {
-    const starts: number[] = [];
-    const spans: number[] = [];
-    let acc = 0;
-    for (const f of frames) {
-      const real = f.hold_ms ?? 1000;
-      const span = mode === 'condensed' ? CONDENSED_MS : Math.min(real, settings.skipStillsOverMs);
-      starts.push(acc);
-      spans.push(span);
-      acc += span;
-    }
-    return { starts, spans, total: acc };
-  }, [frames, mode, settings.skipStillsOverMs]);
-
-  /** One column per slice of elapsed time, carrying the strongest change inside it. */
-  const ticks = useMemo(() => {
-    const height = new Float32Array(TICKS);
-    if (!timeline.total) return height;
-    frames.forEach((f, i) => {
-      const col = Math.min(
-        TICKS - 1,
-        Math.floor((timeline.starts[i]! / timeline.total) * TICKS),
-      );
-      height[col] = Math.max(height[col]!, f.change_score);
-    });
-    return height;
-  }, [frames, timeline]);
-
-  const currentTick = timeline.total
-    ? Math.min(TICKS - 1, Math.floor((timeline.starts[index]! / timeline.total) * TICKS))
-    : 0;
-
-  const bitmapFor = useCallback(
-    async (f: FrameRecord): Promise<ImageBitmap | null> => {
-      // Keyed by variant as well as by frame: without that, toggling to the original
-      // would hand back the stamped bitmap already cached under the same id.
-      const key = `${variant}:${f.frame_id}`;
-      const hit = cache.current.get(key);
-      if (hit) return hit;
-      // Fetched from R2 through the Worker, with this device's token. The cache below
-      // is a decode cache for the current playback pass, not a copy of the recording.
-      const wanted = variant === 'original' && f.has_original ? 'original' : 'full';
-      const blob = await store.getImageBlob(f.frame_id, wanted).catch(() => null);
-      if (!blob) return null;
-      const bmp = await createImageBitmap(blob);
-      cache.current.set(key, bmp);
-      if (cache.current.size > CACHE_MAX) {
-        const oldest = cache.current.keys().next().value as string | undefined;
-        if (oldest && oldest !== key) {
-          cache.current.get(oldest)?.close();
-          cache.current.delete(oldest);
-        }
+  const bitmapFor = useCallback(async (f: FrameRecord): Promise<ImageBitmap | null> => {
+    // Keyed by variant as well as by frame: without that, toggling to the original would
+    // hand back the stamped bitmap already cached under the same id.
+    const key = `${variant}:${f.frame_id}`;
+    const hit = cache.current.get(key);
+    if (hit) return hit;
+    const wanted = variant === 'original' && f.has_original ? 'original' : 'full';
+    const blob = await store.getImageBlob(f.frame_id, wanted).catch(() => null);
+    if (!blob) return null;
+    const bmp = await createImageBitmap(blob);
+    cache.current.set(key, bmp);
+    if (cache.current.size > CACHE_MAX) {
+      const oldest = cache.current.keys().next().value as string | undefined;
+      if (oldest && oldest !== key) {
+        cache.current.get(oldest)?.close();
+        cache.current.delete(oldest);
       }
-      return bmp;
-    },
-    [store, variant],
-  );
-
-  // Decode ahead so playback never stalls waiting on a frame fetch.
-  useEffect(() => {
-    for (let i = index; i < Math.min(frames.length, index + PREFETCH); i++) {
-      const f = frames[i];
-      if (f) void bitmapFor(f);
     }
-  }, [index, frames, bitmapFor]);
+    return bmp;
+  }, [store, variant]);
 
-  const paint = useCallback(
-    async (i: number) => {
-      const f = frames[i];
+  useEffect(() => {
+    if (!frame) return;
+    let cancelled = false;
+    void (async () => {
+      const bmp = await bitmapFor(frame);
       const canvas = canvasRef.current;
-      if (!f || !canvas) return;
-      const bmp = await bitmapFor(f);
-      if (!bmp) return;
+      if (cancelled || !bmp || !canvas) return;
 
       if (canvas.width !== bmp.width || canvas.height !== bmp.height) {
         canvas.width = bmp.width;
@@ -157,6 +106,12 @@ export function PlayerView({ store, session, settings, accountId, onBack, onInsp
       }
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
+
+      const previous = drawn.current ? cache.current.get(`${variant}:${drawn.current}`) : undefined;
+      if (previous && drawn.current !== frame.frame_id) {
+        fadeFrom.current = { bitmap: previous, at: performance.now() };
+      }
+      drawn.current = frame.frame_id;
 
       const fade = fadeFrom.current;
       const t = fade ? Math.min(1, (performance.now() - fade.at) / FADE_MS) : 1;
@@ -168,13 +123,128 @@ export function PlayerView({ store, session, settings, accountId, onBack, onInsp
       ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
       ctx.globalAlpha = 1;
       if (fade && t >= 1) fadeFrom.current = null;
-    },
-    [frames, bitmapFor],
+    })();
+    return () => { cancelled = true; };
+  }, [frame, bitmapFor, variant]);
+
+  return (
+    <div className="pane">
+      <div className="stage" onDoubleClick={onDoubleClick} title="Double-press to inspect this frame">
+        <canvas ref={canvasRef} />
+        {!frame && (
+          <div className="pane-idle">
+            {/* A recording that had not started, or had already ended, at this instant.
+                Blank with no explanation reads as a broken pane. */}
+            not recording at this moment
+          </div>
+        )}
+      </div>
+      {label && <div className="pane-label">{label}</div>}
+    </div>
+  );
+}
+
+export function PlayerView({
+  store, sessions, settings, accountId, onBack, onInspect,
+}: Props) {
+  const [byId, setById] = useState<Record<string, FrameRecord[]>>({});
+  const [mode, setMode] = useState<Mode>('realtime');
+  const [layout, setLayout] = useState<Layout>(sessions.length > 1 ? 'together' : 'sequence');
+  const [variant, setVariant] = useState<Variant>('full');
+  const [speed, setSpeed] = useState(1);
+  const [playing, setPlaying] = useState(false);
+  const [step, setStep] = useState(0);
+  const [loading, setLoading] = useState(true);
+
+  const playhead = useRef(0);
+  const drawnStep = useRef(-1);
+  const headRef = useRef<HTMLDivElement>(null);
+  const trackRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    void (async () => {
+      const lists = await Promise.all(
+        sessions.map(async (s) => [s.session_id, await store.listFrames(s.session_id)] as const),
+      );
+      if (cancelled) return;
+      setById(Object.fromEntries(lists));
+      setLoading(false);
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store, sessions.map((s) => s.session_id).join(',')]);
+
+  const lists = useMemo(
+    () => sessions.map((s) => byId[s.session_id] ?? []),
+    [sessions, byId],
   );
 
-  // Advance the playhead and repaint. One rAF loop drives both.
+  /**
+   * The combined timeline, as a list of steps.
+   *
+   * Sequence walks each recording's frames in turn, so the player's clock is the sum of
+   * the parts. Together merges every recording's capture instants into one ordered set and
+   * shows, at each instant, the frame each recording had on screen then — which is what
+   * makes two panes mean the same moment rather than the same frame number. Recordings
+   * rarely start together and never tick together, so aligning on anything else would put
+   * unrelated moments beside each other and quietly invite the wrong conclusion.
+   */
+  /**
+   * The combined timeline. Built by @sr/core so it can be tested without a browser — the
+   * clock-alignment it does is the part most easily got subtly wrong, and the part whose
+   * being wrong would be hardest to notice by eye.
+   */
+  const steps = useMemo<Step[]>(() => buildSteps(lists, {
+    layout,
+    condensed: mode === 'condensed',
+    skipStillsOverMs: settings.skipStillsOverMs,
+    condensedMs: CONDENSED_MS,
+  }), [lists, layout, mode, settings.skipStillsOverMs]);
+
+  const total = totalSpan(steps);
+
+  /** One column per slice of elapsed time, carrying the strongest change inside it. */
+  const ticks = useMemo(() => {
+    const height = new Float32Array(TICKS);
+    if (!total) return height;
+    for (const s of steps) {
+      const col = Math.min(TICKS - 1, Math.floor((s.start / total) * TICKS));
+      height[col] = Math.max(height[col]!, s.change);
+    }
+    return height;
+  }, [steps, total]);
+
+  const current = steps[step];
+  const currentTick = total && current
+    ? Math.min(TICKS - 1, Math.floor((current.start / total) * TICKS))
+    : 0;
+
+  // Decode ahead so playback never stalls waiting on a fetch.
   useEffect(() => {
-    if (frames.length === 0) return;
+    for (let k = step; k < Math.min(steps.length, step + PREFETCH); k++) {
+      steps[k]?.at.forEach((i, s) => {
+        const f = i >= 0 ? lists[s]?.[i] : null;
+        if (f) void store.getImageBlob(f.frame_id, 'full').catch(() => null);
+      });
+    }
+  }, [step, steps, lists, store]);
+
+  const seek = useCallback((ms: number) => {
+    playhead.current = Math.max(0, Math.min(total, ms));
+  }, [total]);
+
+  const scrubTo = useCallback((clientX: number) => {
+    const el = trackRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    seek(Math.max(0, Math.min(1, (clientX - r.left) / r.width)) * total);
+  }, [seek, total]);
+
+  // Advance the playhead and pick the step. One rAF loop drives both.
+  useEffect(() => {
+    if (steps.length === 0) return;
     let raf = 0;
     let prev = performance.now();
 
@@ -184,86 +254,48 @@ export function PlayerView({ store, session, settings, accountId, onBack, onInsp
 
       if (playing) {
         playhead.current += dt * speed;
-        if (playhead.current >= timeline.total) {
-          playhead.current = timeline.total;
+        if (playhead.current >= total) {
+          playhead.current = total;
           setPlaying(false);
         }
       }
 
-      let i = frames.length - 1;
-      for (let k = 0; k < frames.length; k++) {
-        if (playhead.current < timeline.starts[k]! + timeline.spans[k]!) { i = k; break; }
-      }
-      if (i !== drawnIndex.current) {
-        const previous = frames[drawnIndex.current];
-        const oldBmp = previous ? cache.current.get(previous.frame_id) : undefined;
-        if (oldBmp) fadeFrom.current = { bitmap: oldBmp, at: performance.now() };
-        drawnIndex.current = i;
-        setIndex(i);
+      const k = stepAt(steps, playhead.current);
+      if (k !== drawnStep.current) {
+        drawnStep.current = k;
+        setStep(k);
       }
       if (headRef.current) {
-        const at = timeline.total ? (playhead.current / timeline.total) * 100 : 0;
-        headRef.current.style.left = `${at}%`;
+        headRef.current.style.left = `${total ? (playhead.current / total) * 100 : 0}%`;
       }
-      void paint(i);
       raf = requestAnimationFrame(tick);
     };
 
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [frames, playing, speed, timeline, paint]);
+  }, [steps, playing, speed, total]);
 
-  /**
-   * Double-pressing the picture opens the inspector on the frame that is on screen.
-   *
-   * Double-press rather than single, because a single tap on a player is universally
-   * understood as play/pause and stealing it would make scrubbing hostile. The stamp is
-   * built here from the frame's own row, so it is the same code the recorder showed live.
-   */
-  const inspectCurrent = useCallback(() => {
-    const f = frames[drawnIndex.current] ?? frames[0];
+  const inspectPane = useCallback((s: number) => {
+    const i = current?.at[s] ?? -1;
+    const f = i >= 0 ? lists[s]?.[i] : null;
     if (!f) return;
     void encodeStamp({
-      frameId: f.frame_id, deviceId: f.device_id || session.device_id, userId: accountId,
+      frameId: f.frame_id,
+      deviceId: f.device_id || sessions[s]?.device_id || '',
+      userId: accountId,
     }).then(onInspect);
-  }, [frames, session.device_id, accountId, onInspect]);
-
-  /**
-   * Switch between the stored image and the untouched capture.
-   *
-   * The drawn index is reset rather than left alone: the paint loop only repaints when the
-   * frame changes, so without this the toggle would do nothing visible until playback
-   * moved on. The fade source is dropped too, since cross-fading from one variant into the
-   * other reads as a glitch rather than a transition.
-   */
-  const showVariant = useCallback((next: Variant) => {
-    fadeFrom.current = null;
-    drawnIndex.current = -1;
-    setVariant(next);
-  }, []);
-
-  const seek = useCallback((ms: number) => {
-    playhead.current = Math.max(0, Math.min(timeline.total, ms));
-  }, [timeline.total]);
-
-  /**
-   * Pointer events rather than click, so dragging scrubs and a finger works the same as a
-   * mouse. Capturing the pointer keeps the drag alive when it leaves the bar, which on a
-   * 40px-tall control on a phone is most of the time.
-   */
-  const scrubTo = useCallback((clientX: number) => {
-    const el = trackRef.current;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    const fraction = Math.max(0, Math.min(1, (clientX - r.left) / r.width));
-    seek(fraction * timeline.total);
-  }, [seek, timeline.total]);
+  }, [current, lists, sessions, accountId, onInspect]);
 
   if (loading) return <div className="panel"><div className="empty">Loading frames…</div></div>;
-  if (frames.length === 0) {
+
+  const totalFrames = lists.reduce((n, f) => n + f.length, 0);
+  if (totalFrames === 0) {
     return (
       <div className="panel">
-        <div className="empty">This session stored no frames.</div>
+        <div className="empty">
+          {sessions.length === 1 ? 'This session stored no frames.'
+            : 'None of these sessions stored any frames.'}
+        </div>
         <div className="row" style={{ justifyContent: 'center' }}>
           <button onClick={onBack}>Back</button>
         </div>
@@ -271,19 +303,52 @@ export function PlayerView({ store, session, settings, accountId, onBack, onInsp
     );
   }
 
-  const current = frames[index]!;
-  const realHold = current.hold_ms ?? 0;
-  const skipping = mode === 'realtime' && realHold > settings.skipStillsOverMs;
+  // In sequence the panes would be all-but-one idle, so only the active one is drawn.
+  const visible = layout === 'together'
+    ? sessions.map((_, s) => s)
+    : [current?.at.findIndex((i) => i >= 0) ?? 0].filter((s) => s >= 0);
+
+  const activeFrame = (s: number): FrameRecord | null => {
+    const i = current?.at[s] ?? -1;
+    return i >= 0 ? lists[s]?.[i] ?? null : null;
+  };
+
+  const anyFrame = visible.map(activeFrame).find(Boolean) ?? null;
+  const skipping = mode === 'realtime'
+    && anyFrame !== null
+    && (anyFrame.hold_ms ?? 0) > settings.skipStillsOverMs;
 
   return (
     <div>
       <div className="row" style={{ marginBottom: 12 }}>
         <button onClick={onBack}>← Library</button>
-        <b>{day(session.started_at)} {clock(session.started_at)}</b>
+        <b>
+          {sessions.length === 1
+            ? `${day(sessions[0]!.started_at)} ${clock(sessions[0]!.started_at)}`
+            : `${sessions.length} recordings`}
+        </b>
         <span style={{ color: 'var(--dim)' }}>
-          {frames.length} frames · {bytes(session.bytes_stored)}
+          {totalFrames} frames · {bytes(sessions.reduce((n, s) => n + s.bytes_stored, 0))}
         </span>
         <div className="row" style={{ marginLeft: 'auto' }}>
+          {sessions.length > 1 && (
+            <div className="row" style={{ gap: 4 }}>
+              <button
+                className={layout === 'together' ? 'on' : ''}
+                onClick={() => { setLayout('together'); seek(0); }}
+                title="All recordings at once, lined up on the same instant"
+              >
+                Side by side
+              </button>
+              <button
+                className={layout === 'sequence' ? 'on' : ''}
+                onClick={() => { setLayout('sequence'); seek(0); }}
+                title="One after another, as a single run"
+              >
+                In sequence
+              </button>
+            </div>
+          )}
           <select value={mode} onChange={(e) => { setMode(e.target.value as Mode); seek(0); }} style={{ width: 190 }}>
             <option value="realtime">Real time (skip stills)</option>
             <option value="condensed">Condensed (flip through)</option>
@@ -291,20 +356,18 @@ export function PlayerView({ store, session, settings, accountId, onBack, onInsp
           <select value={speed} onChange={(e) => setSpeed(Number(e.target.value))} style={{ width: 80 }}>
             {[0.5, 1, 2, 4, 8].map((v) => <option key={v} value={v}>{v}×</option>)}
           </select>
-          {/* Only offered when this session actually kept originals. A toggle that does
-              nothing on most sessions is worse than no toggle. */}
-          {frames.some((f) => f.has_original) && (
+          {lists.some((f) => f.some((x) => x.has_original)) && (
             <div className="row" style={{ gap: 4 }}>
               <button
                 className={variant === 'full' ? 'on' : ''}
-                onClick={() => showVariant('full')}
+                onClick={() => setVariant('full')}
                 title="The stored image, with its stamp and any masks"
               >
                 Stamped
               </button>
               <button
                 className={variant === 'original' ? 'on' : ''}
-                onClick={() => showVariant('original')}
+                onClick={() => setVariant('original')}
                 title="The capture as it was, where one was kept"
               >
                 Original
@@ -314,20 +377,22 @@ export function PlayerView({ store, session, settings, accountId, onBack, onInsp
         </div>
       </div>
 
-      <div
-        className="stage"
-        onDoubleClick={inspectCurrent}
-        title="Double-press to inspect this frame"
-      >
-        <canvas ref={canvasRef} />
+      <div className={`panes ${visible.length > 1 ? 'multi' : ''}`}>
+        {visible.map((s) => (
+          <Pane
+            key={sessions[s]!.session_id}
+            store={store}
+            frame={activeFrame(s)}
+            variant={variant}
+            label={sessions.length > 1
+              ? `${clock(sessions[s]!.started_at)} · ${sessions[s]!.screen_w}×${sessions[s]!.screen_h}`
+              : null}
+            onDoubleClick={() => inspectPane(s)}
+          />
+        ))}
         {skipping && (
-          <div className="skip">⏩ screen unchanged for {duration(realHold)} — skipped</div>
-        )}
-        {variant === 'original' && !current.has_original && (
-          <div className="skip">
-            {current.redacted
-              ? '\u26ca This frame was redacted — no unmasked copy was ever created. Showing the stored image.'
-              : 'No separate original was kept for this frame. Showing the stored image.'}
+          <div className="skip skip-float">
+            ⏩ screen unchanged for {duration(anyFrame?.hold_ms ?? 0)} — skipped
           </div>
         )}
       </div>
@@ -339,33 +404,25 @@ export function PlayerView({ store, session, settings, accountId, onBack, onInsp
         tabIndex={0}
         aria-label="Playback position"
         aria-valuemin={0}
-        aria-valuemax={Math.round(timeline.total)}
+        aria-valuemax={Math.round(total)}
         aria-valuenow={Math.round(playhead.current)}
-        aria-valuetext={`${clock(current.captured_at)}, frame ${index + 1} of ${frames.length}`}
-        onPointerDown={(e) => {
-          e.currentTarget.setPointerCapture(e.pointerId);
-          scrubTo(e.clientX);
-        }}
-        onPointerMove={(e) => {
-          if (e.currentTarget.hasPointerCapture(e.pointerId)) scrubTo(e.clientX);
-        }}
+        aria-valuetext={current ? `${clock(new Date(current.wall).toISOString())}, step ${step + 1} of ${steps.length}` : ''}
+        onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); scrubTo(e.clientX); }}
+        onPointerMove={(e) => { if (e.currentTarget.hasPointerCapture(e.pointerId)) scrubTo(e.clientX); }}
         onKeyDown={(e) => {
-          const step = timeline.total / 50;
-          if (e.key === 'ArrowLeft') seek(playhead.current - step);
-          else if (e.key === 'ArrowRight') seek(playhead.current + step);
+          const stepMs = total / 50;
+          if (e.key === 'ArrowLeft') seek(playhead.current - stepMs);
+          else if (e.key === 'ArrowRight') seek(playhead.current + stepMs);
           else if (e.key === 'Home') seek(0);
-          else if (e.key === 'End') seek(timeline.total);
+          else if (e.key === 'End') seek(total);
           else if (e.key === ' ') setPlaying((p) => !p);
           else return;
           e.preventDefault();
         }}
       >
         {Array.from(ticks, (score, i) => (
-          <i
-            key={i}
-            className={i === currentTick ? 'on' : ''}
-            style={{ height: `${Math.max(8, Math.min(100, score * 160))}%` }}
-          />
+          <i key={i} className={i === currentTick ? 'on' : ''}
+            style={{ height: `${Math.max(8, Math.min(100, score * 160))}%` }} />
         ))}
         <div ref={headRef} className="head" style={{ left: 0 }} />
       </div>
@@ -374,28 +431,34 @@ export function PlayerView({ store, session, settings, accountId, onBack, onInsp
         <button className="primary" onClick={() => setPlaying((p) => !p)}>
           {playing ? 'Pause' : 'Play'}
         </button>
-        <button onClick={() => seek(timeline.starts[Math.max(0, index - 1)] ?? 0)}>← Prev</button>
-        <button onClick={() => seek(timeline.starts[Math.min(frames.length - 1, index + 1)] ?? 0)}>
+        <button onClick={() => seek(steps[Math.max(0, step - 1)]?.start ?? 0)}>← Prev</button>
+        <button onClick={() => seek(steps[Math.min(steps.length - 1, step + 1)]?.start ?? 0)}>
           Next →
         </button>
-        <span className={`tag ${current.reason}`}>{current.reason}</span>
-        {current.redacted ? (
-          <span className="tag warn-tag" title={`${current.redacted_regions.length} field(s) masked before upload`}>
-            redacted
-          </span>
-        ) : current.redacted_regions.length > 0 ? (
-          <span className="tag warn-tag" title="Detected but not masked — the setting is 'flag'">
-            flagged
-          </span>
-        ) : null}
+        {anyFrame && (
+          <>
+            <span className={`tag ${anyFrame.reason}`}>{anyFrame.reason}</span>
+            {anyFrame.redacted ? (
+              <span className="tag warn-tag" title={`${anyFrame.redacted_regions.length} field(s) masked before upload`}>
+                redacted
+              </span>
+            ) : anyFrame.redacted_regions.length > 0 ? (
+              <span className="tag warn-tag" title="Detected but not masked — the setting is 'flag'">
+                flagged
+              </span>
+            ) : null}
+          </>
+        )}
         <span style={{ color: 'var(--dim)' }}>
-          {clock(current.captured_at)} · frame {index + 1}/{frames.length} · held{' '}
-          {duration(realHold)} · change {(current.change_score * 100).toFixed(1)}%
+          {current ? clock(new Date(current.wall).toISOString()) : '—'} · step {step + 1}/{steps.length}
+          {layout === 'together' && sessions.length > 1
+            && ` · ${current?.at.filter((i) => i >= 0).length ?? 0}/${sessions.length} recording`}
         </span>
-        <button style={{ marginLeft: 'auto' }} onClick={inspectCurrent}>
-          Inspect this frame
-        </button>
-        <code>{current.frame_id}</code>
+        {anyFrame && (
+          <button style={{ marginLeft: 'auto' }} onClick={() => inspectPane(visible[0] ?? 0)}>
+            Inspect this frame
+          </button>
+        )}
       </div>
     </div>
   );

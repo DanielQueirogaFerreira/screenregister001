@@ -79,6 +79,10 @@ export class CloudStore implements FrameStore {
     return this.api.heartbeat(sessionId, counts);
   }
 
+  finishSession(sessionId: string) {
+    return this.api.finishSession(sessionId);
+  }
+
   liveSessions() {
     return this.api.liveSessions();
   }

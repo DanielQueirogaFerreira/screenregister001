@@ -111,6 +111,8 @@ export const ROADMAP: Phase[] = [
       { text: 'Stop asked for from one device, collected by the recording one', done: true },
       { text: 'Operator view of every account\u2019s recordings, with an audit log', done: true },
       { text: 'Operator access from a Worker variable, never a database role', done: true },
+      { text: 'Close a recording whose browser never did', done: true },
+      { text: 'Several recordings played together on one clock, or end to end', done: true },
     ],
   },
   {

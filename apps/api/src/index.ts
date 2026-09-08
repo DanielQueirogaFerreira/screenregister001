@@ -258,6 +258,27 @@ app.delete('/v1/admin/sessions/:id', adminOnly(async (c, admin) => {
   return c.json({ ok: true, deleted: results.length });
 }));
 
+/**
+ * One session's frames, for an operator, regardless of who owns it.
+ *
+ * Separate from the owner's own route rather than a branch inside it: an operator reading
+ * someone else's recording is a different act from a person reading their own, and the two
+ * should not share a code path where a missing condition silently turns one into the other.
+ */
+app.get('/v1/admin/sessions/:id/frames', adminOnly(async (c, admin) => {
+  const id = c.req.param('id');
+  const { results } = await c.env.DB.prepare(
+    `SELECT * FROM frames WHERE session_id = ? ORDER BY seq ASC`,
+  ).bind(id).all();
+  const session = await c.env.DB.prepare(
+    `SELECT s.*, u.email FROM sessions s JOIN users u ON u.user_id = s.user_id
+      WHERE s.session_id = ?`,
+  ).bind(id).first();
+  await adminAudit(c.env, c.req.raw, admin, 'view_session', id,
+    `${results.length} frame(s), owner ${(session as { email?: string })?.email ?? 'unknown'}`);
+  return c.json({ session, frames: results.map(publicFrame) });
+}));
+
 /** What operators have been doing. Visible to operators, which is the point of having it. */
 app.get('/v1/admin/events', adminOnly(async (c) => {
   const { results } = await c.env.DB.prepare(
@@ -275,6 +296,62 @@ app.use('/mcp', requireAuth);
  */
 app.all('/mcp', (c) => handleMcp(c.req.raw, c.env, c.get('me')));
 
+
+/**
+ * Close a recording that was never closed.
+ *
+ * A session is completed by the browser that made it, so one whose browser was closed,
+ * crashed or lost power stays open forever — visible in the library as "unfinished", with
+ * nothing but Delete to do about it. Deleting is the wrong remedy for a recording that
+ * holds real frames: the capture happened, and its frames are worth keeping.
+ *
+ * The end time is taken from the last frame's own timestamp plus how long it stayed on
+ * screen, not from now. Now would claim the recording ran until whenever somebody
+ * happened to notice, which for a laptop closed on Friday and reopened on Monday is a
+ * three-day session that never existed.
+ *
+ * Refused while the session is still beating: a live capture is not unfinished, and
+ * closing it out from under the browser that owns it would leave that browser uploading
+ * into a session the database considers over.
+ */
+app.post('/v1/sessions/:id/finish', async (c) => {
+  const me = c.get('me');
+  const id = c.req.param('id');
+
+  const row = await c.env.DB.prepare(
+    `SELECT ended_at, last_seen_at FROM sessions WHERE session_id = ? AND user_id = ?`,
+  ).bind(id, me.userId).first<{ ended_at: string | null; last_seen_at: string | null }>();
+  if (!row) return c.json({ error: 'not_found' }, 404);
+  if (row.ended_at) return c.json({ ok: true, already_finished: true, ended_at: row.ended_at });
+  if (row.last_seen_at && row.last_seen_at >= liveCutoff()) {
+    return c.json({
+      error: 'still_recording',
+      detail: 'This capture is still running. Ask it to stop instead; it closes itself.',
+    }, 409);
+  }
+
+  const last = await c.env.DB.prepare(
+    `SELECT captured_at, hold_ms, COUNT(*) AS n, COALESCE(SUM(bytes), 0) AS bytes
+       FROM frames WHERE session_id = ? AND user_id = ?
+      ORDER BY seq DESC LIMIT 1`,
+  ).bind(id, me.userId)
+    .first<{ captured_at: string | null; hold_ms: number | null; n: number; bytes: number }>();
+
+  const endedAt = last?.captured_at
+    ? new Date(Date.parse(last.captured_at) + (last.hold_ms ?? 0)).toISOString()
+    // No frames at all: there is no moment the recording reached, so the only honest end
+    // is the moment it began. It shows as a zero-length session, which is what it was.
+    : null;
+
+  await c.env.DB.prepare(
+    `UPDATE sessions
+        SET ended_at = COALESCE(?, started_at),
+            frames_stored = ?, bytes_stored = ?, stop_requested_at = NULL
+      WHERE session_id = ? AND user_id = ? AND ended_at IS NULL`,
+  ).bind(endedAt, last?.n ?? 0, last?.bytes ?? 0, id, me.userId).run();
+
+  return c.json({ ok: true, ended_at: endedAt, frames: last?.n ?? 0 });
+});
 
 /** Upsert, so the client can call it before every batch without tracking whether it exists. */
 app.put('/v1/sessions/:id', async (c) => {
@@ -610,10 +687,48 @@ app.get('/v1/sessions/:id/frames', async (c) => {
  */
 app.get('/v1/frames/:id/image', async (c) => {
   const me = c.get('me');
-  const row = await c.env.DB.prepare(
-    `SELECT storage_key, original_key, redacted FROM frames WHERE frame_id = ? AND user_id = ?`,
-  ).bind(c.req.param('id'), me.userId)
-    .first<{ storage_key: string; original_key: string | null; redacted: number }>();
+  const frameId = c.req.param('id');
+
+  let row = await c.env.DB.prepare(
+    `SELECT storage_key, original_key, redacted, user_id
+       FROM frames WHERE frame_id = ? AND user_id = ?`,
+  ).bind(frameId, me.userId)
+    .first<{ storage_key: string; original_key: string | null; redacted: number; user_id: string }>();
+
+  /**
+   * An operator may look at a frame that is not theirs.
+   *
+   * This is the sharpest edge in the system and it is here on an explicit instruction,
+   * having first been built without it. Three things hold it in place.
+   *
+   * It is only reached after the owner lookup misses, so an operator viewing their own
+   * recordings takes the ordinary path and logs nothing — the log stays a record of
+   * looking at *other people's* screens, which is the only thing worth reviewing.
+   *
+   * Every such view is written to admin_events before the bytes are served, not after. A
+   * log written after the response can be lost to a crash mid-stream; one written before
+   * cannot be, and the cost of logging a view that then fails to deliver is nothing.
+   *
+   * And a redacted frame is redacted for an operator too. There is no unmasked copy to
+   * serve — it was never encoded — so this grants no ability to see what the privacy layer
+   * removed. That is a property of how the frame was stored, not a check anyone can skip.
+   */
+  if (!row) {
+    const admin = await resolveAdmin(c.env, me.userId);
+    if (admin) {
+      row = await c.env.DB.prepare(
+        `SELECT storage_key, original_key, redacted, user_id FROM frames WHERE frame_id = ?`,
+      ).bind(frameId)
+        .first<{ storage_key: string; original_key: string | null; redacted: number; user_id: string }>();
+      if (row) {
+        await adminAudit(
+          c.env, c.req.raw, admin, 'view_frame', frameId,
+          `owner ${row.user_id}, variant ${c.req.query('variant') ?? 'full'}`,
+        );
+      }
+    }
+  }
+
   if (!row) return c.json({ error: 'not found' }, 404);
 
   const variant = c.req.query('variant');

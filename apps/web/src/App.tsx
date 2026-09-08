@@ -43,7 +43,8 @@ function RecorderApp() {
   const [store, setStore] = useState<CloudStore | null>(null);
   const [tab, setTab] = useState<Tab>('record');
   const [settings, setSettings] = useState<CaptureSettings>(loadSettings);
-  const [playing, setPlaying] = useState<SessionRecord | null>(null);
+  /** Recordings open in the player. More than one plays them together or in sequence. */
+  const [playing, setPlaying] = useState<SessionRecord[]>([]);
   /**
    * A stamp handed to the inspector from somewhere else — double-clicking a frame in the
    * player, or the live tile in the library. Held here rather than in a route because the
@@ -53,7 +54,7 @@ function RecorderApp() {
 
   const inspect = useCallback((stamp: string) => {
     setInspecting(stamp);
-    setPlaying(null);
+    setPlaying([]);
     setTab('inspect');
   }, []);
   const [usage, setUsage] = useState<UsageInfo | null>(null);
@@ -187,7 +188,7 @@ function RecorderApp() {
     void sessions.stopAll().catch(() => undefined);
     void logout().catch(() => undefined);
     setAccount(null);
-    setPlaying(null);
+    setPlaying([]);
     setTab('record');
   }, [sessions]);
 
@@ -251,9 +252,9 @@ function RecorderApp() {
           ] as Tab[]).map((t) => (
             <button
               key={t}
-              className={tab === t && !playing ? 'on' : ''}
+              className={tab === t && playing.length === 0 ? 'on' : ''}
               onClick={() => {
-                setPlaying(null);
+                setPlaying([]);
                 setTab(t);
               }}
             >
@@ -278,7 +279,7 @@ function RecorderApp() {
         </nav>
       </header>
 
-      {live.length + remote.length > 0 && tab !== 'record' && !playing && (
+      {live.length + remote.length > 0 && tab !== 'record' && playing.length === 0 && (
         <div className="banner info recording-bar">
           <span className={`dot ${live.some((x) => !x.paused) || remote.length > 0 ? 'live' : ''}`} />
           <b>
@@ -343,13 +344,13 @@ function RecorderApp() {
         </div>
       )}
 
-      {playing ? (
+      {playing.length > 0 ? (
         <PlayerView
           store={store}
-          session={playing}
+          sessions={playing}
           settings={settings}
           accountId={account.user_id}
-          onBack={() => setPlaying(null)}
+          onBack={() => setPlaying([])}
           onInspect={inspect}
         />
       ) : tab === 'record' ? (

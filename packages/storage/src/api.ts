@@ -160,6 +160,13 @@ export class ApiClient {
     });
   }
 
+  /** Close a session whose browser never did. Refused while it is still beating. */
+  finishSession(sessionId: string): Promise<{ ok: boolean; ended_at: string | null; frames: number }> {
+    return this.request(`/v1/sessions/${encodeURIComponent(sessionId)}/finish`, {
+      method: 'POST',
+    });
+  }
+
   listSessions(): Promise<{ sessions: SessionRecord[] }> {
     return this.request('/v1/sessions');
   }
