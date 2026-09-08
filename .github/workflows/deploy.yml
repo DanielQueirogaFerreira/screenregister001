@@ -65,6 +65,7 @@ jobs:
         run: pnpm run migrate:api
 
       - name: Deploy
+        id: deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
@@ -95,3 +96,34 @@ jobs:
           pnpm --filter @sr/api exec wrangler secret list || true
           echo "::error::$worker_url/v1/health never reported ok:true. Last response: $body"
           exit 1
+
+      # Written whether the deploy passed or failed, because a failed deploy is exactly the
+      # entry you go looking for. Parameterised rather than interpolated: a commit message
+      # is attacker-influenced text and must never be concatenated into SQL.
+      - name: Record the deployment
+        if: always() && steps.deploy.outcome == 'success'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+          RESULT: ${{ job.status }}
+        working-directory: apps/api
+        run: |
+          # A single-quoted SQL literal with any embedded quote doubled — the SQLite
+          # escaping rule — since `wrangler d1 execute` takes a command string, not binds.
+          sql_quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/''/g")"; }
+
+          subject="$(printf '%s' "$COMMIT_MESSAGE" | head -1 | cut -c1-200)"
+          status_value="success"
+          [ "$RESULT" = "success" ] || status_value="failure"
+
+          npx wrangler d1 execute screenregister001 --remote --command \
+            "INSERT INTO deploy_events (at, commit_sha, commit_message, actor, run_id, run_url, status)
+             VALUES ($(sql_quote "$(date -u +%Y-%m-%dT%H:%M:%SZ)"),
+                     $(sql_quote '${{ github.sha }}'),
+                     $(sql_quote "$subject"),
+                     $(sql_quote '${{ github.actor }}'),
+                     $(sql_quote '${{ github.run_id }}'),
+                     $(sql_quote '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'),
+                     $(sql_quote "$status_value"))" || \
+            echo "::warning::Could not record the deployment; the deploy itself is unaffected."

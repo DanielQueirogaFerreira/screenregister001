@@ -12,10 +12,26 @@ import { LibraryView } from './views/LibraryView.js';
 import { PlayerView } from './views/PlayerView.js';
 import { SettingsView } from './views/SettingsView.js';
 import { VersionBadge } from './views/VersionBadge.js';
+import { StatusView } from './views/StatusView.js';
 
 type Tab = 'record' | 'library' | 'settings';
 
 export function App() {
+  // The status page is deliberately outside the auth gate, and checked before any of it
+  // runs. The moment it is most needed is when authentication is the thing that is broken,
+  // and a status page you have to sign in to read cannot report that you cannot sign in.
+  if (typeof location !== 'undefined' && location.pathname.replace(/\/+$/, '') === '/status') {
+    return (
+      <>
+        <StatusView />
+        <VersionBadge />
+      </>
+    );
+  }
+  return <RecorderApp />;
+}
+
+function RecorderApp() {
   const [account, setAccount] = useState<Account | null>(null);
   const [emailConfigured, setEmailConfigured] = useState(false);
   const [checkingAuth, setCheckingAuth] = useState(true);
