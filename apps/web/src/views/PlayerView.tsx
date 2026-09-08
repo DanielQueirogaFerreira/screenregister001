@@ -379,11 +379,15 @@ export function PlayerView({ store, session, settings, accountId, onBack, onInsp
           Next →
         </button>
         <span className={`tag ${current.reason}`}>{current.reason}</span>
-        {current.redacted && (
+        {current.redacted ? (
           <span className="tag warn-tag" title={`${current.redacted_regions.length} field(s) masked before upload`}>
             redacted
           </span>
-        )}
+        ) : current.redacted_regions.length > 0 ? (
+          <span className="tag warn-tag" title="Detected but not masked — the setting is 'flag'">
+            flagged
+          </span>
+        ) : null}
         <span style={{ color: 'var(--dim)' }}>
           {clock(current.captured_at)} · frame {index + 1}/{frames.length} · held{' '}
           {duration(realHold)} · change {(current.change_score * 100).toFixed(1)}%

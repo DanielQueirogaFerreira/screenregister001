@@ -252,7 +252,7 @@ jobs:
 
           printf 'not-a-real-image' > /tmp/frame.webp
           curl -fsS -b "$JAR" -X POST "$BASE/v1/frames" -H "Origin: $BASE" \
-            -F "meta={\"frame_id\":\"$FRAME_ID\",\"session_id\":\"$SESSION_ID\",\"captured_at\":\"$CAPTURED_AT\",\"offset_ms\":0,\"seq\":0,\"change_score\":0.5,\"changed_tiles\":[1,2],\"reason\":\"first\",\"width\":1920,\"height\":1080,\"bytes\":16,\"format\":\"image/webp\",\"sha256\":\"deadbeef\"}" \
+            -F "meta={\"frame_id\":\"$FRAME_ID\",\"session_id\":\"$SESSION_ID\",\"stamp\":\"$STAMP\",\"captured_at\":\"$CAPTURED_AT\",\"offset_ms\":0,\"seq\":0,\"change_score\":0.5,\"changed_tiles\":[1,2],\"reason\":\"first\",\"width\":1920,\"height\":1080,\"bytes\":16,\"format\":\"image/webp\",\"sha256\":\"deadbeef\"}" \
             -F "full=@/tmp/frame.webp" -F "thumb=@/tmp/frame.webp" \
             -F "original=@/tmp/frame.webp" \
             -o /tmp/upload.json || fail "frame upload failed"
@@ -312,9 +312,13 @@ jobs:
           import json
           frames = {f['frame_id']: f for f in json.load(open('/tmp/lst.json'))['frames']}
           clean, red = frames['$FRAME_ID'], frames['$R_FRAME']
-          print('  clean   :', clean['redacted'], clean['has_original'], clean['stamp'][:22] + '...')
+          print('  clean   :', clean['redacted'], clean['has_original'], clean['stamp'])
           print('  redacted:', red['redacted'], red['has_original'], red['redacted_regions'])
           assert clean['redacted'] is False and clean['has_original'] is True
+          # The stamp column round-trips, and it contains the frame id whole — which is the
+          # property that makes it checkable against this listing by eye.
+          assert clean['stamp'] == '$STAMP', f"stamp did not round-trip: {clean['stamp']!r}"
+          assert clean['frame_id'] in clean['stamp'], 'the stamp does not carry its frame id'
           assert red['redacted'] is True and red['has_original'] is False
           assert red['redacted_regions'] == [{'x': 1, 'y': 2, 'w': 3, 'h': 4}]
           # Object keys are where bytes live; a caller must never be handed them.

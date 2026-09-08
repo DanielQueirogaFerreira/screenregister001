@@ -210,7 +210,14 @@ export function InspectView({ store, accountId, initialStamp, onConsumed }: Insp
                   ? <span className="tag warn-tag">
                       {result.frame.redacted_regions.length} field(s) masked
                     </span>
-                  : 'nothing masked'}
+                  // A finding without a mask is the 'flag' setting: the detector saw
+                  // something and was told only to say so. Reporting that as "nothing
+                  // masked" would hide exactly the evidence that setting exists to gather.
+                  : result.frame.redacted_regions.length > 0
+                    ? <span className="tag warn-tag">
+                        {result.frame.redacted_regions.length} field(s) seen, not masked
+                      </span>
+                    : 'nothing detected'}
               />
               <Row
                 label="Untouched capture"
