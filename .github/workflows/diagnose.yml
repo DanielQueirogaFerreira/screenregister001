@@ -1,0 +1,79 @@
+name: Diagnose production error
+
+# Captures the Worker's own stack trace for a failing request.
+#
+# `app.onError` returns a deliberately opaque {"error":"internal_error"} to callers, which
+# is correct — an unhandled exception must not leak internals to the internet — but it
+# means the only place the real cause exists is the Worker's log. This tails that log while
+# provoking the failure, so the diagnosis comes from the runtime rather than from a guess.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+
+      - name: Tail the Worker while provoking a signup
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        working-directory: apps/api
+        run: |
+          set -uo pipefail
+          BASE="https://screenregister001.daniel-queiroga.workers.dev"
+
+          npx wrangler tail --format json > /tmp/tail.jsonl 2>/tmp/tail.err &
+          TAIL_PID=$!
+          sleep 12   # let the tail session attach before generating traffic
+
+          echo "--- provoking signup"
+          curl -s -o /tmp/resp.json -w 'HTTP %{http_code} in %{time_total}s\n' \
+            -X POST "$BASE/v1/auth/signup" \
+            -H 'Content-Type: application/json' -H "Origin: $BASE" \
+            -d "{\"email\":\"diag_$(date +%s)@example.com\",\"password\":\"correct horse battery staple diag\"}"
+          cat /tmp/resp.json; echo
+
+          sleep 12
+          kill $TAIL_PID 2>/dev/null || true
+          sleep 2
+
+          echo
+          echo "=== wrangler tail stderr ==="
+          head -20 /tmp/tail.err || true
+
+          echo
+          echo "=== exceptions and logs from the Worker ==="
+          python3 - <<'PY'
+          import json
+          try:
+              lines = open('/tmp/tail.jsonl').read().splitlines()
+          except FileNotFoundError:
+              lines = []
+          if not lines:
+              print('no tail output captured')
+          for line in lines:
+              line = line.strip()
+              if not line.startswith('{'):
+                  continue
+              try:
+                  e = json.loads(line)
+              except Exception:
+                  continue
+              req = (e.get('event') or {}).get('request') or {}
+              print('---', e.get('outcome'), req.get('method', ''), req.get('url', ''))
+              for ex in e.get('exceptions') or []:
+                  print('  EXCEPTION:', ex.get('name'), '-', ex.get('message'))
+                  if ex.get('stack'):
+                      for s in str(ex['stack']).splitlines()[:12]:
+                          print('     ', s)
+              for lg in e.get('logs') or []:
+                  msg = ' '.join(str(m) for m in (lg.get('message') or []))
+                  print(f"  {lg.get('level')}: {msg[:600]}")
+          PY
