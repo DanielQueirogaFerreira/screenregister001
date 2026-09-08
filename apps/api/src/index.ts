@@ -3,7 +3,7 @@ import { cors } from 'hono/cors';
 import type { Env, Principal } from './types.js';
 import { AuthNotConfiguredError, isAuthConfigured } from './auth.js';
 import { authRoutes, requireAuth } from './auth-routes.js';
-import { mailConfigured } from './mailer.js';
+import { healthFacts, isLocalhostOrigin, localhostAllowed } from './health.js';
 import { pruneAuthTables } from './accounts.js';
 import { buildStatus, pruneStatusTables, recordProbes, runProbes } from './status.js';
 import { handleMcp } from './mcp.js';
@@ -13,12 +13,6 @@ import { OPENAPI } from './openapi.js';
 type Ctx = { Bindings: Env; Variables: { me: Principal; scope: 'read' | 'write'; sessionHash?: string } };
 
 const app = new Hono<Ctx>();
-
-const LOCALHOST_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
-
-/** Opt-in, and only an exact "true" counts — an unset or malformed value stays off. */
-const localhostAllowed = (env: Env): boolean =>
-  (env.ALLOW_LOCALHOST_ORIGINS ?? '').trim().toLowerCase() === 'true';
 
 /**
  * The Worker serves the client, so real traffic is same-origin and needs no CORS at all.
@@ -35,7 +29,7 @@ app.use('*', cors({
   origin: (origin, c) => {
     if (!origin) return undefined;                       // same-origin or non-browser
     if (origin === new URL(c.req.url).origin) return origin;
-    if (localhostAllowed(c.env) && LOCALHOST_ORIGIN.test(origin)) return origin;
+    if (localhostAllowed(c.env) && isLocalhostOrigin(origin)) return origin;
     return undefined;                                    // everything else is denied
   },
   allowHeaders: ['Authorization', 'Content-Type'],
@@ -62,63 +56,42 @@ app.onError((err, c) => {
 });
 
 /**
- * Liveness plus the two things a fresh deploy most often lacks.
+ * Health, for machines. A person gets sent to the dashboard instead.
  *
- * The Worker deploys happily without a D1 schema or an AUTH_SECRET, and then fails at
- * request time with errors that point nowhere near the cause — "no such table: frames"
- * says nothing about migrations never having been run. Reporting both here turns a
- * confusing outage into one curl.
+ * This URL has become the thing people paste into a browser when they want to know whether
+ * ScreenRegister is up, and a wall of JSON is a poor answer to that question — /status
+ * shows the same facts with history around them. So a browser navigation redirects there,
+ * while anything that asked for JSON (the deploy gate, the client's startup check, the
+ * smoke test, any uptime monitor) keeps getting exactly the body it always got.
  *
- * `auth_configured` reports only whether the Worker will serve authenticated traffic at
- * all. It deliberately does not distinguish "no key" from "key too weak": this route is
- * unauthenticated, and telling an anonymous caller that the signing key exists but is
- * brute-forceable is precisely the hint not to publish. The distinction is available to
- * an operator through `wrangler secret list`, behind their API token.
+ * The test is `Sec-Fetch-Mode: navigate`, which browsers send on a typed URL or a followed
+ * link and never on fetch/XHR. Accept alone is not enough: curl sends `Accept: * / *` and
+ * so does a monitor, and redirecting those would break the deploy gate.
  */
 app.get('/v1/health', async (c) => {
-  let schema: 'ready' | 'missing' | 'error' = 'ready';
-  try {
-    await c.env.DB.prepare('SELECT 1 FROM frames LIMIT 1').all();
-  } catch (err) {
-    schema = /no such table/i.test(String(err)) ? 'missing' : 'error';
+  if (c.req.header('Sec-Fetch-Mode') === 'navigate') {
+    return c.redirect('/status', 302);
   }
-  const authConfigured = isAuthConfigured(c.env);
-
-  return c.json({
-    ok: schema === 'ready' && authConfigured,
-    service: 'screenregister-api',
-    schema,
-    // The policy the nightly sweep enforces. Not a secret, and the client must not print
-    // a retention promise it invented locally.
-    retention_days: Number(c.env.RETENTION_DAYS || '7'),
-    auth_configured: authConfigured,
-    cors_localhost: localhostAllowed(c.env),
-    // Whether self-service verification and password reset can actually deliver. Not a
-    // secret, and a signup flow that silently cannot email is worth surfacing.
-    email_configured: mailConfigured(c.env),
-    ...(schema === 'missing' && {
-      hint: 'Run the D1 migrations: wrangler d1 migrations apply screenregister001 --remote',
-    }),
-    ...(!authConfigured && {
-      auth_hint: 'AUTH_SECRET is missing or too short, so the Worker refuses to issue or ' +
-        'accept tokens and every authenticated route returns 503. Set it: ' +
-        'wrangler secret put AUTH_SECRET',
-    }),
-  });
+  return c.json(await healthFacts(c.env));
 });
 
 /**
- * Everything the status dashboard renders: live probes, recorded history, uptime,
+ * Everything the status dashboard renders: recorded probe history, uptime, health facts,
  * deployment log and roadmap.
  *
  * Public, like /v1/health, and for the same reason: the moment it is most needed is when
  * authentication is the thing that is broken. It exposes no recordings, no counts of them,
  * and no account data — only whether the platform's own dependencies are answering.
+ *
+ * Reads only. The five-minute cron is what probes; see the note on buildStatus for why
+ * probing per request was a mistake this endpoint had to be caught making.
  */
 app.get('/v1/status', async (c) => {
   const payload = await buildStatus(c.env);
-  // Short cache: the page is safe to hammer on refresh, but must not show stale state.
-  c.header('Cache-Control', 'public, max-age=15');
+  // Half the probe interval. Nothing this endpoint reports can change in between, so a
+  // client refreshing every thirty seconds costs one D1 read per cache miss instead of a
+  // full probe pass. must-revalidate keeps a stale copy from being served after an outage.
+  c.header('Cache-Control', 'public, max-age=150, must-revalidate');
   return c.json(payload);
 });
 

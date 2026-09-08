@@ -118,19 +118,54 @@ jobs:
           done
 
           echo
-          echo "--- the status endpoint answers"
+          echo "--- a browser asking for /v1/health is sent to the dashboard"
+          code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Sec-Fetch-Mode: navigate' \
+            "$BASE/v1/health")
+          [ "$code" = "302" ] || fail "a browser navigation to /v1/health returned HTTP $code, expected 302"
+          loc=$(curl -s -o /dev/null -w '%{redirect_url}' -H 'Sec-Fetch-Mode: navigate' "$BASE/v1/health")
+          echo "  -> $loc"
+          case "$loc" in */status) : ;; *) fail "/v1/health redirected to $loc, expected /status" ;; esac
+
+          echo
+          echo "--- the status endpoint answers, quickly"
+          # Timed, because this endpoint used to run a 600k-iteration key derivation and an
+          # R2 round trip per request and took over a second. It is a reader now.
+          start=$(date +%s%3N)
           curl -fsS "$BASE/v1/status" -o /tmp/status.json || fail "/v1/status failed"
+          status_ms=$(( $(date +%s%3N) - start ))
+          echo "  answered in ${status_ms}ms"
+          [ "$status_ms" -lt 900 ] || fail "/v1/status took ${status_ms}ms; it is meant to be a cheap read"
+
           python3 - <<'PY' || exit 1
           import json
           d = json.load(open('/tmp/status.json'))
-          print('  overall:', d['overall'])
+          print('  overall:', d['overall'], '| stale:', d['freshness']['stale'],
+                '| last probe:', d['freshness']['last_check'])
           for s in d['services']:
               print(f"  {s['service']:6} {s['status']:9} latency={s['latency_ms']}  {s['detail'] or ''}")
           names = {s['service'] for s in d['services']}
           assert names == {'d1', 'r2', 'auth', 'kdf', 'email'}, f'unexpected services: {names}'
           assert d['progress']['total'] > 0, 'roadmap is empty'
+
+          # The cron is the prober now, so a stale page means the cron has stopped.
+          assert not d['freshness']['stale'], (
+              'probe data is stale; the scheduled trigger is not running')
+
+          # Every latency read exactly 0 for as long as the probes existed, because the
+          # clock was read before the awaited call rather than after it. At least one
+          # probe does real I/O and must show for it.
+          measured = [s['latency_ms'] for s in d['services'] if s['latency_ms'] is not None]
+          assert any(v > 0 for v in measured), (
+              f'every probe reported 0ms, which means nothing is being timed: {measured}')
+
+          h = d['health']
+          print('  health:', {k: h[k] for k in
+                ('ok', 'schema', 'auth_configured', 'email_configured', 'retention_days')})
+          assert h['ok'], f'the deployment reports itself unhealthy: {h}'
+          assert not h['cors_localhost'], 'production is accepting cross-origin localhost'
+
           print('  deploys recorded:', len(d['deploys']))
-          print('  probe rows in the last 24h:', len(d['history']))
+          print('  history buckets:', len(d['history']))
           PY
 
           echo

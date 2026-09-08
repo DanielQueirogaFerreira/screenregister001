@@ -12,11 +12,22 @@ interface ServiceRow {
   uptime_7d: number | null;
 }
 
+/** One bucket per service per hour, aggregated by the Worker in SQL. */
 interface HistoryRow {
-  at: string;
+  hour: string;        // 'YYYY-MM-DDTHH', the UTC hour the bucket covers
   service: string;
   status: ServiceStatus;
-  latency_ms: number | null;
+}
+
+interface HealthFacts {
+  ok: boolean;
+  schema: 'ready' | 'missing' | 'error';
+  retention_days: number;
+  auth_configured: boolean;
+  cors_localhost: boolean;
+  email_configured: boolean;
+  hint?: string;
+  auth_hint?: string;
 }
 
 interface DeployRow {
@@ -40,6 +51,8 @@ interface Phase {
 interface StatusPayload {
   generated_at: string;
   overall: ServiceStatus;
+  freshness: { last_check: string | null; stale: boolean; interval_minutes: number };
+  health: HealthFacts;
   services: ServiceRow[];
   history: HistoryRow[];
   deploys: DeployRow[];
@@ -80,26 +93,26 @@ const DESCRIPTIONS: Record<string, string> = {
 const HOURS = 24;
 
 /**
- * One cell per hour, coloured by the worst status seen in that hour.
+ * One cell per hour, over the last 24.
  *
- * Worst-of rather than an average, because a fifteen-minute outage that averages to 95%
- * looks like a good hour, and it was not one. Hours with no probe stay neutral instead of
- * being drawn as healthy — absence of evidence is not uptime.
+ * The Worker sends one row per service per hour, already reduced to the worst status seen
+ * in that hour — worst-of rather than an average, because a fifteen-minute outage that
+ * averages to 95% looks like a good hour, and it was not one. Hours with no probe stay
+ * neutral instead of being drawn as healthy: absence of evidence is not uptime.
  */
-function buckets(history: HistoryRow[], service: string): (ServiceStatus | null)[] {
-  const now = Date.now();
-  const out: (ServiceStatus | null)[] = Array.from({ length: HOURS }, () => null);
-  const rank: Record<ServiceStatus, number> = { up: 0, degraded: 1, down: 2 };
+function hourKey(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 13);
+}
 
+function buckets(history: HistoryRow[], service: string): (ServiceStatus | null)[] {
+  const seen = new Map<string, ServiceStatus>();
   for (const row of history) {
-    if (row.service !== service) continue;
-    const age = now - Date.parse(row.at);
-    const index = HOURS - 1 - Math.floor(age / 3_600_000);
-    if (index < 0 || index >= HOURS) continue;
-    const current = out[index] ?? null;
-    if (current === null || rank[row.status] > rank[current]) out[index] = row.status;
+    if (row.service === service) seen.set(row.hour, row.status);
   }
-  return out;
+  const now = Date.now();
+  return Array.from({ length: HOURS }, (_, i) =>
+    seen.get(hourKey(now - (HOURS - 1 - i) * 3_600_000)) ?? null,
+  );
 }
 
 const pct = (v: number | null): string => (v === null ? '—' : `${(v * 100).toFixed(2)}%`);
@@ -169,6 +182,83 @@ function ServiceCard({ row, history }: { row: ServiceRow; history: HistoryRow[] 
   );
 }
 
+/**
+ * The deployment's own configuration, which is what /v1/health reports.
+ *
+ * It lives here now because a person pasting /v1/health into a browser was asking a
+ * question this page answers better. Each row is a fact that has, at least once, been the
+ * whole reason the product was broken while every other signal stayed green.
+ */
+function Health({ health }: { health: HealthFacts }) {
+  const rows: { label: string; ok: boolean | null; value: string; note?: string }[] = [
+    {
+      label: 'Database schema',
+      ok: health.schema === 'ready',
+      value: health.schema,
+      note: health.hint,
+    },
+    {
+      label: 'Signing key',
+      ok: health.auth_configured,
+      value: health.auth_configured ? 'configured' : 'missing',
+      note: health.auth_hint,
+    },
+    {
+      label: 'Email provider',
+      // Not a failure. Recording works without it; only self-service recovery does not.
+      ok: health.email_configured ? true : null,
+      value: health.email_configured ? 'configured' : 'not configured',
+      note: health.email_configured
+        ? undefined
+        : 'Verification and password-reset links are not delivered.',
+    },
+    {
+      label: 'Retention',
+      ok: true,
+      value: `${health.retention_days} days`,
+      note: 'Enforced by a nightly sweep on the server, not by the browser.',
+    },
+    {
+      label: 'Cross-origin localhost',
+      // Enabled in production would be a real finding, so it is not drawn as neutral.
+      ok: !health.cors_localhost,
+      value: health.cors_localhost ? 'allowed' : 'denied',
+    },
+  ];
+
+  return (
+    <div className="panel" style={{ marginTop: 14 }}>
+      <div className="row" style={{ marginBottom: 10 }}>
+        <b>Deployment health</b>
+        <span style={{ marginLeft: 'auto', color: health.ok ? 'var(--good)' : 'var(--bad)' }}>
+          <span aria-hidden="true">{health.ok ? '\u25cf' : '\u2715'}</span>{' '}
+          {health.ok ? 'Serving' : 'Not serving'}
+        </span>
+      </div>
+      <div className="health-list">
+        {rows.map((r) => (
+          <div key={r.label} className="health-row">
+            <span
+              className="health-mark"
+              style={{ color: r.ok === null ? 'var(--warn)' : r.ok ? 'var(--good)' : 'var(--bad)' }}
+              aria-hidden="true"
+            >
+              {r.ok === null ? '\u25b2' : r.ok ? '\u2713' : '\u2715'}
+            </span>
+            <span className="health-label">{r.label}</span>
+            <span className="health-value">{r.value}</span>
+            {r.note && <span className="health-note">{r.note}</span>}
+          </div>
+        ))}
+      </div>
+      <div className="hint" style={{ marginTop: 10 }}>
+        The same facts are available as JSON at <code>/v1/health</code> for uptime monitors
+        and the deploy gate.
+      </div>
+    </div>
+  );
+}
+
 function Roadmap({ roadmap, progress }: { roadmap: Phase[]; progress: StatusPayload['progress'] }) {
   const fraction = progress.total ? progress.done / progress.total : 0;
   return (
@@ -233,7 +323,7 @@ export function StatusView() {
 
   useEffect(() => {
     void load();
-    const timer = window.setInterval(() => void load(), 30_000);
+    const timer = window.setInterval(() => void load(), 60_000);
     return () => window.clearInterval(timer);
   }, [load]);
 
@@ -245,7 +335,8 @@ export function StatusView() {
           <div className="banner bad">{error}</div>
           <div className="hint">
             This page is served by the same Worker it reports on, so if it loaded at all the
-            Worker is running — the failure is in the status query itself.
+            Worker is running — the failure is in the status query itself. Retrying every
+            minute.
           </div>
         </div>
       </div>
@@ -277,11 +368,23 @@ export function StatusView() {
         <div>
           <h2 style={{ margin: 0 }}>{headline}</h2>
           <div className="hint">
-            Checked {ago(data.generated_at)} · probes run inside the Worker, against the same
-            D1 and R2 bindings that serve recordings. Refreshes every 30 seconds.
+            {data.freshness.last_check
+              ? `Last probed ${ago(data.freshness.last_check)}`
+              : 'No probe has been recorded yet'}
+            {' · '}every {data.freshness.interval_minutes} minutes, from inside the Worker,
+            against the same D1 and R2 bindings that serve recordings.
           </div>
         </div>
       </div>
+
+      {data.freshness.stale && (
+        <div className="banner warn" style={{ marginTop: 14 }}>
+          <b>These readings are out of date.</b> The scheduled probe has not reported in
+          over {Math.round(data.freshness.interval_minutes * 2.5)} minutes, so the states
+          below describe whenever it last ran rather than right now. The probe stopping is
+          itself worth investigating — the cron trigger is the first place to look.
+        </div>
+      )}
 
       <div className="grid status-grid">
         {data.services.map((row) => (
@@ -329,6 +432,8 @@ export function StatusView() {
           </div>
         )}
       </div>
+
+      <Health health={data.health} />
 
       <Roadmap roadmap={data.roadmap} progress={data.progress} />
     </div>

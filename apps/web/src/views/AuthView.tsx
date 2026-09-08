@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import {
   AuthError, confirmReset, login, requestReset, signup, verifyEmail, type Account,
 } from '../lib/auth.js';
+import { PasswordField } from '../components/PasswordField.js';
 
 type Mode = 'login' | 'signup' | 'forgot' | 'reset' | 'verify';
 
@@ -147,31 +148,34 @@ export function AuthView({ onSignedIn }: Props) {
           )}
 
           {mode !== 'forgot' && mode !== 'verify' && (
-            <div className="field">
-              <label htmlFor="password">Password</label>
-              <input
-                id="password" type="password" required value={password}
-                autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
-                minLength={mode === 'login' ? undefined : MIN_LENGTH}
-                onChange={(e) => setPassword(e.target.value)} disabled={busy}
-              />
-              {mode !== 'login' && (
+            <PasswordField
+              id="password"
+              label="Password"
+              value={password}
+              onChange={setPassword}
+              autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+              minLength={mode === 'login' ? undefined : MIN_LENGTH}
+              required
+              disabled={busy}
+              hint={mode !== 'login' ? (
                 <div className="hint">
                   At least {MIN_LENGTH} characters. Length matters far more than symbols — a
                   passphrase of ordinary words beats a short scramble.
                 </div>
-              )}
-            </div>
+              ) : undefined}
+            />
           )}
 
           {(mode === 'signup' || mode === 'reset') && (
-            <div className="field">
-              <label htmlFor="confirm">Confirm password</label>
-              <input
-                id="confirm" type="password" required autoComplete="new-password"
-                value={confirm} onChange={(e) => setConfirm(e.target.value)} disabled={busy}
-              />
-            </div>
+            <PasswordField
+              id="confirm"
+              label="Confirm password"
+              value={confirm}
+              onChange={setConfirm}
+              autoComplete="new-password"
+              required
+              disabled={busy}
+            />
           )}
 
           <button className="primary" type="submit" disabled={busy} style={{ width: '100%' }}>

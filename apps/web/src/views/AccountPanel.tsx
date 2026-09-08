@@ -4,6 +4,7 @@ import {
   resendVerification, revokeSession, revokeToken,
   type Account, type ApiTokenSummary, type AuthEventRow, type LoginSession,
 } from '../lib/auth.js';
+import { PasswordField } from '../components/PasswordField.js';
 
 interface Props {
   account: Account;
@@ -117,17 +118,19 @@ export function AccountPanel({ account, emailConfigured, onSignedOut, onEraseRec
       )}
 
       <h3>Change password</h3>
-      <div className="field">
-        <label htmlFor="cur">Current password</label>
-        <input id="cur" type="password" autoComplete="current-password"
-          value={current} onChange={(e) => setCurrent(e.target.value)} disabled={busy} />
-      </div>
-      <div className="field">
-        <label htmlFor="new">New password</label>
-        <input id="new" type="password" autoComplete="new-password" minLength={12}
-          value={next} onChange={(e) => setNext(e.target.value)} disabled={busy} />
-        <div className="hint">Changing it signs out every other device. This one stays signed in.</div>
-      </div>
+      <PasswordField
+        id="cur" label="Current password" autoComplete="current-password"
+        value={current} onChange={setCurrent} disabled={busy}
+      />
+      <PasswordField
+        id="new" label="New password" autoComplete="new-password" minLength={12}
+        value={next} onChange={setNext} disabled={busy}
+        hint={
+          <div className="hint">
+            Changing it signs out every other device. This one stays signed in.
+          </div>
+        }
+      />
       <button disabled={busy || !current || !next} onClick={() => void run(async () => {
         const res = await changePassword(current, next);
         setCurrent('');

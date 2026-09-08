@@ -23,6 +23,29 @@ input[type="number"], select {
   font: inherit; color: var(--fg); background: var(--panel-2);
   border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; width: 100%;
 }
+/* Text entry had no styling at all, so the sign-in form rendered in the browser's own
+   light-mode widgets on a dark page. 16px on the value is not a taste choice: iOS Safari
+   zooms the viewport on focus for anything smaller, which on a phone leaves the form
+   scrolled sideways and half off screen. */
+input[type="text"], input[type="email"], input[type="password"] {
+  font: inherit; font-size: 16px; color: var(--fg); background: var(--panel-2);
+  border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; width: 100%;
+}
+input:focus-visible, select:focus-visible, button:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 1px;
+}
+
+/* Show/hide lives inside the field. The input reserves room on the right for it rather
+   than the button overlapping text, so a long password scrolls under nothing. */
+.password-field { position: relative; display: flex; align-items: center; }
+.password-field input { padding-right: 68px; }
+.password-field .reveal {
+  position: absolute; right: 5px; padding: 5px 9px; font-size: 12px;
+  background: transparent; border-color: transparent; color: var(--dim);
+  /* Comfortably past the 24px minimum target size, without growing the field. */
+  min-height: 30px; min-width: 52px;
+}
+.password-field .reveal:hover:not(:disabled) { color: var(--fg); border-color: var(--line); }
 .app { max-width: 1140px; margin: 0 auto; padding: 20px; }
 header { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
 h1 { font-size: 17px; margin: 0; letter-spacing: -.2px; }
@@ -230,3 +253,19 @@ code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-si
    tile taller than its neighbours and reads as a broken value. */
 .status-card .stat b { white-space: nowrap; font-size: 17px; }
 .status-card .stat span { white-space: nowrap; }
+
+/* Deployment health rows. A grid rather than a table so a long note wraps under the row
+   on a narrow screen instead of forcing the page to scroll sideways. */
+.health-list { display: grid; gap: 2px; }
+.health-row {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 4px 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line);
+}
+.health-row:last-child { border-bottom: 0; }
+.health-mark { text-align: center; font-size: 12px; }
+.health-value { color: var(--fg); font-variant-numeric: tabular-nums; }
+.health-note { grid-column: 2 / -1; color: var(--dim); font-size: 12px; }
