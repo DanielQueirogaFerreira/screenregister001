@@ -167,13 +167,25 @@ function adminOnly(
 /** Totals, plus everything recording right now across every account. */
 app.get('/v1/admin/overview', adminOnly(async (c, admin) => {
   const [totals, live, recent] = await Promise.all([
+    /**
+     * Totals from `sessions`, not from `frames`.
+     *
+     * Every row here used to be a full scan of the frames table — three of them per
+     * request — on a page that refreshes itself every half minute. At twelve thousand
+     * frames that is a hundred and fifty thousand rows a minute, and D1 charges for rows
+     * read: leaving this page open for half an hour exhausted the account's entire daily
+     * allowance and took the next deploy's migration down with it.
+     *
+     * Each session already carries its own frame count and byte total, kept current by
+     * the heartbeat and settled exactly when the session closes. There are a handful of
+     * session rows against tens of thousands of frames, and the answer is the same one.
+     */
     c.env.DB.prepare(
-      `SELECT (SELECT COUNT(*) FROM users WHERE disabled_at IS NULL) AS users,
+      `SELECT (SELECT COUNT(*) FROM users WHERE disabled_at IS NULL AND deleted_at IS NULL)
+                AS users,
               (SELECT COUNT(*) FROM sessions) AS sessions,
-              (SELECT COUNT(*) FROM frames) AS frames,
-              (SELECT COALESCE(SUM(bytes), 0) + COALESCE(SUM(original_bytes), 0)
-                 FROM frames) AS bytes,
-              (SELECT COUNT(*) FROM frames WHERE redacted = 1) AS redacted_frames`,
+              (SELECT COALESCE(SUM(frames_stored), 0) FROM sessions) AS frames,
+              (SELECT COALESCE(SUM(bytes_stored), 0) FROM sessions) AS bytes`,
     ).first<Record<string, number>>(),
 
     c.env.DB.prepare(

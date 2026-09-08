@@ -17,8 +17,15 @@ import { bytes, clock, day, duration } from '../lib/format.js';
  * is written to admin_events, and this page shows that log to the people who appear in it.
  */
 
+/**
+ * Summed from the session rows rather than from frames.
+ *
+ * A count over frames is a full table scan, and D1 charges for rows read. Three of them on
+ * a page that refreshes itself is how this view emptied the account's daily allowance in
+ * about half an hour. Sessions carry the same totals in a handful of rows.
+ */
 interface Totals {
-  users: number; sessions: number; frames: number; bytes: number; redacted_frames: number;
+  users: number; sessions: number; frames: number; bytes: number;
 }
 
 interface LiveRow {
@@ -104,8 +111,10 @@ export function AdminView() {
   useEffect(() => {
     void load();
     // Live rows go stale in 45 seconds, so a slower refresh than that would show
-    // recordings as running after they had stopped.
-    const t = window.setInterval(() => void load(), 15_000);
+    // recordings as running after they had stopped. Thirty seconds sits inside that and
+    // halves what an open tab costs — this page is a read of the whole system, and it
+    // should not be expensive to leave open.
+    const t = window.setInterval(() => void load(), 30_000);
     return () => window.clearInterval(t);
   }, [load]);
 
@@ -179,7 +188,6 @@ export function AdminView() {
           <div className="stat"><b>{totals.sessions}</b><span>sessions</span></div>
           <div className="stat"><b>{totals.frames}</b><span>frames</span></div>
           <div className="stat"><b>{bytes(totals.bytes)}</b><span>in R2</span></div>
-          <div className="stat"><b>{totals.redacted_frames}</b><span>redacted</span></div>
           <div className="stat"><b>{live.length}</b><span>recording now</span></div>
         </div>
       </div>
