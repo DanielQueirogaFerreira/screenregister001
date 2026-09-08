@@ -9,6 +9,15 @@ name: Diagnose production error
 
 on:
   workflow_dispatch:
+    inputs:
+      path:
+        description: 'Path to hammer, e.g. /v1/status'
+        required: false
+        default: '/v1/status'
+      count:
+        description: 'How many requests to send'
+        required: false
+        default: '25'
 
 jobs:
   diagnose:
@@ -21,9 +30,11 @@ jobs:
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
 
-      - name: Tail the Worker while provoking a signup
+      - name: Tail the Worker while hammering the endpoint
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TARGET: ${{ inputs.path }}
+          COUNT: ${{ inputs.count }}
         working-directory: apps/api
         run: |
           set -uo pipefail
@@ -33,14 +44,30 @@ jobs:
           TAIL_PID=$!
           sleep 12   # let the tail session attach before generating traffic
 
-          echo "--- provoking signup"
-          curl -s -o /tmp/resp.json -w 'HTTP %{http_code} in %{time_total}s\n' \
-            -X POST "$BASE/v1/auth/signup" \
-            -H 'Content-Type: application/json' -H "Origin: $BASE" \
-            -d "{\"email\":\"diag_$(date +%s)@example.com\",\"password\":\"correct horse battery staple diag\"}"
-          cat /tmp/resp.json; echo
+          echo "--- $COUNT requests to $TARGET"
+          : > /tmp/codes.txt
+          for i in $(seq 1 "$COUNT"); do
+            # Cache-bust, so a 15s edge cache cannot hide an intermittent failure.
+            code=$(curl -s -o "/tmp/body_$i.txt" -w '%{http_code} %{time_total} %{size_download}' \
+              --max-time 30 "$BASE$TARGET?_cb=$i-$RANDOM" || echo "000 0 0")
+            echo "$i $code" | tee -a /tmp/codes.txt
+            # Anything that is not a 200 is the thing we came for; print it in full.
+            case "$code" in
+              200\ *) : ;;
+              *) echo "    body: $(head -c 400 "/tmp/body_$i.txt")" ;;
+            esac
+            sleep 1
+          done
 
-          sleep 12
+          echo
+          echo "--- status code distribution"
+          awk '{print $2}' /tmp/codes.txt | sort | uniq -c | sort -rn
+
+          echo
+          echo "--- slowest responses"
+          sort -k3 -rn /tmp/codes.txt | head -5
+
+          sleep 10
           kill $TAIL_PID 2>/dev/null || true
           sleep 2
 
@@ -58,6 +85,7 @@ jobs:
               lines = []
           if not lines:
               print('no tail output captured')
+          seen = 0
           for line in lines:
               line = line.strip()
               if not line.startswith('{'):
@@ -67,13 +95,22 @@ jobs:
               except Exception:
                   continue
               req = (e.get('event') or {}).get('request') or {}
-              print('---', e.get('outcome'), req.get('method', ''), req.get('url', ''))
-              for ex in e.get('exceptions') or []:
+              outcome = e.get('outcome')
+              exc = e.get('exceptions') or []
+              logs = e.get('logs') or []
+              # An 'ok' request with nothing logged is noise; print the interesting ones.
+              if outcome == 'ok' and not exc and not logs:
+                  seen += 1
+                  continue
+              print('---', outcome, req.get('method', ''), req.get('url', ''))
+              print('    cpu_ms:', (e.get('cpuTime') or e.get('cpu_time')),
+                    ' wall_ms:', (e.get('wallTime') or e.get('wall_time')))
+              for ex in exc:
                   print('  EXCEPTION:', ex.get('name'), '-', ex.get('message'))
-                  if ex.get('stack'):
-                      for s in str(ex['stack']).splitlines()[:12]:
-                          print('     ', s)
-              for lg in e.get('logs') or []:
+                  for s in str(ex.get('stack') or '').splitlines()[:12]:
+                      print('     ', s)
+              for lg in logs:
                   msg = ' '.join(str(m) for m in (lg.get('message') or []))
                   print(f"  {lg.get('level')}: {msg[:600]}")
+          print(f'({seen} clean requests with no logs, not shown)')
           PY
