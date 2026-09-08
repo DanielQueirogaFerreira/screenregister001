@@ -3,7 +3,18 @@ import type { FrameRecord, SessionRecord } from '@sr/schema';
 /** What the account holds server-side. Reported by the Worker, not by the browser. */
 export interface UsageInfo {
   frames: number;
+  /** Everything R2 holds: the stored images plus any untouched captures kept beside them. */
   bytes: number;
+  /** The stored images alone. */
+  stored_bytes: number;
+  /** The second copies. Zero unless "keep the untouched capture" is on. */
+  original_bytes: number;
+  /**
+   * Frames with a second copy whose size predates it being recorded. Their objects are in
+   * R2 and are not in the total, so the figure understates by an unknown amount and the
+   * interface says so rather than pretending otherwise.
+   */
+  unmeasured: number;
   sessions: number;
   /** Oldest frame still inside the retention window, ISO-8601, or null when empty. */
   oldest: string | null;

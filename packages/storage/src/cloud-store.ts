@@ -155,7 +155,18 @@ export class CloudStore implements FrameStore {
 
   async usage(): Promise<UsageInfo> {
     const u = await this.api.usage();
-    return { frames: u.frames, bytes: u.bytes, sessions: u.sessions, oldest: u.oldest };
+    return {
+      frames: u.frames,
+      bytes: u.bytes,
+      // Defaulted rather than assumed present: a Worker deployed before these were
+      // reported answers without them, and a dashboard showing NaN is worse than one
+      // showing a zero it can explain.
+      stored_bytes: u.stored_bytes ?? u.bytes,
+      original_bytes: u.original_bytes ?? 0,
+      unmeasured: u.unmeasured ?? 0,
+      sessions: u.sessions,
+      oldest: u.oldest,
+    };
   }
 
   async eraseAll(): Promise<void> {

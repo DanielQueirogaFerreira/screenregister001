@@ -177,7 +177,8 @@ app.get('/v1/admin/overview', adminOnly(async (c, admin) => {
       `SELECT (SELECT COUNT(*) FROM users WHERE disabled_at IS NULL) AS users,
               (SELECT COUNT(*) FROM sessions) AS sessions,
               (SELECT COUNT(*) FROM frames) AS frames,
-              (SELECT COALESCE(SUM(bytes), 0) FROM frames) AS bytes,
+              (SELECT COALESCE(SUM(bytes), 0) + COALESCE(SUM(original_bytes), 0)
+                 FROM frames) AS bytes,
               (SELECT COUNT(*) FROM frames WHERE redacted = 1) AS redacted_frames`,
     ).first<Record<string, number>>(),
 
@@ -565,9 +566,9 @@ app.post('/v1/frames', async (c) => {
   await c.env.DB.prepare(
     `INSERT INTO frames (frame_id, session_id, user_id, device_id, captured_at, offset_ms, seq,
        hold_ms, change_score, changed_tiles, reason, width, height, bytes, format, sha256,
-       storage_key, stamp, redacted, redacted_regions, original_key,
+       storage_key, stamp, redacted, redacted_regions, original_key, original_bytes,
        ocr_text, caption, enrich_status)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,'pending')
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,'pending')
      ON CONFLICT(frame_id) DO UPDATE SET hold_ms = COALESCE(excluded.hold_ms, frames.hold_ms)`,
   ).bind(
     frameId, sessionId, me.userId, owner.device_id,
@@ -579,6 +580,10 @@ app.post('/v1/frames', async (c) => {
     String(m.stamp ?? ''), redacted ? 1 : 0,
     JSON.stringify(Array.isArray(m.redacted_regions) ? m.redacted_regions : []),
     redacted ? null : originalKey,
+    // Measured here rather than taken from the client: the server is holding the bytes,
+    // so it can weigh them, and a storage figure built from what the client claimed would
+    // be worth nothing.
+    redacted || !original ? 0 : original.size,
   ).run();
 
   return c.json({
@@ -790,13 +795,32 @@ app.get('/v1/scenes', async (c) => {
   return c.json({ window: w, count: scenes.length, hidden, scenes });
 });
 
+/**
+ * What this account is actually storing.
+ *
+ * `bytes` used to be the whole answer and was only ever the stored image; the untouched
+ * capture kept beside it was invisible. The total is now what R2 really holds, with the
+ * split kept so the cost of the second copy is a number rather than an assertion.
+ *
+ * `unmeasured` counts frames written before that size was recorded. Their objects exist
+ * and are not in the total, and saying so is better than presenting a figure that quietly
+ * understates by an unknown amount.
+ */
 app.get('/v1/usage', async (c) => {
   const row = await c.env.DB.prepare(
-    `SELECT COUNT(*) AS frames, COALESCE(SUM(bytes),0) AS bytes,
-            COUNT(DISTINCT session_id) AS sessions, MIN(captured_at) AS oldest
+    `SELECT COUNT(*) AS frames,
+            COALESCE(SUM(bytes),0) AS bytes,
+            COALESCE(SUM(original_bytes),0) AS original_bytes,
+            SUM(CASE WHEN original_key IS NOT NULL AND original_bytes = 0 THEN 1 ELSE 0 END)
+              AS unmeasured,
+            COUNT(DISTINCT session_id) AS sessions,
+            MIN(captured_at) AS oldest
      FROM frames WHERE user_id = ?`,
-  ).bind(c.get('me').userId).first();
-  return c.json(row ?? {});
+  ).bind(c.get('me').userId).first<Record<string, number | string | null>>();
+
+  const stored = Number(row?.bytes ?? 0);
+  const originals = Number(row?.original_bytes ?? 0);
+  return c.json({ ...row, bytes: stored + originals, stored_bytes: stored, original_bytes: originals });
 });
 
 /**

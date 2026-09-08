@@ -125,15 +125,37 @@ export function SettingsView({
               style={{ width: 'auto' }}
             />
             <span className="hint" style={{ margin: 0 }}>
-              {settings.burnInStamp ? 'Two images per frame' : 'One image per frame'}
+              bottom-left corner, over a scrim
             </span>
           </div>
           <div className="hint">
-            The frame&rsquo;s stamp is drawn into the bottom-left corner, so an image that
-            leaves here still says which recording it came from. The capture is kept
-            alongside it untouched, which roughly <b>doubles storage</b> for a change of
-            well under one percent of the pixels. Turn this off and only the unaltered
-            capture is stored.
+            So an image that leaves here still says which recording it came from, which a
+            database row cannot do once the image has left the database. It covers well
+            under one percent of the frame and costs nothing measurable.
+          </div>
+        </div>
+
+        <div className="field">
+          <label htmlFor="keeporig">Also keep the untouched capture</label>
+          <div className="row">
+            <input
+              id="keeporig" type="checkbox" checked={settings.keepOriginal}
+              disabled={!settings.burnInStamp}
+              onChange={(e) => set({ keepOriginal: e.target.checked })}
+              style={{ width: 'auto' }}
+            />
+            <span className="hint" style={{ margin: 0 }}>
+              {settings.keepOriginal && settings.burnInStamp
+                ? 'two images per frame'
+                : 'one image per frame'}
+            </span>
+          </div>
+          <div className="hint">
+            <b>This doubles storage.</b> It is the largest single lever on this page: a
+            second copy of every frame, differing from the first by a caption in one
+            corner. Worth it only when the unmarked pixels are the point. Nothing to keep
+            for a redacted frame — there is no untouched copy of one, because it was never
+            encoded.
           </div>
         </div>
 
@@ -190,14 +212,53 @@ export function SettingsView({
         <div className="panel">
           <h3 style={{ marginTop: 0 }}>Stored in Cloudflare</h3>
           {usage ? (
-            <div className="stats">
-              <div className="stat"><b>{usage.frames}</b><span>frames</span></div>
-              <div className="stat"><b>{usage.sessions}</b><span>sessions</span></div>
-              <div className="stat"><b>{bytes(usage.bytes)}</b><span>in R2</span></div>
-              <div className="stat">
-                <b>{usage.oldest ? day(usage.oldest) : '\u2014'}</b><span>oldest kept</span>
+            <>
+              <div className="stats">
+                <div className="stat"><b>{usage.frames}</b><span>frames</span></div>
+                <div className="stat"><b>{usage.sessions}</b><span>sessions</span></div>
+                <div className="stat"><b>{bytes(usage.bytes)}</b><span>in R2</span></div>
+                <div className="stat">
+                  <b>{usage.oldest ? day(usage.oldest) : '\u2014'}</b><span>oldest kept</span>
+                </div>
               </div>
-            </div>
+
+              {/*
+                The split, because "in R2" was until now the stored images only and the
+                second copies were invisible — a storage figure that understated by about
+                half, which is the worst way for one to be wrong.
+              */}
+              {usage.original_bytes > 0 && (
+                <div className="hint" style={{ marginTop: 10 }}>
+                  Of that, <b>{bytes(usage.stored_bytes)}</b> is the stored frames and{' '}
+                  <b>{bytes(usage.original_bytes)}</b> is untouched second copies. Turning
+                  off <b>Also keep the untouched capture</b> above stops the second copy for
+                  frames recorded from then on.
+                </div>
+              )}
+              {usage.unmeasured > 0 && (
+                <div className="hint" style={{ marginTop: 6, color: 'var(--warn)' }}>
+                  {usage.unmeasured} frame(s) have a second copy from before its size was
+                  recorded, so the figure above understates R2 by roughly that many frames&rsquo;
+                  worth. They age out with everything else.
+                </div>
+              )}
+              {usage.frames > 0 && usage.oldest && (() => {
+                // Projected from what this account has actually stored, not from a guess
+                // about typical use: bytes per day so far, times the retention window.
+                const days = Math.max(
+                  0.25, (Date.now() - Date.parse(usage.oldest)) / 86_400_000,
+                );
+                const perDay = usage.bytes / days;
+                return (
+                  <div className="hint" style={{ marginTop: 6 }}>
+                    At this rate — {bytes(Math.round(perDay))} a day over the last{' '}
+                    {days < 1 ? `${Math.round(days * 24)}h` : `${days.toFixed(1)} days`} — a
+                    full {store.retentionDays}-day window settles around{' '}
+                    <b>{bytes(Math.round(perDay * store.retentionDays))}</b>.
+                  </div>
+                );
+              })()}
+            </>
           ) : (
             <div className="hint">Usage is unavailable right now.</div>
           )}

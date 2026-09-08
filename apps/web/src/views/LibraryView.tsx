@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 import type { SessionRecord } from '@sr/schema';
 import type { CloudStore } from '@sr/storage';
 import type { CaptureSessions } from '../capture/sessions.js';
@@ -20,6 +20,22 @@ export function LibraryView({ store, sessions, accountId, onOpen, onInspect, onC
   const [busy, setBusy] = useState(false);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [notice, setNotice] = useState<string | null>(null);
+
+  /**
+   * Which of these rows are actually recording at this moment.
+   *
+   * A row with no end time means one of two very different things, and until now the
+   * library showed both as "unfinished" with a Finish button — which then refused with a
+   * 409 for exactly the rows a person is most likely to press it on, because a capture
+   * that is still running is not unfinished. The manager already knows: local captures
+   * from its own snapshot, and captures on other devices from the server's live poll.
+   */
+  const localLive = useSyncExternalStore(sessions.subscribe, sessions.getSnapshot);
+  const remoteLive = useSyncExternalStore(sessions.subscribe, sessions.getRemotes);
+  const liveIds = new Set<string>([
+    ...localLive.map((l) => l.sessionId).filter((id): id is string => Boolean(id)),
+    ...remoteLive.map((r) => r.session_id),
+  ]);
 
   const toggle = (id: string) => setPicked((prev) => {
     const next = new Set(prev);
@@ -49,6 +65,26 @@ export function LibraryView({ store, sessions, accountId, onOpen, onInspect, onC
       await load();
       onChanged();
     } catch (err) {
+      // The server's own words are useful to a developer and noise to everyone else. The
+      // one refusal a person will actually meet gets said in plain language.
+      const raw = err instanceof Error ? err.message : String(err);
+      setNotice(/still_recording|409/.test(raw)
+        ? 'That capture is still running, so there is nothing to close yet. '
+          + 'Ask it to stop — it closes itself once it has.'
+        : raw);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function askStop(id: string) {
+    setBusy(true);
+    setNotice(null);
+    try {
+      await store.requestStop(id);
+      setNotice('Asked it to stop. The recording device acts on this within a few seconds — '
+        + 'up to a minute if that tab is in the background, since browsers slow timers there.');
+    } catch (err) {
       setNotice(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
@@ -65,7 +101,7 @@ export function LibraryView({ store, sessions, accountId, onOpen, onInspect, onC
    * running recorder — and those rows are what is left of it. They are also what an
    * ordinary crash or a closed laptop leaves behind, so the cleanup stays.
    */
-  const empty = rows.filter((s) => !s.ended_at && s.frames_stored === 0);
+  const empty = rows.filter((s) => !s.ended_at && s.frames_stored === 0 && !liveIds.has(s.session_id));
 
   async function removeEmpty() {
     setBusy(true);
@@ -174,7 +210,14 @@ export function LibraryView({ store, sessions, accountId, onOpen, onInspect, onC
                   />
                 </td>
                 <td>{day(s.started_at)} <span style={{ color: 'var(--dim)' }}>{clock(s.started_at)}</span></td>
-                <td>{s.ended_at ? duration(len) : <span style={{ color: 'var(--bad)' }}>unfinished</span>}</td>
+                <td>
+                  {s.ended_at ? duration(len)
+                    : liveIds.has(s.session_id)
+                      ? <span className="row" style={{ gap: 5, flexWrap: 'nowrap' }}>
+                          <span className="dot live" /> recording
+                        </span>
+                      : <span style={{ color: 'var(--bad)' }}>unfinished</span>}
+                </td>
                 <td>{s.frames_stored}</td>
                 <td>{bytes(s.bytes_stored)}</td>
                 <td>{s.capture_fps} FPS · sens {s.sensitivity}</td>
@@ -184,7 +227,15 @@ export function LibraryView({ store, sessions, accountId, onOpen, onInspect, onC
                 </td>
                 <td onClick={(e) => e.stopPropagation()}>
                   <div className="row" style={{ gap: 6, flexWrap: 'nowrap' }}>
-                    {!s.ended_at && (
+                    {!s.ended_at && (liveIds.has(s.session_id) ? (
+                      <button
+                        disabled={busy}
+                        title="Ask the device holding this capture to stop; it closes itself"
+                        onClick={() => void askStop(s.session_id)}
+                      >
+                        Ask to stop
+                      </button>
+                    ) : (
                       <button
                         disabled={busy}
                         title="Close this recording, ending it at its last frame"
@@ -192,7 +243,7 @@ export function LibraryView({ store, sessions, accountId, onOpen, onInspect, onC
                       >
                         Finish
                       </button>
-                    )}
+                    ))}
                     <button
                       className="danger"
                       disabled={busy}

@@ -1,5 +1,7 @@
 /// <reference lib="webworker" />
-import { TimelineProcessor, findMaskedFields, scaleRegions, toLuma, type Region } from '@sr/core';
+import {
+  TimelineProcessor, findMaskedFields, scaleRegions, stampLayout, toLuma, type Region,
+} from '@sr/core';
 import { STAMP_VERSION, THUMB_W, THUMB_H, ulid, type CaptureSettings } from '@sr/schema';
 import type { CaptureIdentity, ToWorker, FromWorker } from './protocol.js';
 
@@ -106,9 +108,10 @@ class Payload {
         if (s.burnInStamp) drawStamp(ctx, w, h, this.stamp, this.capturedIso);
         const full = await ctx.canvas.convertToBlob({ type: 'image/webp', quality: s.quality });
 
-        // The capture as it was — only when nothing was masked. When burn-in is off there
-        // is nothing to keep a second copy of, since `full` is already unaltered.
-        const original = !redacted && s.burnInStamp
+        // The capture as it was — only when it was asked for, nothing was masked, and the
+        // stored image is not already unaltered. Encoding a second copy identical to the
+        // first would double the storage cost of the session for nothing.
+        const original = s.keepOriginal && s.burnInStamp && !redacted
           ? await render(bmp, w, h, s.quality)
           : null;
 
@@ -192,26 +195,27 @@ function paintMasks(ctx: OffscreenCanvasRenderingContext2D, regions: Region[]): 
 function drawStamp(
   ctx: OffscreenCanvasRenderingContext2D, w: number, h: number, stamp: string, capturedIso: string,
 ): void {
-  // Scale with the frame so it stays readable at 720p and does not dominate at 4K.
-  const size = Math.max(9, Math.min(15, Math.round(w / 110)));
-  const pad = Math.round(size * 0.6);
-  const lineHeight = Math.round(size * 1.35);
-  const font = `${size}px ui-monospace, "SF Mono", Menlo, Consolas, monospace`;
+  const lines = [stamp, capturedIso];
+
+  // Measured at the size the layout will choose, so the box is sized for the text that
+  // actually gets drawn. Where it lands is decided by @sr/core, where it is tested — a
+  // stamp that has drifted off the edge or grown to cover a corner is not something a
+  // "did it draw" check would notice.
+  const probe = stampLayout(w, h, lines.length, 0);
+  const font = `${probe.fontSize}px ui-monospace, "SF Mono", Menlo, Consolas, monospace`;
 
   ctx.save();
   ctx.font = font;
   ctx.textBaseline = 'alphabetic';
-  const lines = [stamp, capturedIso];
-  const width = Math.max(...lines.map((l) => ctx.measureText(l).width));
-  const boxH = lineHeight * lines.length + pad;
-  const boxW = width + pad * 2;
-  const top = h - boxH - pad;
+  const textWidth = Math.max(...lines.map((l) => ctx.measureText(l).width));
+  const { box, baselines } = stampLayout(w, h, lines.length, textWidth);
 
   ctx.fillStyle = 'rgba(0, 0, 0, 0.72)';
-  ctx.fillRect(pad, top, boxW, boxH);
+  ctx.fillRect(box.x, box.y, box.w, box.h);
   ctx.fillStyle = 'rgba(255, 255, 255, 0.94)';
   lines.forEach((line, i) => {
-    ctx.fillText(line, pad * 2, top + pad / 2 + lineHeight * (i + 1) - Math.round(size * 0.25));
+    const b = baselines[i];
+    if (b) ctx.fillText(line, b.x, b.y);
   });
   ctx.restore();
 }

@@ -308,6 +308,20 @@ jobs:
           # And the listing must agree, since that is what the player's toggle reads.
           curl -fsS -b "$JAR" "$BASE/v1/sessions/$SESSION_ID/frames" -o /tmp/lst.json \
             || fail "listing the session's frames failed"
+          echo "  and usage counts the second copy, which it once did not"
+          curl -fsS -b "$JAR" "$BASE/v1/usage" -o /tmp/usage.json || fail "/v1/usage failed"
+          python3 - <<PY || exit 1
+          import json
+          u = json.load(open('/tmp/usage.json'))
+          print('  usage:', {k: u.get(k) for k in
+                ('frames', 'bytes', 'stored_bytes', 'original_bytes', 'unmeasured')})
+          # The clean frame was uploaded with an original, so R2 holds two objects for it.
+          # `bytes` reported only the first until this was fixed — a storage figure that
+          # understated by about half, which is the worst way for one to be wrong.
+          assert u['original_bytes'] > 0, 'the second copy is not being counted'
+          assert u['bytes'] == u['stored_bytes'] + u['original_bytes'], u
+          PY
+
           python3 - <<PY || exit 1
           import json
           frames = {f['frame_id']: f for f in json.load(open('/tmp/lst.json'))['frames']}

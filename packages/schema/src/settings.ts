@@ -37,15 +37,27 @@ export interface CaptureSettings {
 
   // --- Provenance and privacy ---
   /**
-   * Burn the frame's stamp into the corner of the stored image.
+   * Burn the frame's stamp into the bottom-left corner of the stored image.
    *
-   * When on, two images are stored per frame: the capture exactly as it was, and a copy
-   * carrying its own identity. That roughly doubles what a session costs in R2 for a
-   * change of well under one percent of the pixels — the trade is that a frame exported,
-   * pasted or screenshotted still says which recording it came from, which a row in a
-   * database cannot do once the image has left it.
+   * Costs almost nothing: the scrim and two lines of monospace cover well under one
+   * percent of a 1080p frame, and what it buys is an image that still says which recording
+   * it came from after it has been exported, pasted or screenshotted — which a row in a
+   * database cannot do once the image has left the database.
    */
   burnInStamp: boolean;
+  /**
+   * Also keep the capture exactly as it was, beside the stamped one.
+   *
+   * This is the single largest thing in this file for storage: it doubles what every
+   * session costs in R2, for a second copy that differs from the first by a caption in one
+   * corner. Off by default for that reason. Turn it on when the unmarked pixels are the
+   * point — something being handed to a person who should not see an identifier, or a
+   * comparison where the caption would be in the way.
+   *
+   * Never applies to a redacted frame: there is no untouched copy of one to keep, because
+   * it was never encoded.
+   */
+  keepOriginal: boolean;
   /**
    * What to do when a frame appears to show a masked input field.
    *
@@ -105,6 +117,7 @@ export const DEFAULT_SETTINGS: CaptureSettings = {
   maxFramesPerSec: 4,
   heartbeatMs: 300_000,
   burnInStamp: true,
+  keepOriginal: false,
   privacyMask: 'mask',
   maxWidth: 1920,
   quality: 0.7,

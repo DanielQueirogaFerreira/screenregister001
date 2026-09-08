@@ -110,6 +110,8 @@ export class Recorder {
     });
 
     // The browser's own "Stop sharing" button is the primary stop control; honour it.
+    // The track has already ended by the time this fires, so releasing again is a no-op —
+    // but going through the same path keeps one description of what stopping means.
     this.stream.getVideoTracks()[0]?.addEventListener('ended', () => {
       void this.stop('screen sharing ended');
     });
@@ -168,16 +170,51 @@ export class Recorder {
     else await this.pumpVideoCallback();
   }
 
+  /**
+   * Let go of the screen. Synchronous, idempotent, and never behind an await.
+   *
+   * This used to sit after `await this.reader.cancel()`, and a cancel on a
+   * MediaStreamTrackProcessor readable with a read already pending does not always settle
+   * — the catch handles a rejection, not a hang. When it hung, the tracks were never
+   * stopped and the browser went on showing "screenregister001 is sharing your screen"
+   * over a recording that had already ended, which is the worst possible thing for this
+   * application to get wrong: the one indicator a person has that their screen is being
+   * captured, still lit after it is not.
+   *
+   * Releasing the screen is the highest-priority thing stop() does. Nothing that can fail
+   * or block may come before it, so the reader is cancelled afterwards and not waited on;
+   * with the tracks stopped its pending read ends on its own.
+   *
+   * Clearing srcObject matters too: a detached video element still holding the stream can
+   * keep the capture alive on some browsers, and remove() alone does not clear it.
+   */
+  private releaseCapture(): void {
+    try {
+      this.stream?.getVideoTracks().forEach((t) => t.stop());
+      this.stream?.getTracks().forEach((t) => t.stop());
+    } catch {
+      // A track that is already ended throws on some engines. Nothing to do about it, and
+      // it must not stop the rest of the release.
+    }
+    this.stream = null;
+
+    if (this.video) {
+      this.video.srcObject = null;
+      this.video.remove();
+      this.video = null;
+    }
+
+    const reader = this.reader;
+    this.reader = null;
+    void reader?.cancel().catch(() => undefined);
+  }
+
   async stop(reason = 'stopped'): Promise<void> {
     if (!this.running) return;
     this.running = false;
 
-    await this.reader?.cancel().catch(() => undefined);
-    this.reader = null;
-    this.stream?.getTracks().forEach((t) => t.stop());
-    this.stream = null;
-    this.video?.remove();
-    this.video = null;
+    // Before anything else, and before anything that can await.
+    this.releaseCapture();
 
     // Let the worker decide on whatever is still sitting in the preroll buffer.
     await new Promise<void>((resolve) => {

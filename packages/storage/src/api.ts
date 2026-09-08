@@ -175,7 +175,11 @@ export class ApiClient {
     return this.request(`/v1/sessions/${encodeURIComponent(sessionId)}/frames`);
   }
 
-  usage(): Promise<{ frames: number; bytes: number; sessions: number; oldest: string | null }> {
+  /** The newer fields are optional: a Worker deployed before them answers without them. */
+  usage(): Promise<{
+    frames: number; bytes: number; sessions: number; oldest: string | null;
+    stored_bytes?: number; original_bytes?: number; unmeasured?: number;
+  }> {
     return this.request('/v1/usage');
   }
 

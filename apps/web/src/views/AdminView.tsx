@@ -114,6 +114,7 @@ export function AdminView() {
   if (!overview) return <div className="panel"><div className="empty">Loading…</div></div>;
 
   const { totals, live, recent } = overview;
+  const liveIds = new Set(live.map((r) => r.session_id));
 
   return (
     <div>
@@ -240,22 +241,45 @@ export function AdminView() {
                   <td>
                     {r.ended_at
                       ? duration(Date.parse(r.ended_at) - Date.parse(r.started_at))
-                      : <span style={{ color: 'var(--bad)' }}>open</span>}
+                      : liveIds.has(r.session_id)
+                        ? <span className="row" style={{ gap: 5, flexWrap: 'nowrap' }}>
+                            <span className="dot live" /> recording
+                          </span>
+                        : <span style={{ color: 'var(--bad)' }}>open</span>}
                   </td>
                   <td>{r.frames_stored}</td>
                   <td>{bytes(r.bytes_stored)}</td>
                   <td>
-                    <button
-                      className="danger"
-                      disabled={busy !== null}
-                      onClick={() => void act(
-                        `/v1/admin/sessions/${r.session_id}`, 'DELETE',
-                        `Permanently delete ${r.email}'s recording of ${r.frames_stored} `
-                        + 'frame(s)? The images go too, and this cannot be undone.',
+                    <div className="row" style={{ gap: 6, flexWrap: 'nowrap' }}>
+                      {/* Reachable from here as well as from the live table above: this is
+                          the list an operator is actually reading when they notice a
+                          recording that should not still be going, and making them find
+                          the same row in another table to act on it is friction for
+                          nothing. Offered for any session still open — a stop request on
+                          one that has quietly died is harmless and answers 404. */}
+                      {!r.ended_at && (
+                        <button
+                          disabled={busy !== null}
+                          title="Ask the device holding this capture to stop"
+                          onClick={() => void act(
+                            `/v1/admin/sessions/${r.session_id}/request-stop`, 'POST',
+                          )}
+                        >
+                          Ask to stop
+                        </button>
                       )}
-                    >
-                      Delete
-                    </button>
+                      <button
+                        className="danger"
+                        disabled={busy !== null}
+                        onClick={() => void act(
+                          `/v1/admin/sessions/${r.session_id}`, 'DELETE',
+                          `Permanently delete ${r.email}'s recording of ${r.frames_stored} `
+                          + 'frame(s)? The images go too, and this cannot be undone.',
+                        )}
+                      >
+                        Delete
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
