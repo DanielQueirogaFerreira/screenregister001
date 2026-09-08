@@ -119,12 +119,29 @@ jobs:
 
           echo
           echo "--- a browser asking for /v1/health is sent to the dashboard"
-          code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Sec-Fetch-Mode: navigate' \
+          # Both signals are reported, because the precise one — Sec-Fetch-Mode — does not
+          # survive Cloudflare's edge, and finding that out took a production run. Accept
+          # is what the assertion rests on; the other line is here so a future change in
+          # either direction is visible rather than silent.
+          sfm=$(curl -s -o /dev/null -w '%{http_code}' -H 'Sec-Fetch-Mode: navigate' "$BASE/v1/health")
+          echo "  Sec-Fetch-Mode: navigate  -> HTTP $sfm"
+
+          code=$(curl -s -o /dev/null -w '%{http_code}' \
+            -H 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' \
             "$BASE/v1/health")
+          echo "  Accept: text/html…        -> HTTP $code"
           [ "$code" = "302" ] || fail "a browser navigation to /v1/health returned HTTP $code, expected 302"
-          loc=$(curl -s -o /dev/null -w '%{redirect_url}' -H 'Sec-Fetch-Mode: navigate' "$BASE/v1/health")
+          loc=$(curl -s -o /dev/null -w '%{redirect_url}' -H 'Accept: text/html' "$BASE/v1/health")
           echo "  -> $loc"
           case "$loc" in */status) : ;; *) fail "/v1/health redirected to $loc, expected /status" ;; esac
+
+          echo "  and a machine still gets JSON"
+          for accept in '*/*' 'application/json'; do
+            code=$(curl -s -o /tmp/h.json -w '%{http_code}' -H "Accept: $accept" "$BASE/v1/health")
+            [ "$code" = "200" ] || fail "Accept: $accept returned HTTP $code, expected 200 JSON"
+            grep -q '"ok":true' /tmp/h.json || fail "Accept: $accept did not return the health body"
+            echo "  Accept: $accept -> HTTP 200, JSON"
+          done
 
           echo
           echo "--- the status endpoint answers, quickly"

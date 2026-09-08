@@ -65,14 +65,28 @@ app.onError((err, c) => {
  * while anything that asked for JSON (the deploy gate, the client's startup check, the
  * smoke test, any uptime monitor) keeps getting exactly the body it always got.
  *
- * The test is `Sec-Fetch-Mode: navigate`, which browsers send on a typed URL or a followed
- * link and never on fetch/XHR. Accept alone is not enough: curl sends `Accept: * / *` and
- * so does a monitor, and redirecting those would break the deploy gate.
+ * Two signals, either of which means a browser is navigating here:
+ *
+ *   Sec-Fetch-Mode: navigate   sent on a typed URL or a followed link, never on fetch/XHR
+ *   Accept: text/html          what a navigation asks for, and what fetch never sends
+ *
+ * The first is the precise one, and the first version relied on it alone — which failed in
+ * production while passing everywhere else, because the header does not reach the Worker
+ * across Cloudflare's edge. The second is what a browser actually negotiates for, and it is
+ * equally safe for the callers that must keep getting JSON: curl, the deploy gate, the
+ * client's own startup check and any uptime monitor all send `Accept: * / *`, which does not
+ * match. A wildcard is not an HTML request, so it is matched literally rather than by
+ * substring.
  */
+function wantsHtml(c: { req: { header(name: string): string | undefined } }): boolean {
+  if (c.req.header('sec-fetch-mode') === 'navigate') return true;
+  return (c.req.header('accept') ?? '')
+    .split(',')
+    .some((part) => part.trim().toLowerCase().startsWith('text/html'));
+}
+
 app.get('/v1/health', async (c) => {
-  if (c.req.header('Sec-Fetch-Mode') === 'navigate') {
-    return c.redirect('/status', 302);
-  }
+  if (wantsHtml(c)) return c.redirect('/status', 302);
   return c.json(await healthFacts(c.env));
 });
 
