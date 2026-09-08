@@ -113,6 +113,34 @@ app.get('/v1/status', async (c) => {
   return c.json(payload);
 });
 
+/** Machine-readable description of this API, for clients that do not speak MCP. */
+app.get('/v1/openapi.json', (c) => c.json(OPENAPI(new URL(c.req.url).origin)));
+
+/**
+ * Device registration is deliberately absent.
+ *
+ * Anonymous device tokens used to be the whole identity model. They were unforgeable but
+ * unrevocable, and anyone holding one could read the screen recordings it covered forever.
+ * Accounts replace them. An existing token is still honoured for exactly one thing —
+ * proving ownership of pre-account recordings at POST /v1/account/claim — and grants
+ * nothing else.
+ */
+
+// Auth routes carry their own guards, so they mount before the blanket one below.
+app.route('/', authRoutes);
+
+// Everything below is scoped to the signed-in account. Every query filters on `me.userId`;
+// there is no code path that reads another user's rows.
+app.use('/v1/sessions/*', requireAuth);
+app.use('/v1/sessions', requireAuth);
+app.use('/v1/frames/*', requireAuth);
+app.use('/v1/frames', requireAuth);
+app.use('/v1/usage', requireAuth);
+app.use('/v1/data', requireAuth);
+app.use('/v1/timeline', requireAuth);
+app.use('/v1/scenes', requireAuth);
+app.use('/v1/admin/*', requireAuth);
+
 /**
  * Operator routes.
  *
@@ -128,7 +156,15 @@ function adminOnly(
   handler: (c: Context<Ctx>, admin: { userId: string; email: string }) => Promise<Response>,
 ) {
   return async (c: Context<Ctx>): Promise<Response> => {
-    const admin = await resolveAdmin(c.env, c.get('me').userId);
+    // Checked here rather than assumed from the middleware. These routes were registered
+    // above their own `app.use` guard once, so requireAuth never ran and `me` was
+    // undefined — which threw, and produced a 500 instead of a refusal. It failed closed,
+    // by accident. Access control that depends on a TypeError is not access control, and
+    // it must not depend on the order of two lines in this file either.
+    const me = c.get('me') as { userId?: string } | undefined;
+    if (!me?.userId) return c.json({ error: 'unauthorized' }, 401);
+
+    const admin = await resolveAdmin(c.env, me.userId);
     if (!admin) return c.json({ error: 'not_found' }, 404);
     return handler(c, admin);
   };
@@ -231,33 +267,6 @@ app.get('/v1/admin/events', adminOnly(async (c) => {
   return c.json({ events: results });
 }));
 
-/** Machine-readable description of this API, for clients that do not speak MCP. */
-app.get('/v1/openapi.json', (c) => c.json(OPENAPI(new URL(c.req.url).origin)));
-
-/**
- * Device registration is deliberately absent.
- *
- * Anonymous device tokens used to be the whole identity model. They were unforgeable but
- * unrevocable, and anyone holding one could read the screen recordings it covered forever.
- * Accounts replace them. An existing token is still honoured for exactly one thing —
- * proving ownership of pre-account recordings at POST /v1/account/claim — and grants
- * nothing else.
- */
-
-// Auth routes carry their own guards, so they mount before the blanket one below.
-app.route('/', authRoutes);
-
-// Everything below is scoped to the signed-in account. Every query filters on `me.userId`;
-// there is no code path that reads another user's rows.
-app.use('/v1/sessions/*', requireAuth);
-app.use('/v1/sessions', requireAuth);
-app.use('/v1/frames/*', requireAuth);
-app.use('/v1/frames', requireAuth);
-app.use('/v1/usage', requireAuth);
-app.use('/v1/data', requireAuth);
-app.use('/v1/timeline', requireAuth);
-app.use('/v1/scenes', requireAuth);
-app.use('/v1/admin/*', requireAuth);
 app.use('/mcp', requireAuth);
 
 /**
@@ -774,3 +783,10 @@ export default {
 };
 
 export { prune };
+
+/**
+ * The Hono app itself, for tests that need to dispatch a real request through the whole
+ * middleware chain. Route guards are a property of registration order, and order is not
+ * something a unit test of a handler in isolation can see.
+ */
+export { app };

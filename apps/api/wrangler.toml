@@ -40,6 +40,16 @@ RETENTION_DAYS = "7"
 # development turns this on through apps/api/.dev.vars, which never ships.
 ALLOW_LOCALHOST_ORIGINS = "false"
 
+# ADMIN_EMAILS is deliberately NOT here.
+#
+# It grants the operator view — seeing and deleting every account's recordings — and it is
+# set as a Worker secret instead, by .github/workflows/set-admin-emails.yml. Two reasons.
+# A [vars] entry lives in this file, so a personal address would be committed to the
+# repository. And it means the value cannot be changed by anything the application does to
+# itself: altering it takes access to the Cloudflare account, which is the property that
+# makes it safe to hang the largest capability in the system on. Unset means nobody is an
+# operator, which is the right default for a deployment nobody has configured.
+
 # Two schedules, told apart inside the handler by `event.cron`.
 #
 # Every five minutes: probe D1 and R2 and record the result, so the status page can answer
@@ -61,3 +71,4 @@ enabled = true
 # before upload, so a missing key never reaches production.
 [secrets]
 required = ["AUTH_SECRET"]
+# Optional: ADMIN_EMAILS, comma-separated. Unset means nobody has operator access.
