@@ -330,11 +330,22 @@ export function StatusView() {
     return () => { cancelled = true; };
   }, []);
 
+  const [denied, setDenied] = useState(false);
+
   const load = useCallback(async () => {
     try {
-      const res = await fetch('/v1/status');
+      const res = await fetch('/v1/status', { credentials: 'same-origin' });
+      // 401 is signed out, 404 is signed in without operator access. Both mean the same
+      // thing to a reader — this page is not yours — and neither is an error worth a red
+      // banner, so they get their own answer rather than a status code.
+      if (res.status === 401 || res.status === 403 || res.status === 404) {
+        setDenied(true);
+        setError(null);
+        return;
+      }
       if (!res.ok) throw new Error(`status endpoint returned ${res.status}`);
       setData((await res.json()) as StatusPayload);
+      setDenied(false);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -346,6 +357,35 @@ export function StatusView() {
     const timer = window.setInterval(() => void load(), 60_000);
     return () => window.clearInterval(timer);
   }, [load]);
+
+  if (denied) {
+    return (
+      <div className="app">
+        <header>
+          <h1>ScreenRegister <span>· status</span></h1>
+          <nav><a href="/" className="button-link">&larr; Back to the recorder</a></nav>
+        </header>
+        <div className="panel">
+          <h3 style={{ marginTop: 0 }}>This page is for operators</h3>
+          <div className="hint">
+            It names deployments, commit messages and service latencies, so it is behind an
+            account. Sign in with an operator account to read it.
+          </div>
+          <div className="hint" style={{ marginTop: 12 }}>
+            <b>If the problem is that you cannot sign in</b>, this page cannot help — but{' '}
+            <a className="linkish" href="/v1/health">/v1/health</a> can. It is public, needs
+            no signing key to answer, and reports whether the schema, the signing key and
+            the mail provider are in place. That is deliberately the one thing that keeps
+            working when authentication does not.
+          </div>
+          <div className="row" style={{ marginTop: 14 }}>
+            <a className="button-link" href="/">Sign in</a>
+            <a className="button-link" href="/v1/health">Open /v1/health</a>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (error && !data) {
     return (

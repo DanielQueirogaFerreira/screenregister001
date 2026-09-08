@@ -144,46 +144,21 @@ jobs:
           done
 
           echo
-          echo "--- the status endpoint answers, quickly"
-          # Timed, because this endpoint used to run a 600k-iteration key derivation and an
-          # R2 round trip per request and took over a second. It is a reader now.
-          start=$(date +%s%3N)
-          curl -fsS "$BASE/v1/status" -o /tmp/status.json || fail "/v1/status failed"
-          status_ms=$(( $(date +%s%3N) - start ))
-          echo "  answered in ${status_ms}ms"
-          [ "$status_ms" -lt 900 ] || fail "/v1/status took ${status_ms}ms; it is meant to be a cheap read"
+          echo "--- the status endpoint is operators-only now"
+          # It names deployments, commit messages and service latencies. Anonymous and
+          # signed-in-but-ordinary must both be refused, and neither may leak the shape of
+          # what is behind it.
+          code=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/v1/status")
+          [ "$code" = "401" ] || fail "anonymous /v1/status returned HTTP $code, expected 401"
+          code=$(curl -s -o /tmp/st.json -w '%{http_code}' -b "$JAR" "$BASE/v1/status")
+          [ "$code" = "404" ] || fail "an ordinary account got HTTP $code from /v1/status, expected 404"
+          grep -q 'deploys\|services\|roadmap' /tmp/st.json \
+            && fail "the refusal leaked the status payload"
+          echo "  anonymous -> 401, ordinary account -> 404"
 
-          python3 - <<'PY' || exit 1
-          import json
-          d = json.load(open('/tmp/status.json'))
-          print('  overall:', d['overall'], '| stale:', d['freshness']['stale'],
-                '| last probe:', d['freshness']['last_check'])
-          for s in d['services']:
-              print(f"  {s['service']:6} {s['status']:9} latency={s['latency_ms']}  {s['detail'] or ''}")
-          names = {s['service'] for s in d['services']}
-          assert names == {'d1', 'r2', 'auth', 'kdf', 'email'}, f'unexpected services: {names}'
-          assert d['progress']['total'] > 0, 'roadmap is empty'
-
-          # The cron is the prober now, so a stale page means the cron has stopped.
-          assert not d['freshness']['stale'], (
-              'probe data is stale; the scheduled trigger is not running')
-
-          # Every latency read exactly 0 for as long as the probes existed, because the
-          # clock was read before the awaited call rather than after it. At least one
-          # probe does real I/O and must show for it.
-          measured = [s['latency_ms'] for s in d['services'] if s['latency_ms'] is not None]
-          assert any(v > 0 for v in measured), (
-              f'every probe reported 0ms, which means nothing is being timed: {measured}')
-
-          h = d['health']
-          print('  health:', {k: h[k] for k in
-                ('ok', 'schema', 'auth_configured', 'email_configured', 'retention_days')})
-          assert h['ok'], f'the deployment reports itself unhealthy: {h}'
-          assert not h['cors_localhost'], 'production is accepting cross-origin localhost'
-
-          print('  deploys recorded:', len(d['deploys']))
-          print('  history buckets:', len(d['history']))
-          PY
+          echo "  and /v1/health is still public, which is what answers when auth is broken"
+          curl -fsS "$BASE/v1/health" -o /tmp/h2.json || fail "/v1/health is no longer public"
+          grep -q '"ok":true' /tmp/h2.json || fail "/v1/health does not report ok"
 
           echo
           echo "--- a frame round-trips, stamp and all"
@@ -433,6 +408,22 @@ jobs:
           drift = abs((datetime.now(timezone.utc) - ended).total_seconds())
           assert drift < 300, f'ended_at looks like now rather than the recording: {drift}s'
           PY
+
+          echo
+          echo "--- user management is closed to an ordinary account"
+          for m in "GET /v1/admin/users" "POST /v1/admin/users" "POST /v1/admin/transfer-master"; do
+            verb=${m%% *}; path=${m##* }
+            code=$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR" -X "$verb" \
+              -H 'Content-Type: application/json' -d '{}' "$BASE$path")
+            [ "$code" = "404" ] || fail "$verb $path returned HTTP $code to a non-admin, expected 404"
+            echo "  $verb $path -> 404"
+          done
+          # And it cannot delete or edit an account by guessing an id.
+          code=$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR" -X DELETE \
+            "$BASE/v1/admin/users/$USER_ID?recordings=delete")
+          [ "$code" = "404" ] || fail "a non-admin reached the user delete (HTTP $code)"
+          curl -fsS -b "$JAR" "$BASE/v1/auth/me" -o /tmp/me3.json || fail "/v1/auth/me failed"
+          grep -q '"role":"user"' /tmp/me3.json || fail "an ordinary account is not reported as a user"
 
           echo
           echo "--- the operator surface is closed to an ordinary account"

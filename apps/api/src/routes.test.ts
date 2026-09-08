@@ -43,6 +43,10 @@ const env = () => ({
 }) as never;
 
 const ADMIN_ROUTES: [string, string][] = [
+  // Behind an account since the status page became operators-only. Listed here with the
+  // rest so it cannot drift back above its guard unnoticed, which is the mistake this
+  // file exists because of.
+  ['GET', '/v1/status'],
   ['GET', '/v1/admin/overview'],
   ['GET', '/v1/admin/users'],
   ['GET', '/v1/admin/events'],
@@ -75,13 +79,13 @@ describe('operator routes', () => {
     expect(statuses[0]).toBe(401);
   });
 
-  it('leave the public routes public', async () => {
-    // The guard must not have crept wider than intended: the status page and health are
-    // reachable precisely when authentication is the thing that is broken.
-    for (const path of ['/v1/health', '/v1/status']) {
-      const res = await app.request(path, {}, env());
-      expect(res.status, path).toBe(200);
-    }
+  it('leaves health public, which is what answers when auth is broken', async () => {
+    // /v1/status is no longer among them: it names deployments, commit messages and
+    // service latencies, and that is now operators-only by decision. /v1/health stays
+    // open, and is what still answers when authentication is the thing that is broken —
+    // it needs no signing key, and the deploy gate cannot hold a session.
+    const res = await app.request('/v1/health', {}, env());
+    expect(res.status).toBe(200);
   });
 
   it('answer an unknown API path with JSON rather than the app shell', async () => {

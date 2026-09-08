@@ -1,54 +1,13 @@
 import type { Env } from './types.js';
 
 /**
- * Operator access.
+ * The operator audit log, and how recent a heartbeat must be to count as recording.
  *
- * Who is an admin is derived from the ADMIN_EMAILS Worker variable on every request, and
- * is deliberately not a column. An admin can see and delete any account's recordings — the
- * most dangerous capability this system has — and a role stored in the database is one
- * careless UPDATE, one injection, or one restored-from-backup row away from belonging to
- * the wrong person. A Worker variable cannot be changed by anything the application does
- * to itself; changing it takes access to the Cloudflare account and leaves a deploy behind.
- *
- * The deliberate limit: an admin can see that a recording exists, who owns it, how large
- * it is and whether it is running, and can delete it or ask it to stop. An admin cannot
- * fetch its frames. Listing someone's recordings and watching their screen are different
- * powers, and the second one is not implied by "manage the system" — it should be granted
- * explicitly, by someone who has decided to grant it, not acquired as a side effect.
- * `/v1/frames/:id/image` therefore stays scoped to the owner with no admin branch.
+ * Who may do what moved to roles.ts when operators became manageable from inside the
+ * product. What stayed here is the record of what they did with it.
  */
 
-export interface Admin {
-  userId: string;
-  email: string;
-}
-
-/** Parse the allow-list. Blank, unset or whitespace-only means nobody is an admin. */
-export function adminEmails(env: Env): string[] {
-  return (env.ADMIN_EMAILS ?? '')
-    .split(',')
-    .map((e) => e.trim().toLowerCase())
-    .filter(Boolean);
-}
-
-/**
- * Resolve the signed-in user to an admin, or null.
- *
- * The lookup is by user id and the comparison is against the stored email, so an admin
- * cannot be impersonated by signing up with a lookalike address: the address has to be the
- * one on the account, and addresses are unique and normalised at write time.
- */
-export async function resolveAdmin(env: Env, userId: string): Promise<Admin | null> {
-  const allowed = adminEmails(env);
-  if (allowed.length === 0) return null;
-
-  const row = await env.DB.prepare(
-    `SELECT user_id, email FROM users WHERE user_id = ? AND disabled_at IS NULL`,
-  ).bind(userId).first<{ user_id: string; email: string }>();
-  if (!row) return null;
-  if (!allowed.includes(row.email.trim().toLowerCase())) return null;
-  return { userId: row.user_id, email: row.email };
-}
+import type { Principal as Admin } from './roles.js';
 
 /**
  * Record what an operator did.

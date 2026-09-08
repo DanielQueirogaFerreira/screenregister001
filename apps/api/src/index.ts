@@ -4,14 +4,19 @@ import type { Env, Principal } from './types.js';
 import { AuthNotConfiguredError, isAuthConfigured } from './auth.js';
 import { authRoutes, requireAuth } from './auth-routes.js';
 import { healthFacts, isLocalhostOrigin, localhostAllowed } from './health.js';
-import { pruneAuthTables } from './accounts.js';
+import {
+  isPlausibleEmail, normaliseEmail, pruneAuthTables, revokeAllSessions,
+} from './accounts.js';
+import { hashPassword, validatePassword, verifyPassword } from './password.js';
 import { buildStatus, pruneStatusTables, recordProbes, runProbes } from './status.js';
 import { handleMcp } from './mcp.js';
 import { buildScenes, listFrames, resolveWindow } from './queries.js';
-import { StampError, decodeStamp } from '@sr/schema';
+import { StampError, decodeStamp, ulid } from '@sr/schema';
+import { HEARTBEAT_INTERVAL_MS, LIVE_WINDOW_MS, adminAudit, liveCutoff } from './admin.js';
 import {
-  HEARTBEAT_INTERVAL_MS, LIVE_WINDOW_MS, adminAudit, liveCutoff, resolveAdmin,
-} from './admin.js';
+  type Permissions, type Principal as Operator, type Role,
+  can, clampPermissions, isOperator, mayActOn, maySetRole, readPermissions, resolvePrincipal,
+} from './roles.js';
 import { OPENAPI } from './openapi.js';
 
 type Ctx = { Bindings: Env; Variables: { me: Principal; scope: 'read' | 'write'; sessionHash?: string } };
@@ -93,26 +98,6 @@ app.get('/v1/health', async (c) => {
   return c.json(await healthFacts(c.env));
 });
 
-/**
- * Everything the status dashboard renders: recorded probe history, uptime, health facts,
- * deployment log and roadmap.
- *
- * Public, like /v1/health, and for the same reason: the moment it is most needed is when
- * authentication is the thing that is broken. It exposes no recordings, no counts of them,
- * and no account data — only whether the platform's own dependencies are answering.
- *
- * Reads only. The five-minute cron is what probes; see the note on buildStatus for why
- * probing per request was a mistake this endpoint had to be caught making.
- */
-app.get('/v1/status', async (c) => {
-  const payload = await buildStatus(c.env);
-  // Half the probe interval. Nothing this endpoint reports can change in between, so a
-  // client refreshing every thirty seconds costs one D1 read per cache miss instead of a
-  // full probe pass. must-revalidate keeps a stale copy from being served after an outage.
-  c.header('Cache-Control', 'public, max-age=150, must-revalidate');
-  return c.json(payload);
-});
-
 /** Machine-readable description of this API, for clients that do not speak MCP. */
 app.get('/v1/openapi.json', (c) => c.json(OPENAPI(new URL(c.req.url).origin)));
 
@@ -140,6 +125,7 @@ app.use('/v1/data', requireAuth);
 app.use('/v1/timeline', requireAuth);
 app.use('/v1/scenes', requireAuth);
 app.use('/v1/admin/*', requireAuth);
+app.use('/v1/status', requireAuth);
 
 /**
  * Operator routes.
@@ -153,7 +139,9 @@ app.use('/v1/admin/*', requireAuth);
  * There is deliberately no route here that returns frame images. See admin.ts.
  */
 function adminOnly(
-  handler: (c: Context<Ctx>, admin: { userId: string; email: string }) => Promise<Response>,
+  handler: (c: Context<Ctx>, admin: Operator) => Promise<Response>,
+  /** A capability the route needs beyond simply being an operator. */
+  needs?: keyof Permissions,
 ) {
   return async (c: Context<Ctx>): Promise<Response> => {
     // Checked here rather than assumed from the middleware. These routes were registered
@@ -164,8 +152,14 @@ function adminOnly(
     const me = c.get('me') as { userId?: string } | undefined;
     if (!me?.userId) return c.json({ error: 'unauthorized' }, 401);
 
-    const admin = await resolveAdmin(c.env, me.userId);
-    if (!admin) return c.json({ error: 'not_found' }, 404);
+    const admin = await resolvePrincipal(c.env, me.userId);
+    if (!admin || !isOperator(admin)) return c.json({ error: 'not_found' }, 404);
+    // Being an operator opens the view; a permission is what lets you act. Refused as 403
+    // rather than 404, because unlike the surface itself this is not a secret from someone
+    // who can already see it — telling them which flag they lack is the useful answer.
+    if (needs && !can(admin, needs)) {
+      return c.json({ error: 'forbidden', detail: `This account lacks ${needs}.` }, 403);
+    }
     return handler(c, admin);
   };
 }
@@ -209,20 +203,291 @@ app.get('/v1/admin/overview', adminOnly(async (c, admin) => {
   });
 }));
 
-/** Every account, with what it is actually using. */
+/**
+ * Everything the status dashboard renders: recorded probe history, uptime, health facts,
+ * deployment log and roadmap.
+ *
+ * Operators only, by decision. It was public, and the argument for that was that the moment
+ * a status page matters most is when authentication is the thing that is broken — a page
+ * you must sign in to read cannot report that signing in is down. That trade has been made
+ * knowingly: the page names deployments, commit messages, service latencies and the shape
+ * of the platform's dependencies, and none of that has to be readable by everyone.
+ *
+ * What preserves the failure case is that /v1/health stays public and unauthenticated. It
+ * needs no signing key to answer and reports schema, auth and mail configuration, so when
+ * authentication itself is broken there is still something that will say so — and the
+ * deploy gate, which cannot hold a session, keeps working.
+ *
+ * Reads only. The five-minute cron is what probes; see the note on buildStatus for why
+ * probing per request was a mistake this endpoint had to be caught making.
+ */
+app.get('/v1/status', adminOnly(async (c) => {
+  const payload = await buildStatus(c.env);
+  // Half the probe interval. Nothing this endpoint reports can change in between, so a
+  // client refreshing every thirty seconds costs one D1 read per cache miss instead of a
+  // full probe pass. must-revalidate keeps a stale copy from being served after an outage.
+  // Private now that it is behind an account: a shared cache must never hand one
+  // operator's view to the next person through the same edge.
+  c.header('Cache-Control', 'private, max-age=150, must-revalidate');
+  return c.json(payload);
+}));
+
+/** Every account, with its role, its permissions, and what it is actually using. */
 app.get('/v1/admin/users', adminOnly(async (c, admin) => {
   const { results } = await c.env.DB.prepare(
     `SELECT u.user_id, u.email, u.created_at, u.email_verified_at, u.disabled_at,
-            u.locked_until,
+            u.deleted_at, u.locked_until, u.role,
+            u.can_manage_users, u.can_grant_admin, u.can_view_frames, u.can_delete_recordings,
             COUNT(DISTINCT s.session_id) AS sessions,
             COALESCE(SUM(s.frames_stored), 0) AS frames,
             COALESCE(SUM(s.bytes_stored), 0) AS bytes,
             MAX(s.started_at) AS last_recording
        FROM users u LEFT JOIN sessions s ON s.user_id = u.user_id
       GROUP BY u.user_id ORDER BY u.created_at DESC LIMIT 500`,
-  ).all();
+  ).all<Record<string, unknown>>();
   await adminAudit(c.env, c.req.raw, admin, 'view_users');
-  return c.json({ users: results });
+  return c.json({
+    users: results.map((r) => ({
+      ...r,
+      role: (r.role as string) ?? 'user',
+      permissions: {
+        can_manage_users: Boolean(r.can_manage_users),
+        can_grant_admin: Boolean(r.can_grant_admin),
+        can_view_frames: Boolean(r.can_view_frames),
+        can_delete_recordings: Boolean(r.can_delete_recordings),
+      },
+    })),
+    // So the interface can grey out what this operator would be refused, rather than
+    // offering it and reporting a 403 after the fact.
+    me: { user_id: admin.userId, role: admin.role, permissions: admin.permissions },
+  });
+}));
+
+/** The account being acted on, and whether this operator may. */
+async function loadTarget(
+  env: Env, id: string,
+): Promise<{ user_id: string; email: string; role: Role; deleted_at: string | null } | null> {
+  const row = await env.DB.prepare(
+    `SELECT user_id, email, role, deleted_at FROM users WHERE user_id = ?`,
+  ).bind(id).first<{ user_id: string; email: string; role: string | null; deleted_at: string | null }>();
+  return row ? { ...row, role: (row.role ?? 'user') as Role } : null;
+}
+
+/**
+ * Create an account.
+ *
+ * The password is set here and shown once, because there is no mail provider configured and
+ * an invitation nobody can deliver is not an invitation. It is returned in the response and
+ * never stored in readable form — the same PBKDF2 path every signup takes.
+ */
+app.post('/v1/admin/users', adminOnly(async (c, admin) => {
+  const body = await c.req.json<{ email?: string; password?: string; role?: Role }>()
+    .catch(() => ({} as { email?: string; password?: string; role?: Role }));
+
+  const email = normaliseEmail(String(body.email ?? ''));
+  if (!isPlausibleEmail(email)) return c.json({ error: 'invalid_email' }, 400);
+
+  const role: Role = body.role === 'admin' ? 'admin' : 'user';
+  if (role === 'admin' && !can(admin, 'can_grant_admin')) {
+    return c.json({ error: 'forbidden', detail: 'This account cannot grant operator access.' }, 403);
+  }
+
+  const password = String(body.password ?? '');
+  const problems = validatePassword(password, email);
+  if (problems.length) return c.json({ error: 'weak_password', problems }, 400);
+
+  const existing = await c.env.DB.prepare(`SELECT user_id FROM users WHERE email = ?`)
+    .bind(email).first();
+  if (existing) return c.json({ error: 'email_taken' }, 409);
+
+  const now = new Date().toISOString();
+  const userId = ulid();
+  await c.env.DB.prepare(
+    `INSERT INTO users (user_id, email, password_hash, created_at, updated_at, role)
+     VALUES (?,?,?,?,?,?)`,
+  ).bind(userId, email, await hashPassword(password), now, now, role).run();
+
+  await adminAudit(c.env, c.req.raw, admin, 'create_user', userId, `${email} as ${role}`);
+  return c.json({ ok: true, user_id: userId, email, role });
+}, 'can_manage_users'));
+
+/**
+ * Change an account's role, permissions, or whether it can sign in.
+ *
+ * Every one of those decisions lives in roles.ts and is tested there. This route's job is
+ * to ask, not to decide — a permission check written inline in a handler is a permission
+ * check that exists in one place and is forgotten in the next.
+ */
+app.patch('/v1/admin/users/:id', adminOnly(async (c, admin) => {
+  const id = c.req.param('id');
+  if (!id) return c.json({ error: 'not_found' }, 404);
+
+  const target = await loadTarget(c.env, id);
+  if (!target || target.deleted_at) return c.json({ error: 'not_found' }, 404);
+
+  const body = await c.req.json<{
+    role?: Role; permissions?: unknown; disabled?: boolean;
+  }>().catch(() => ({} as { role?: Role; permissions?: unknown; disabled?: boolean }));
+
+  const gate = body.role !== undefined
+    ? maySetRole(admin, target, body.role)
+    : mayActOn(admin, target);
+  if (!gate.ok) return c.json({ error: 'forbidden', detail: gate.reason }, 403);
+
+  const nextRole: Role = body.role ?? target.role;
+  // Clamped, so an operator can never mint one stronger than itself. A demotion to plain
+  // user drops every flag with it, rather than leaving them set and dormant against a
+  // later promotion.
+  const perms = nextRole === 'user'
+    ? readPermissions({})
+    : clampPermissions(admin, readPermissions(body.permissions));
+
+  const now = new Date().toISOString();
+  await c.env.DB.prepare(
+    `UPDATE users
+        SET role = ?, can_manage_users = ?, can_grant_admin = ?, can_view_frames = ?,
+            can_delete_recordings = ?,
+            disabled_at = CASE WHEN ? THEN COALESCE(disabled_at, ?) ELSE NULL END,
+            updated_at = ?
+      WHERE user_id = ?`,
+  ).bind(
+    nextRole,
+    perms.can_manage_users ? 1 : 0, perms.can_grant_admin ? 1 : 0,
+    perms.can_view_frames ? 1 : 0, perms.can_delete_recordings ? 1 : 0,
+    body.disabled === undefined ? null : (body.disabled ? 1 : 0), now,
+    now, id,
+  ).run();
+
+  // A disabled account keeps no way in. Leaving live cookies behind would mean "disabled"
+  // took effect only when someone next signed in, which is not what the word means.
+  if (body.disabled) await revokeAllSessions(c.env, id);
+
+  await adminAudit(c.env, c.req.raw, admin, 'update_user', id,
+    `${target.email}: role ${target.role}\u2192${nextRole}`
+    + (body.disabled === undefined ? '' : `, ${body.disabled ? 'disabled' : 'enabled'}`));
+  return c.json({ ok: true, role: nextRole, permissions: perms });
+}, 'can_manage_users'));
+
+/**
+ * Remove an account, keeping or destroying its recordings.
+ *
+ * The row is kept and marked deleted rather than dropped. Frames carry a user_id, and
+ * recordings can outlive the account that made them — deleting the row outright would
+ * leave them owned by an identifier with no name behind it, which in an audit is worse
+ * than useless. What ends is the ability to sign in: the password hash is destroyed and
+ * every session revoked.
+ *
+ * `recordings=delete` purges everything they recorded. Removing only part of it is the
+ * per-session Delete in the sessions table, which is the right shape for a choice made one
+ * recording at a time.
+ */
+app.delete('/v1/admin/users/:id', adminOnly(async (c, admin) => {
+  const id = c.req.param('id');
+  if (!id) return c.json({ error: 'not_found' }, 404);
+
+  const target = await loadTarget(c.env, id);
+  if (!target) return c.json({ error: 'not_found' }, 404);
+
+  const gate = mayActOn(admin, target);
+  if (!gate.ok) return c.json({ error: 'forbidden', detail: gate.reason }, 403);
+
+  const dropRecordings = c.req.query('recordings') === 'delete';
+  if (dropRecordings && !can(admin, 'can_delete_recordings')) {
+    return c.json({
+      error: 'forbidden',
+      detail: 'This account cannot delete recordings. Remove the account and keep them, '
+        + 'or ask someone who can.',
+    }, 403);
+  }
+
+  let removed = 0;
+  if (dropRecordings) {
+    for (;;) {
+      const { results } = await c.env.DB.prepare(
+        `SELECT frame_id, storage_key FROM frames WHERE user_id = ? LIMIT 500`,
+      ).bind(id).all<{ frame_id: string; storage_key: string }>();
+      if (results.length === 0) break;
+      await deleteObjects(c.env, results.map((r) => r.storage_key));
+      await c.env.DB.prepare(
+        `DELETE FROM frames WHERE frame_id IN (${results.map(() => '?').join(',')})`,
+      ).bind(...results.map((r) => r.frame_id)).run();
+      removed += results.length;
+    }
+    await c.env.DB.prepare(`DELETE FROM sessions WHERE user_id = ?`).bind(id).run();
+  }
+
+  const now = new Date().toISOString();
+  await c.env.DB.prepare(
+    `UPDATE users
+        SET deleted_at = ?, deleted_by = ?, disabled_at = COALESCE(disabled_at, ?),
+            password_hash = '', role = 'user',
+            can_manage_users = 0, can_grant_admin = 0, can_view_frames = 0,
+            can_delete_recordings = 0, updated_at = ?
+      WHERE user_id = ?`,
+  ).bind(now, admin.userId, now, now, id).run();
+  await revokeAllSessions(c.env, id);
+
+  await adminAudit(c.env, c.req.raw, admin, 'delete_user', id,
+    `${target.email}, recordings ${dropRecordings ? `deleted (${removed} frames)` : 'kept'}`);
+  return c.json({ ok: true, recordings: dropRecordings ? 'deleted' : 'kept', frames: removed });
+}, 'can_manage_users'));
+
+/**
+ * Hand the master role to another account.
+ *
+ * Master-only, and it demotes the holder in the same breath as it promotes the successor.
+ * That ordering is not a style choice: the database holds a unique index over the master
+ * role, so promoting first would simply fail — which is the correct failure, and the reason
+ * the constraint is there rather than in a comment asking everyone to be careful.
+ *
+ * It costs the current holder everything, so it asks for the password. The audit line names
+ * both accounts, and it is the last thing this account will be able to do that the new
+ * master cannot undo.
+ */
+app.post('/v1/admin/transfer-master', adminOnly(async (c, admin) => {
+  if (admin.role !== 'master') {
+    return c.json({ error: 'forbidden', detail: 'Only the master account can transfer the role.' }, 403);
+  }
+
+  const body = await c.req.json<{ user_id?: string; password?: string }>()
+    .catch(() => ({} as { user_id?: string; password?: string }));
+  const targetId = String(body.user_id ?? '');
+
+  const me = await c.env.DB.prepare(`SELECT password_hash FROM users WHERE user_id = ?`)
+    .bind(admin.userId).first<{ password_hash: string }>();
+  if (!me || !await verifyPassword(String(body.password ?? ''), me.password_hash)) {
+    await adminAudit(c.env, c.req.raw, admin, 'transfer_master_refused', targetId,
+      'wrong password');
+    return c.json({ error: 'invalid_credentials' }, 401);
+  }
+
+  const target = await loadTarget(c.env, targetId);
+  if (!target || target.deleted_at) return c.json({ error: 'not_found' }, 404);
+  if (target.user_id === admin.userId) {
+    return c.json({ error: 'invalid_target', detail: 'That is already the master account.' }, 400);
+  }
+
+  // Demote then promote, in one batch. The unique index makes the reverse order impossible
+  // rather than merely unwise, and the batch means there is no instant with two masters or
+  // none.
+  const now = new Date().toISOString();
+  await c.env.DB.batch([
+    c.env.DB.prepare(
+      `UPDATE users SET role = 'admin', can_manage_users = 1, can_grant_admin = 1,
+              can_view_frames = 1, can_delete_recordings = 1, updated_at = ?
+        WHERE user_id = ?`,
+    ).bind(now, admin.userId),
+    c.env.DB.prepare(`UPDATE users SET role = 'master', updated_at = ? WHERE user_id = ?`)
+      .bind(now, targetId),
+  ]);
+
+  await adminAudit(c.env, c.req.raw, admin, 'transfer_master', targetId,
+    `from ${admin.email} to ${target.email}`);
+  return c.json({
+    ok: true,
+    note: `${target.email} is now the master account. This account is an operator with `
+      + 'every permission, and can no longer act on the master.',
+  });
 }));
 
 /**
@@ -290,7 +555,7 @@ app.delete('/v1/admin/sessions/:id', adminOnly(async (c, admin) => {
   await adminAudit(c.env, c.req.raw, admin, 'delete_session', id,
     `${results.length} frame(s) deleted`);
   return c.json({ ok: true, deleted: results.length });
-}));
+}, 'can_delete_recordings'));
 
 /**
  * One session's frames, for an operator, regardless of who owns it.
@@ -311,7 +576,7 @@ app.get('/v1/admin/sessions/:id/frames', adminOnly(async (c, admin) => {
   await adminAudit(c.env, c.req.raw, admin, 'view_session', id,
     `${results.length} frame(s), owner ${(session as { email?: string })?.email ?? 'unknown'}`);
   return c.json({ session, frames: results.map(publicFrame) });
-}));
+}, 'can_view_frames'));
 
 /** What operators have been doing. Visible to operators, which is the point of having it. */
 app.get('/v1/admin/events', adminOnly(async (c) => {
@@ -809,8 +1074,10 @@ app.get('/v1/frames/:id/image', async (c) => {
    * removed. That is a property of how the frame was stored, not a check anyone can skip.
    */
   if (!row) {
-    const admin = await resolveAdmin(c.env, me.userId);
-    if (admin) {
+    const admin = await resolvePrincipal(c.env, me.userId);
+    // Being an operator is not enough. Looking at someone else's screen is its own
+    // permission, off by default, and separately logged every time it is used.
+    if (admin && can(admin, 'can_view_frames')) {
       row = await c.env.DB.prepare(
         `SELECT storage_key, original_key, redacted, user_id FROM frames WHERE frame_id = ?`,
       ).bind(frameId)

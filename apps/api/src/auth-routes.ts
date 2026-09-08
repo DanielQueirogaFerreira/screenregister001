@@ -9,7 +9,7 @@ import {
   revokeAllSessions, revokeSession, sessionCookie, useEmailToken, type UserRow,
 } from './accounts.js';
 import { hashPassword, validatePassword, verifyPassword } from './password.js';
-import { resolveAdmin } from './admin.js';
+import { isOperator, resolvePrincipal } from './roles.js';
 import { mailConfigured, mailerFor, resetPasswordMessage, verifyEmailMessage } from './mailer.js';
 
 export type AuthCtx = {
@@ -271,12 +271,15 @@ app.get('/v1/auth/me', requireAuth, async (c) => {
     user_id: string; email: string; email_verified_at: string | null; created_at: string;
   }>();
   if (!user) return c.json({ error: 'unauthorized' }, 401);
-  // Resolved rather than stored — see admin.ts. The client uses it only to decide whether
-  // to draw the tab; every operator route re-establishes it independently, so a client
-  // that lies to itself about this gains nothing.
-  const admin = await resolveAdmin(c.env, user.user_id);
+  // The client uses this only to decide what to draw; every operator route re-establishes
+  // it independently, so a client that lies to itself about it gains nothing but an empty
+  // page. The permissions come along so the interface can hide controls that would be
+  // refused, rather than offering them and reporting a 403.
+  const op = await resolvePrincipal(c.env, user.user_id);
   return c.json({
-    is_admin: admin !== null,
+    is_admin: op !== null && isOperator(op),
+    role: op?.role ?? 'user',
+    permissions: op?.permissions ?? null,
     user: {
       user_id: user.user_id,
       email: user.email,

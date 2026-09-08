@@ -391,3 +391,7 @@ input[type="checkbox"] {
   width: 17px; height: 17px; accent-color: var(--accent); cursor: pointer; margin: 0;
 }
 tbody tr:has(input[type="checkbox"]:checked) { background: var(--panel-2); }
+
+/* A removed account: kept so its recordings still have a name behind them. */
+.row-removed { opacity: .55; }
+.row-removed td:first-child { text-decoration: line-through; }

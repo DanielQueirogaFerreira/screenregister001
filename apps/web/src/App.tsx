@@ -24,6 +24,8 @@ export function App() {
   // runs. The moment it is most needed is when authentication is the thing that is broken,
   // and a status page you have to sign in to read cannot report that you cannot sign in.
   if (typeof location !== 'undefined' && location.pathname.replace(/\/+$/, '') === '/status') {
+    // StatusView draws its own badge on the refusal screen, where it renders the whole
+    // page itself; here it renders only the dashboard body.
     return (
       <>
         <StatusView />
