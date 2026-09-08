@@ -17,7 +17,7 @@ import { bytes, clock, day, duration } from '../lib/format.js';
  */
 
 interface Totals {
-  users: number; sessions: number; frames: number; bytes: number; redacted_frames: number;
+  users: number; sessions: number; frames: number; bytes: number;
 }
 
 interface LiveRow {
@@ -77,7 +77,7 @@ export function AdminView() {
     void load();
     // Live rows go stale in 45 seconds, so a slower refresh than that would show
     // recordings as running after they had stopped.
-    const t = window.setInterval(() => void load(), 15_000);
+    const t = window.setInterval(() => void load(), 30_000);
     return () => window.clearInterval(t);
   }, [load]);
 
@@ -134,7 +134,6 @@ export function AdminView() {
           <div className="stat"><b>{totals.sessions}</b><span>sessions</span></div>
           <div className="stat"><b>{totals.frames}</b><span>frames</span></div>
           <div className="stat"><b>{bytes(totals.bytes)}</b><span>in R2</span></div>
-          <div className="stat"><b>{totals.redacted_frames}</b><span>redacted</span></div>
           <div className="stat"><b>{live.length}</b><span>recording now</span></div>
         </div>
       </div>

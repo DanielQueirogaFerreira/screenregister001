@@ -48,10 +48,18 @@ const message = (error: unknown): string =>
   (error instanceof Error ? error.message : String(error)).slice(0, 300);
 
 async function probeD1(env: Env): Promise<ProbeResult> {
-  // A read against a real table, not `SELECT 1`: the failure this catches is a missing
-  // migration, which an expression-only query would sail straight past.
+  /**
+   * A read against a real table and a real column, not `SELECT 1` — the failure worth
+   * catching is a missing migration, which an expression-only query sails straight past.
+   *
+   * But LIMIT 1, not COUNT(*). Counting reads every row in the table to answer a question
+   * the probe never asked: it wants to know the table is there and answering, and one row
+   * proves that exactly as well as twelve thousand do. Running every five minutes against
+   * a growing table, the count was reading about 3.6 million rows a day — most of D1's
+   * free daily allowance, spent on a health check, and it is what took logins down.
+   */
   const { ms, error } = await timed(() =>
-    env.DB.prepare('SELECT COUNT(*) AS n FROM frames').first<{ n: number }>(),
+    env.DB.prepare('SELECT frame_id FROM frames LIMIT 1').first<{ frame_id: string }>(),
   );
   if (error) {
     return { service: 'd1', status: 'down', latencyMs: ms, detail: message(error) };

@@ -16,6 +16,16 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      skip_migrations:
+        description: >-
+          Deploy without applying D1 migrations. Only safe when the build carries no new
+          ones — the schema it expects must already be live. This exists because a D1
+          outage or an exhausted quota blocks the migration step even when it has nothing
+          to do, and that must not stand between a fix and production.
+        type: boolean
+        required: false
+        default: false
 
 # One deploy at a time. A queued run is pointless once a newer commit is deploying,
 # but never cancel a run mid-`wrangler deploy`.
@@ -60,9 +70,38 @@ jobs:
       # Idempotent: D1 records applied migrations, so this is a no-op when there is
       # nothing new. It runs before the deploy so the schema is never behind the code.
       - name: Apply D1 migrations
+        if: ${{ inputs.skip_migrations != true }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: pnpm run migrate:api
+        run: |
+          set -o pipefail
+          if pnpm run migrate:api 2>&1 | tee /tmp/migrate.log; then
+            exit 0
+          fi
+
+          # D1 bills on rows read, and exhausting the daily allowance fails every query —
+          # including the one that merely asks which migrations have already run. The error
+          # names a "free tier daily row read limit" and says nothing about what spent it,
+          # so without this the log reads as a broken migration rather than a quota.
+          if grep -q 'row read limit\|code: 7500' /tmp/migrate.log; then
+            cat <<'NOTE'
+          ::error::D1's daily allowance is exhausted, so no query can run — this is a
+          quota, not a bad migration. Nothing was deployed and production still serves the
+          previous version, because migrations run before the deploy. It clears at midnight
+          UTC or with a paid plan. To ship a build that needs no new migration meanwhile,
+          re-run this workflow with skip_migrations checked.
+          NOTE
+            exit 1
+          fi
+
+          echo "::error::D1 migrations failed. See the log above."
+          exit 1
+
+      - name: Note that migrations were skipped
+        if: ${{ inputs.skip_migrations == true }}
+        run: |
+          echo "::warning::Deploying without applying migrations, by request. This is only \
+          correct if the schema this build expects is already live."
 
       - name: Deploy
         id: deploy
