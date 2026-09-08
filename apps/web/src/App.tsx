@@ -42,6 +42,18 @@ function RecorderApp() {
   const [tab, setTab] = useState<Tab>('record');
   const [settings, setSettings] = useState<CaptureSettings>(loadSettings);
   const [playing, setPlaying] = useState<SessionRecord | null>(null);
+  /**
+   * A stamp handed to the inspector from somewhere else — double-clicking a frame in the
+   * player, or the live tile in the library. Held here rather than in a route because the
+   * app has no router; clearing it after handover keeps the inspector editable afterwards.
+   */
+  const [inspecting, setInspecting] = useState<string | null>(null);
+
+  const inspect = useCallback((stamp: string) => {
+    setInspecting(stamp);
+    setPlaying(null);
+    setTab('inspect');
+  }, []);
   const [usage, setUsage] = useState<UsageInfo | null>(null);
   const [uploads, setUploads] = useState<UploadStatus | null>(null);
   const [stalled, setStalled] = useState<string | null>(null);
@@ -299,7 +311,9 @@ function RecorderApp() {
           store={store}
           session={playing}
           settings={settings}
+          accountId={account.user_id}
           onBack={() => setPlaying(null)}
+          onInspect={inspect}
         />
       ) : tab === 'record' ? (
         <RecordView
@@ -313,9 +327,21 @@ function RecorderApp() {
           onSettings={update}
         />
       ) : tab === 'library' ? (
-        <LibraryView store={store} onOpen={setPlaying} onChanged={() => void refreshUsage(store)} />
+        <LibraryView
+          store={store}
+          sessions={sessions}
+          accountId={account.user_id}
+          onOpen={setPlaying}
+          onInspect={inspect}
+          onChanged={() => void refreshUsage(store)}
+        />
       ) : tab === 'inspect' ? (
-        <InspectView store={store} accountId={account.user_id} />
+        <InspectView
+          store={store}
+          accountId={account.user_id}
+          initialStamp={inspecting}
+          onConsumed={() => setInspecting(null)}
+        />
       ) : (
         <SettingsView
           store={store}

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { CaptureSettings, FrameRecord, SessionRecord } from '@sr/schema';
+import { encodeStamp, type CaptureSettings, type FrameRecord, type SessionRecord } from '@sr/schema';
 import type { CloudStore } from '@sr/storage';
 import { bytes, clock, day, duration } from '../lib/format.js';
 
@@ -7,7 +7,9 @@ interface Props {
   store: CloudStore;
   session: SessionRecord;
   settings: CaptureSettings;
+  accountId: string;
   onBack: () => void;
+  onInspect: (stamp: string) => void;
 }
 
 type Mode = 'realtime' | 'condensed';
@@ -36,7 +38,7 @@ const CACHE_MAX = 48;
  */
 const TICKS = 240;
 
-export function PlayerView({ store, session, settings, onBack }: Props) {
+export function PlayerView({ store, session, settings, accountId, onBack, onInspect }: Props) {
   const [frames, setFrames] = useState<FrameRecord[]>([]);
   const [mode, setMode] = useState<Mode>('realtime');
   const [speed, setSpeed] = useState(1);
@@ -204,6 +206,21 @@ export function PlayerView({ store, session, settings, onBack }: Props) {
     return () => cancelAnimationFrame(raf);
   }, [frames, playing, speed, timeline, paint]);
 
+  /**
+   * Double-pressing the picture opens the inspector on the frame that is on screen.
+   *
+   * Double-press rather than single, because a single tap on a player is universally
+   * understood as play/pause and stealing it would make scrubbing hostile. The stamp is
+   * built here from the frame's own row, so it is the same code the recorder showed live.
+   */
+  const inspectCurrent = useCallback(() => {
+    const f = frames[drawnIndex.current] ?? frames[0];
+    if (!f) return;
+    void encodeStamp({
+      frameId: f.frame_id, deviceId: f.device_id || session.device_id, userId: accountId,
+    }).then(onInspect);
+  }, [frames, session.device_id, accountId, onInspect]);
+
   const seek = useCallback((ms: number) => {
     playhead.current = Math.max(0, Math.min(timeline.total, ms));
   }, [timeline.total]);
@@ -256,7 +273,11 @@ export function PlayerView({ store, session, settings, onBack }: Props) {
         </div>
       </div>
 
-      <div className="stage">
+      <div
+        className="stage"
+        onDoubleClick={inspectCurrent}
+        title="Double-press to inspect this frame"
+      >
         <canvas ref={canvasRef} />
         {skipping && (
           <div className="skip">⏩ screen unchanged for {duration(realHold)} — skipped</div>
@@ -314,7 +335,10 @@ export function PlayerView({ store, session, settings, onBack }: Props) {
           {clock(current.captured_at)} · frame {index + 1}/{frames.length} · held{' '}
           {duration(realHold)} · change {(current.change_score * 100).toFixed(1)}%
         </span>
-        <code style={{ marginLeft: 'auto' }}>{current.frame_id}</code>
+        <button style={{ marginLeft: 'auto' }} onClick={inspectCurrent}>
+          Inspect this frame
+        </button>
+        <code>{current.frame_id}</code>
       </div>
     </div>
   );

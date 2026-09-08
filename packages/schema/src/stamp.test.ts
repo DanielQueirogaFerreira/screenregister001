@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   HANDLE_LEN, STAMP_VERSION, StampError, decodeStamp, encodeStamp, fingerprint, handleMatches,
-  handleTimeRange, stampMatches,
+  stampMatches,
 } from './stamp.js';
 import { ulid, ulidTime } from './ulid.js';
 
@@ -27,8 +27,18 @@ describe('frame stamps', () => {
 
   it('stays short enough to read off a screen', async () => {
     const code = await encodeStamp({ frameId: ulid(), deviceId: DEVICE, userId: ACCOUNT });
-    expect(code.length).toBeLessThanOrEqual(30);
+    expect(code.length).toBe(39);
     expect(code.startsWith(`${STAMP_VERSION}-`)).toBe(true);
+  });
+
+  it('shows the frame id whole, so a person can match it against the library', async () => {
+    // An abbreviation that drops characters 11 to 20 is unique but unverifiable: the stamp
+    // and the frame id look like different things, and the natural conclusion is that one
+    // of them is wrong. This is the property that regression cost.
+    const frameId = ulid();
+    const code = await encodeStamp({ frameId, deviceId: DEVICE, userId: ACCOUNT });
+    expect(code).toContain(frameId);
+    expect(decodeStamp(code).handle).toBe(frameId);
   });
 
   it('separates the device and account domains', async () => {
@@ -55,9 +65,6 @@ describe('frame stamps', () => {
     expect(handle).toHaveLength(HANDLE_LEN);
     expect(handleMatches(handle, frameId)).toBe(true);
     expect(handleMatches(handle, ulid())).toBe(false);
-    // The lookup range covers the frame's own id and stops before the next millisecond.
-    const { from, to } = handleTimeRange(handle);
-    expect(frameId >= from && frameId < to).toBe(true);
   });
 
   it('forgives the ways a code gets mistyped', async () => {
@@ -90,12 +97,12 @@ describe('frame stamps', () => {
 
   it('distinguishes two frames captured in the same millisecond', async () => {
     // ULIDs minted in one millisecond do not re-randomise; they increment the tail of the
-    // random block. A handle cut from the front of the ULID was identical for both, which
-    // is a collision in the field whose entire job is to identify a frame.
+    // random block. Any abbreviation cut from the front of the ULID was identical for
+    // both, which is a collision in the field whose entire job is to identify a frame.
     const at = Date.now();
     const first = ulid(at);
     const second = ulid(at);
-    expect(first.slice(0, 16)).toBe(second.slice(0, 16));  // the trap
+    expect(first.slice(0, 16)).toBe(second.slice(0, 16));  // the trap the old format fell into
 
     const a = await encodeStamp({ frameId: first, deviceId: DEVICE, userId: ACCOUNT });
     const b = await encodeStamp({ frameId: second, deviceId: DEVICE, userId: ACCOUNT });

@@ -48,8 +48,16 @@ function Row({ label, value, mono }: { label: string; value: React.ReactNode; mo
  * usually the question. A design that resolved everything server-side would have nothing
  * to say in precisely the cases where the stamp is most useful.
  */
-export function InspectView({ store, accountId }: { store: CloudStore; accountId: string }) {
-  const [code, setCode] = useState('');
+interface InspectProps {
+  store: CloudStore;
+  accountId: string;
+  /** A stamp handed over from the player or the library, resolved on arrival. */
+  initialStamp?: string | null;
+  onConsumed?: () => void;
+}
+
+export function InspectView({ store, accountId, initialStamp, onConsumed }: InspectProps) {
+  const [code, setCode] = useState(initialStamp ?? '');
   const [parts, setParts] = useState<StampParts | null>(null);
   const [mine, setMine] = useState<{ device: boolean; account: boolean } | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
@@ -57,6 +65,12 @@ export function InspectView({ store, accountId }: { store: CloudStore; accountId
   const [lookupError, setLookupError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [image, setImage] = useState<string | null>(null);
+  /**
+   * A stamp arriving from elsewhere is a request to look it up, not just to fill the box.
+   * It is cleared once resolved, so the field stays editable and returning to this tab
+   * does not undo whatever was typed since.
+   */
+  const [pending, setPending] = useState<string | null>(initialStamp ?? null);
 
   // Decode as the code is typed. No network, no account, no waiting.
   useEffect(() => {
@@ -76,6 +90,17 @@ export function InspectView({ store, accountId }: { store: CloudStore; accountId
   }, [code, accountId]);
 
   useEffect(() => () => { if (image) URL.revokeObjectURL(image); }, [image]);
+
+  useEffect(() => {
+    if (initialStamp && initialStamp !== code) {
+      setCode(initialStamp);
+      setPending(initialStamp);
+      onConsumed?.();
+    }
+    // Reacts to a new handover only; `code` is deliberately not a dependency, or typing
+    // would immediately be overwritten by the stamp that arrived.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialStamp]);
 
   const resolve = useCallback(async () => {
     if (!parts) return;
@@ -99,6 +124,15 @@ export function InspectView({ store, accountId }: { store: CloudStore; accountId
       setBusy(false);
     }
   }, [parts, code, store]);
+
+  // A handed-over stamp resolves itself: arriving here from the player means the frame is
+  // the thing being asked about, not the code.
+  useEffect(() => {
+    if (pending && parts && pending === code) {
+      setPending(null);
+      void resolve();
+    }
+  }, [pending, parts, code, resolve]);
 
   const drift = parts ? Date.now() - parts.capturedAtMs : 0;
   const capturedIso = parts ? new Date(parts.capturedAtMs).toISOString() : '';

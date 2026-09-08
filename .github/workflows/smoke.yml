@@ -224,7 +224,8 @@ jobs:
           print(f"SESSION_ID={session}")
           print(f"FRAME_ID={frame}")
           print(f"DEVICE_ID={device}")
-          print(f"HANDLE={frame[:10]}{frame[-6:]}")
+          # The stamp carries the frame id whole, so the handle is the id.
+          print(f"HANDLE={frame}")
           print(f"DEV_FP={fingerprint('device', device)}")
           print(f"CAPTURED_AT={time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime(now/1000))}.{now%1000:03d}Z")
           PY
@@ -274,7 +275,7 @@ jobs:
 
           echo "  a stamp for a frame that does not exist is a plain 404"
           code=$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR" \
-            "$BASE/v1/frames/stamp/SR1-0100000000ZZZZZZ-00000000")
+            "$BASE/v1/frames/stamp/SR1-0100000000ZZZZZZZZZZZZZZZZ-00000000")
           [ "$code" = "404" ] || fail "an unknown stamp returned HTTP $code, expected 404"
 
           echo "  a malformed stamp is rejected, not looked up"

@@ -9,10 +9,10 @@ import { ulidTime } from './ulid.js';
  * frame quoted on its own could not be placed. The stamp is the frame's identity as a
  * single value you can read off a screen, write down, and hand back to get everything else.
  *
- *     SR1-K8Q3M2X7VW1A3F1K-4F2A9C1B
- *     ^^^ ^^^^^^^^^^^^^^^^ ^^^^^^^^
- *     |   |                └ device (4) and account (4) fingerprints
- *     |   └ 10 chars of millisecond time, then the ULID's last 6 characters
+ *     SR1-01M1ZF6SKE93Z3RRC90ZXTMTT9-4F2A9C1B
+ *     ^^^ ^^^^^^^^^^^^^^^^^^^^^^^^^^ ^^^^^^^^
+ *     |   |                          └ device (4) and account (4) fingerprints
+ *     |   └ the frame's id, entire and unaltered
  *     └ format version, so a decoder can refuse a code it does not understand
  *
  * Two properties matter, and they pull in opposite directions:
@@ -39,28 +39,30 @@ const ENCODING = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'; // Crockford base32, as ULI
 export const STAMP_VERSION = 'SR1';
 
 /**
- * How much of the frame's ULID the stamp carries.
+ * The stamp carries the frame's id whole.
  *
- * The entropy is taken from the END of the ULID, not the start. Frames minted in the same
- * millisecond do not re-randomise — `bumpRandom` increments the random block from its last
- * character — so consecutive frames in one millisecond share every leading character and
- * differ only in the tail. Cutting from the front produced identical handles for different
- * frames, which is a collision in the one field that has to identify a frame.
+ * It carried an abbreviation first, and that was wrong twice over. The first attempt took
+ * the ULID's leading 16 characters, which collide: frames minted in the same millisecond
+ * do not re-randomise — `bumpRandom` increments the random block from its last character —
+ * so consecutive frames shared every leading character. The fix, taking the time plus the
+ * final six characters, was unique but unreadable: it silently drops characters 11 to 20,
+ * so `01M1ZF6SKE93Z3RRC90ZXTMTT9` abbreviates to `01M1ZF6SKEXTMTT9` and no person can see
+ * that those are the same frame. A stamp shown beside a frame id that looks unrelated to it
+ * is worse than no stamp, because the natural conclusion is that one of them is wrong.
  *
- * The cost is that the handle is no longer a plain prefix of the ULID. Lookups take the
- * 10-character time as an indexed range and match the 6-character tail within it, which is
- * at most a handful of rows: capture tops out at 30 frames a second.
+ * Ten more characters buys: an identifier anyone can check against the library at a glance,
+ * a lookup that is a primary-key hit rather than a range scan, and no collision to reason
+ * about at all. The stamp is still one line, still selectable, still typed in one go.
  */
-const TIME_LEN = 10;
-const ENTROPY_LEN = 6;
-export const HANDLE_LEN = TIME_LEN + ENTROPY_LEN;
+const ULID_LEN = 26;
+export const HANDLE_LEN = ULID_LEN;
 /** Characters per fingerprint: 4 x 5 bits = 20 bits. */
 const FINGERPRINT_LEN = 4;
 
 export interface StampParts {
   /** Milliseconds since the epoch, decoded from the code itself. */
   capturedAtMs: number;
-  /** Identifies the frame: the ULID's 10-char time followed by its last 6 characters. */
+  /** The frame id, exactly as the library and the API show it. */
   handle: string;
   device: string;
   account: string;
@@ -94,20 +96,14 @@ export async function fingerprint(kind: 'device' | 'account', value: string): Pr
   return out;
 }
 
-/** The stamp's view of a frame id: leading time, trailing entropy. */
+/** The stamp's view of a frame id, which is now simply the id. */
 export function handleFor(frameId: string): string {
-  return frameId.slice(0, TIME_LEN) + frameId.slice(-ENTROPY_LEN);
+  return frameId;
 }
 
 /** Whether a full frame id is the one a handle refers to. */
 export function handleMatches(handle: string, frameId: string): boolean {
-  return handleFor(frameId) === handle;
-}
-
-/** The half-open ULID range a handle's millisecond covers, for an indexed lookup. */
-export function handleTimeRange(handle: string): { from: string; to: string } {
-  const time = handle.slice(0, TIME_LEN);
-  return { from: time, to: `${time}\uffff` };
+  return handle === frameId;
 }
 
 export async function encodeStamp(input: {

@@ -1,19 +1,24 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { SessionRecord } from '@sr/schema';
 import type { CloudStore } from '@sr/storage';
+import type { CaptureSessions } from '../capture/sessions.js';
+import { LiveStrip } from './LiveStrip.js';
 import { bytes, day, clock, duration } from '../lib/format.js';
 
 interface Props {
   store: CloudStore;
+  sessions: CaptureSessions;
+  accountId: string;
   onOpen: (s: SessionRecord) => void;
+  onInspect: (stamp: string) => void;
   onChanged: () => void;
 }
 
-export function LibraryView({ store, onOpen, onChanged }: Props) {
-  const [sessions, setSessions] = useState<SessionRecord[]>([]);
+export function LibraryView({ store, sessions, accountId, onOpen, onInspect, onChanged }: Props) {
+  const [rows, setRows] = useState<SessionRecord[]>([]);
   const [busy, setBusy] = useState(false);
 
-  const load = useCallback(async () => setSessions(await store.listSessions()), [store]);
+  const load = useCallback(async () => setRows(await store.listSessions()), [store]);
   useEffect(() => { void load(); }, [load]);
 
   /**
@@ -23,7 +28,7 @@ export function LibraryView({ store, onOpen, onChanged }: Props) {
    * running recorder — and those rows are what is left of it. They are also what an
    * ordinary crash or a closed laptop leaves behind, so the cleanup stays.
    */
-  const empty = sessions.filter((s) => !s.ended_at && s.frames_stored === 0);
+  const empty = rows.filter((s) => !s.ended_at && s.frames_stored === 0);
 
   async function removeEmpty() {
     setBusy(true);
@@ -36,17 +41,26 @@ export function LibraryView({ store, onOpen, onChanged }: Props) {
     }
   }
 
-  if (sessions.length === 0) {
+  const strip = (
+    <LiveStrip store={store} sessions={sessions} accountId={accountId} onInspect={onInspect} />
+  );
+
+  if (rows.length === 0) {
     return (
-      <div className="panel">
-        <div className="empty">
-          No sessions yet. Record one from the <b>Record</b> tab.
+      <div>
+        {strip}
+        <div className="panel">
+          <div className="empty">
+            No finished sessions yet. Record one from the <b>Record</b> tab.
+          </div>
         </div>
       </div>
     );
   }
 
   return (
+    <div>
+    {strip}
     <div className="panel">
       {empty.length > 0 && (
         <div className="banner warn">
@@ -69,7 +83,7 @@ export function LibraryView({ store, onOpen, onChanged }: Props) {
           </tr>
         </thead>
         <tbody>
-          {sessions.map((s) => {
+          {rows.map((s) => {
             const len = s.ended_at ? Date.parse(s.ended_at) - Date.parse(s.started_at) : 0;
             return (
               <tr
@@ -106,6 +120,7 @@ export function LibraryView({ store, onOpen, onChanged }: Props) {
         </tbody>
       </table>
       </div>
+    </div>
     </div>
   );
 }

@@ -8,7 +8,7 @@ import { pruneAuthTables } from './accounts.js';
 import { buildStatus, pruneStatusTables, recordProbes, runProbes } from './status.js';
 import { handleMcp } from './mcp.js';
 import { buildScenes, listFrames, resolveWindow } from './queries.js';
-import { StampError, decodeStamp, handleMatches, handleTimeRange } from '@sr/schema';
+import { StampError, decodeStamp } from '@sr/schema';
 import { OPENAPI } from './openapi.js';
 
 type Ctx = { Bindings: Env; Variables: { me: Principal; scope: 'read' | 'write'; sessionHash?: string } };
@@ -297,17 +297,12 @@ app.get('/v1/frames/stamp/:code', async (c) => {
     throw err;
   }
 
-  // An indexed range over one millisecond of ULIDs, then an exact match on the tail. The
-  // handle is not a prefix of the frame id — same-millisecond ULIDs differ only in their
-  // last characters — so the range narrows and the comparison decides.
-  const { from, to } = handleTimeRange(parts.handle);
-  const { results } = await c.env.DB.prepare(
-    `SELECT * FROM frames
-      WHERE user_id = ? AND frame_id >= ? AND frame_id < ?
-      ORDER BY frame_id LIMIT 64`,
-  ).bind(c.get('me').userId, from, to).all<Record<string, unknown>>();
+  // The stamp carries the whole frame id, so this is a primary-key hit scoped to the
+  // caller — no range scan, and nothing to disambiguate.
+  const row = await c.env.DB.prepare(
+    `SELECT * FROM frames WHERE frame_id = ? AND user_id = ?`,
+  ).bind(parts.handle, c.get('me').userId).first<Record<string, unknown>>();
 
-  const row = results.find((r) => handleMatches(parts.handle, String(r.frame_id)));
   if (!row) {
     return c.json({
       error: 'not_found',
