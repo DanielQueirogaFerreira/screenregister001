@@ -169,6 +169,102 @@ jobs:
           PY
 
           echo
+          echo "--- a frame round-trips, stamp and all"
+          # Nothing else exercises the frame INSERT against the real schema, and this
+          # project has already shipped a route that every local check passed and
+          # production could not run. A column added to that statement without a matching
+          # bind breaks every upload; this is the step that would catch it.
+          python3 - > /tmp/ids.sh <<'PY'
+          import hashlib, os, time
+          ENC = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'   # Crockford base32, as the app uses
+
+          def enc_time(ms, n=10):
+              out = ''
+              for _ in range(n):
+                  out = ENC[ms % 32] + out
+                  ms //= 32
+              return out
+
+          def ulid(ms):
+              return enc_time(ms) + ''.join(ENC[b % 32] for b in os.urandom(16))
+
+          def fingerprint(kind, value):
+              d = hashlib.sha256(f'sr.stamp.{kind}:{value}'.encode()).digest()
+              out, acc, bits, i = '', 0, 0, 0
+              while len(out) < 4:
+                  acc = (acc << 8) | d[i]; bits += 8; i += 1
+                  while bits >= 5 and len(out) < 4:
+                      bits -= 5
+                      out += ENC[(acc >> bits) & 31]
+              return out
+
+          now = int(time.time() * 1000)
+          session, frame = ulid(now), ulid(now)
+          device = 'smoke-device-' + str(now)
+          # Computed here from the specification rather than read back from the server, so
+          # a change to the stamp format shows up as a failure instead of agreeing with
+          # itself. The account fingerprint is filled in below, once the user id is known.
+          print(f"SESSION_ID={session}")
+          print(f"FRAME_ID={frame}")
+          print(f"DEVICE_ID={device}")
+          print(f"HANDLE={frame[:10]}{frame[-6:]}")
+          print(f"DEV_FP={fingerprint('device', device)}")
+          print(f"CAPTURED_AT={time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime(now/1000))}.{now%1000:03d}Z")
+          PY
+          . /tmp/ids.sh
+          USER_ID=$(python3 -c "import json;print(json.load(open('/tmp/me.json'))['user']['user_id'])")
+          ACCT_FP=$(python3 -c "
+          import hashlib
+          ENC='0123456789ABCDEFGHJKMNPQRSTVWXYZ'
+          d=hashlib.sha256(('sr.stamp.account:' + '$USER_ID').encode()).digest()
+          out,acc,bits,i='',0,0,0
+          while len(out)<4:
+              acc=(acc<<8)|d[i]; bits+=8; i+=1
+              while bits>=5 and len(out)<4:
+                  bits-=5; out+=ENC[(acc>>bits)&31]
+          print(out)")
+          STAMP="SR1-${HANDLE}-${DEV_FP}${ACCT_FP}"
+          echo "  stamp: $STAMP"
+
+          curl -fsS -b "$JAR" -X PUT "$BASE/v1/sessions/$SESSION_ID" \
+            -H 'Content-Type: application/json' -H "Origin: $BASE" \
+            -d "{\"device_id\":\"$DEVICE_ID\",\"started_at\":\"$CAPTURED_AT\",\"capture_fps\":1,
+                 \"sensitivity\":50,\"screen_w\":1920,\"screen_h\":1080}" -o /dev/null \
+            || fail "could not create a session"
+
+          printf 'not-a-real-image' > /tmp/frame.webp
+          curl -fsS -b "$JAR" -X POST "$BASE/v1/frames" -H "Origin: $BASE" \
+            -F "meta={\"frame_id\":\"$FRAME_ID\",\"session_id\":\"$SESSION_ID\",\"captured_at\":\"$CAPTURED_AT\",\"offset_ms\":0,\"seq\":0,\"change_score\":0.5,\"changed_tiles\":[1,2],\"reason\":\"first\",\"width\":1920,\"height\":1080,\"bytes\":16,\"format\":\"image/webp\",\"sha256\":\"deadbeef\"}" \
+            -F "full=@/tmp/frame.webp" -F "thumb=@/tmp/frame.webp" \
+            -o /tmp/upload.json || fail "frame upload failed"
+          cat /tmp/upload.json; echo
+
+          curl -fsS -b "$JAR" "$BASE/v1/frames/stamp/$STAMP" -o /tmp/stamp.json \
+            || fail "the stamp did not resolve to a frame"
+          python3 - <<PY || exit 1
+          import json
+          d = json.load(open('/tmp/stamp.json'))
+          f = d['frame']
+          print('  resolved:', f['frame_id'], '| device:', f['device_id'], '| reason:', f['reason'])
+          assert f['frame_id'] == '$FRAME_ID', f"resolved the wrong frame: {f['frame_id']}"
+          # The device is written by the server from the session row, not from the upload.
+          assert f['device_id'] == '$DEVICE_ID', f"device not stamped onto the frame: {f['device_id']!r}"
+          assert f['user_id'] == '$USER_ID', 'frame attributed to the wrong account'
+          assert f['changed_tiles'] == [1, 2], f"changed_tiles did not round-trip: {f['changed_tiles']}"
+          assert d['stamp']['handle'] == '$HANDLE'
+          assert d['session']['device_id'] == '$DEVICE_ID'
+          PY
+
+          echo "  a stamp for a frame that does not exist is a plain 404"
+          code=$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR" \
+            "$BASE/v1/frames/stamp/SR1-0100000000ZZZZZZ-00000000")
+          [ "$code" = "404" ] || fail "an unknown stamp returned HTTP $code, expected 404"
+
+          echo "  a malformed stamp is rejected, not looked up"
+          code=$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR" "$BASE/v1/frames/stamp/nonsense")
+          [ "$code" = "400" ] || fail "a malformed stamp returned HTTP $code, expected 400"
+
+          echo
           echo "--- clean up: delete the throwaway account"
           curl -fsS -b "$JAR" -X DELETE "$BASE/v1/account" -H "Origin: $BASE" -o /tmp/del.json \
             || fail "account deletion failed"
