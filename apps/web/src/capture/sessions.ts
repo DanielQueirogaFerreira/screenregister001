@@ -1,5 +1,5 @@
 import type { ActivityPoint, ProcessorStats } from '@sr/core';
-import type { CaptureSettings, FrameRecord } from '@sr/schema';
+import { encodeStamp, type CaptureSettings, type FrameRecord } from '@sr/schema';
 import type { CloudStore } from '@sr/storage';
 import { Recorder } from './recorder.js';
 
@@ -34,7 +34,12 @@ export interface LiveSession {
   stats: ProcessorStats;
   activity: ActivityPoint[];
   backlog: number;
-  last: { record: FrameRecord; url: string } | null;
+  /**
+   * The most recent stored frame, with its stamp. The stamp is computed here rather than
+   * in the view so it exists the moment the frame does — "transmit the metadata live"
+   * means the identity travels with the frame, not that a screen derives it when looked at.
+   */
+  last: { record: FrameRecord; url: string; stamp: string } | null;
   error: string | null;
 }
 
@@ -158,8 +163,18 @@ export class CaptureSessions {
         // One blob URL is alive per session at a time; a long recording would otherwise
         // leak one per stored frame.
         if (e.last) URL.revokeObjectURL(e.last.url);
-        e.last = { record, url: URL.createObjectURL(thumb) };
+        e.last = { record, url: URL.createObjectURL(thumb), stamp: '' };
         this.publish();
+        // Hashing is async, so the frame appears immediately and its stamp lands a tick
+        // later rather than delaying the picture behind two SHA-256 digests.
+        void encodeStamp({
+          frameId: record.frame_id, deviceId: record.device_id, userId: record.user_id,
+        }).then((stamp) => {
+          const still = this.entries.get(key);
+          if (still?.last?.record.frame_id !== record.frame_id) return;
+          still.last = { ...still.last, stamp };
+          this.publish();
+        });
       },
       onStopped: () => {
         const e = this.entries.get(key);

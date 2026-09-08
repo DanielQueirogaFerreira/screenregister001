@@ -85,6 +85,20 @@ export const ROADMAP: Phase[] = [
   },
   {
     id: 6,
+    title: 'Frame identity',
+    status: 'done',
+    summary: 'Every frame says when it was taken, on what device, and for whom — in one short code.',
+    items: [
+      { text: 'device_id on every frame, written by the server from the session', done: true },
+      { text: 'Frame stamp: millisecond time, device and account in ~29 characters', done: true },
+      { text: 'Capture time decodes from the code offline, with no lookup', done: true },
+      { text: 'Identities carried as one-way fingerprints, never in the clear', done: true },
+      { text: 'Stamp shown live beside the frame it identifies', done: true },
+      { text: 'Inspector that resolves a stamp to the full record', done: true },
+    ],
+  },
+  {
+    id: 7,
     title: 'Enrichment',
     status: 'planned',
     summary: 'Turn "download 400 screenshots" into "search text, fetch three images".',
@@ -92,10 +106,13 @@ export const ROADMAP: Phase[] = [
       { text: 'OCR over stored frames', done: false },
       { text: 'Captions and embeddings', done: false },
       { text: 'Text search across the timeline', done: false },
+      // The prerequisite for any credible redaction: the browser hands over pixels and
+      // nothing else, so a password field cannot be located until the text is read.
+      { text: 'Redact sensitive regions, once OCR can find them', done: false },
     ],
   },
   {
-    id: 7,
+    id: 8,
     title: 'Native mobile capture',
     status: 'planned',
     summary: 'iOS and Android, posting to the same ingest contract.',

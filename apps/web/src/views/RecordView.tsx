@@ -89,6 +89,20 @@ function SessionCard({
             </span>
           </div>
           <img className="shot" src={live.last.url} alt="most recently stored frame" />
+          {/* The frame's identity, live. Device, time and account in one code that can be
+              read off the screen and looked up under Inspect. */}
+          <div className="stamp-line">
+            <span>stamp</span>
+            <code>{live.last.stamp || '…'}</code>
+            {live.last.stamp && (
+              <button
+                onClick={() => void navigator.clipboard?.writeText(live.last!.stamp)}
+                title="Copy this frame's stamp"
+              >
+                Copy
+              </button>
+            )}
+          </div>
         </div>
       )}
     </div>

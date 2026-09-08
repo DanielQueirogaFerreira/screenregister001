@@ -11,11 +11,12 @@ import { AuthView } from './views/AuthView.js';
 import { RecordView } from './views/RecordView.js';
 import { LibraryView } from './views/LibraryView.js';
 import { PlayerView } from './views/PlayerView.js';
+import { InspectView } from './views/InspectView.js';
 import { SettingsView } from './views/SettingsView.js';
 import { VersionBadge } from './views/VersionBadge.js';
 import { StatusView } from './views/StatusView.js';
 
-type Tab = 'record' | 'library' | 'settings';
+type Tab = 'record' | 'library' | 'inspect' | 'settings';
 
 export function App() {
   // The status page is deliberately outside the auth gate, and checked before any of it
@@ -213,7 +214,7 @@ function RecorderApp() {
           ScreenRegister <span>· 7-day screen memory</span>
         </h1>
         <nav>
-          {(['record', 'library', 'settings'] as Tab[]).map((t) => (
+          {(['record', 'library', 'inspect', 'settings'] as Tab[]).map((t) => (
             <button
               key={t}
               className={tab === t && !playing ? 'on' : ''}
@@ -313,6 +314,8 @@ function RecorderApp() {
         />
       ) : tab === 'library' ? (
         <LibraryView store={store} onOpen={setPlaying} onChanged={() => void refreshUsage(store)} />
+      ) : tab === 'inspect' ? (
+        <InspectView store={store} accountId={account.user_id} />
       ) : (
         <SettingsView
           store={store}

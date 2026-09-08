@@ -5,7 +5,7 @@ import { CloudStore } from './cloud-store.js';
 import { DEFAULT_LIMITS } from './upload-queue.js';
 
 const frame = (id: string): FrameRecord => ({
-  frame_id: id, session_id: 's1', user_id: 'u1',
+  frame_id: id, session_id: 's1', user_id: 'u1', device_id: 'dev_test',
   captured_at: '2026-01-01T00:00:00.000Z', offset_ms: 0, seq: 0,
   hold_ms: null, change_score: 0.1, changed_tiles: [], reason: 'scene_change',
   width: 1920, height: 1080, bytes: 100, format: 'image/webp', sha256: 'x',

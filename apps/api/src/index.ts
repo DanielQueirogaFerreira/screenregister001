@@ -8,6 +8,7 @@ import { pruneAuthTables } from './accounts.js';
 import { buildStatus, pruneStatusTables, recordProbes, runProbes } from './status.js';
 import { handleMcp } from './mcp.js';
 import { buildScenes, listFrames, resolveWindow } from './queries.js';
+import { StampError, decodeStamp, handleMatches, handleTimeRange } from '@sr/schema';
 import { OPENAPI } from './openapi.js';
 
 type Ctx = { Bindings: Env; Variables: { me: Principal; scope: 'read' | 'write'; sessionHash?: string } };
@@ -226,9 +227,12 @@ app.post('/v1/frames', async (c) => {
 
   // The session must already exist AND belong to the caller. Without this check a valid
   // token could attach frames to someone else's session.
+  // The device comes from this row too. Taking it from the request body would let a
+  // client attribute a frame to a machine it has never seen, and the whole value of a
+  // per-frame device is that it cannot be claimed.
   const owner = await c.env.DB.prepare(
-    `SELECT user_id FROM sessions WHERE session_id = ?`,
-  ).bind(sessionId).first<{ user_id: string }>();
+    `SELECT user_id, device_id FROM sessions WHERE session_id = ?`,
+  ).bind(sessionId).first<{ user_id: string; device_id: string }>();
   if (!owner) return c.json({ error: 'unknown session' }, 404);
   if (owner.user_id !== me.userId) return c.json({ error: 'forbidden' }, 403);
 
@@ -240,13 +244,14 @@ app.post('/v1/frames', async (c) => {
   ]);
 
   await c.env.DB.prepare(
-    `INSERT INTO frames (frame_id, session_id, user_id, captured_at, offset_ms, seq, hold_ms,
-       change_score, changed_tiles, reason, width, height, bytes, format, sha256, storage_key,
-       ocr_text, caption, enrich_status)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,'pending')
+    `INSERT INTO frames (frame_id, session_id, user_id, device_id, captured_at, offset_ms, seq,
+       hold_ms, change_score, changed_tiles, reason, width, height, bytes, format, sha256,
+       storage_key, ocr_text, caption, enrich_status)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,'pending')
      ON CONFLICT(frame_id) DO UPDATE SET hold_ms = COALESCE(excluded.hold_ms, frames.hold_ms)`,
   ).bind(
-    frameId, sessionId, me.userId, String(m.captured_at ?? ''), Number(m.offset_ms ?? 0),
+    frameId, sessionId, me.userId, owner.device_id,
+    String(m.captured_at ?? ''), Number(m.offset_ms ?? 0),
     Number(m.seq ?? 0), m.hold_ms === null || m.hold_ms === undefined ? null : Number(m.hold_ms),
     Number(m.change_score ?? 0), JSON.stringify(m.changed_tiles ?? []), String(m.reason ?? 'first'),
     Number(m.width ?? 0), Number(m.height ?? 0), Number(m.bytes ?? 0),
@@ -254,6 +259,71 @@ app.post('/v1/frames', async (c) => {
   ).run();
 
   return c.json({ ok: true, frame_id: frameId, storage_key: key });
+});
+
+/**
+ * Resolve a frame stamp to the frame it names.
+ *
+ * The stamp carries the capture time in the clear and the device and account only as
+ * fingerprints, so this is the other half of the design: the code proves *when* on its own,
+ * and this endpoint — behind the account that owns the frame — supplies everything else.
+ *
+ * Scoped to the caller like every other frame route. A stamp is not a capability: holding
+ * one gets you a decoded timestamp and nothing more unless the frame is already yours.
+ * That is why the two failure modes are deliberately the same response — "no frame here"
+ * covers both a stamp that names nothing and a stamp that names someone else's recording,
+ * so this cannot be used to test whether a given moment exists in another account.
+ */
+app.get('/v1/frames/stamp/:code', async (c) => {
+  let parts;
+  try {
+    parts = decodeStamp(c.req.param('code'));
+  } catch (err) {
+    if (err instanceof StampError) return c.json({ error: 'bad_stamp', detail: err.message }, 400);
+    throw err;
+  }
+
+  // An indexed range over one millisecond of ULIDs, then an exact match on the tail. The
+  // handle is not a prefix of the frame id — same-millisecond ULIDs differ only in their
+  // last characters — so the range narrows and the comparison decides.
+  const { from, to } = handleTimeRange(parts.handle);
+  const { results } = await c.env.DB.prepare(
+    `SELECT * FROM frames
+      WHERE user_id = ? AND frame_id >= ? AND frame_id < ?
+      ORDER BY frame_id LIMIT 64`,
+  ).bind(c.get('me').userId, from, to).all<Record<string, unknown>>();
+
+  const row = results.find((r) => handleMatches(parts.handle, String(r.frame_id)));
+  if (!row) {
+    return c.json({
+      error: 'not_found',
+      detail: 'No frame of yours carries this stamp. It may belong to another account, or ' +
+        'the frame may have passed the retention window.',
+      decoded: { captured_at: new Date(parts.capturedAtMs).toISOString(), handle: parts.handle },
+    }, 404);
+  }
+
+  const session = await c.env.DB.prepare(
+    `SELECT session_id, device_id, started_at, ended_at, screen_w, screen_h, label
+       FROM sessions WHERE session_id = ? AND user_id = ?`,
+  ).bind(row.session_id, c.get('me').userId).first<Record<string, unknown>>();
+
+  return c.json({
+    stamp: {
+      handle: parts.handle,
+      captured_at: new Date(parts.capturedAtMs).toISOString(),
+      device_fingerprint: parts.device,
+      account_fingerprint: parts.account,
+    },
+    frame: {
+      ...row,
+      changed_tiles: JSON.parse(String(row.changed_tiles ?? '[]')) as number[],
+      // The object key is an internal detail of where bytes live; the frame id is the
+      // handle callers are meant to use.
+      storage_key: undefined,
+    },
+    session,
+  });
 });
 
 app.patch('/v1/frames/:id', async (c) => {

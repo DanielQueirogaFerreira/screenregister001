@@ -291,6 +291,9 @@ export class Recorder {
       frame_id: frameId,
       session_id: this.session.session_id,
       user_id: this.session.user_id,
+      // Sent for the local record; the server overwrites it from the session row, since a
+      // device a client can name is a device a client can lie about.
+      device_id: this.session.device_id,
       captured_at: new Date(Date.parse(this.startedIso) + msg.tMs).toISOString(),
       offset_ms: Math.round(msg.tMs),
       seq: msg.seq,

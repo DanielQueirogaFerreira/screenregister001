@@ -11,6 +11,15 @@ export interface FrameRecord {
   frame_id: string;      // ULID — sorts by time; the handle an LLM uses
   session_id: string;
   user_id: string;
+  /**
+   * Which machine recorded this frame.
+   *
+   * Denormalised from the session on purpose: a frame is the unit an assistant reads and
+   * the unit a stamp identifies, so the three facts that place a moment in the world —
+   * when, whose, and where — all live on the row rather than one of them needing a join.
+   * The server writes it from the session's own record; a client-supplied value is ignored.
+   */
+  device_id: string;
   captured_at: string;   // ISO-8601 UTC
   offset_ms: number;     // monotonic offset from session start; immune to wall-clock jumps
   seq: number;

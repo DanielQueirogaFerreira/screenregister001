@@ -7,6 +7,7 @@ const frame = (id: string, bytes = 1000): FrameRecord => ({
   frame_id: id,
   session_id: 's1',
   user_id: 'u1',
+  device_id: 'dev_test',
   captured_at: '2026-01-01T00:00:00.000Z',
   offset_ms: 0,
   seq: 0,
