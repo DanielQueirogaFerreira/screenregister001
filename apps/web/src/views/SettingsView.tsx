@@ -114,6 +114,62 @@ export function SettingsView({
           hint="Keep one frame this often even with no change, so stillness is recorded as fact."
           onChange={(s) => set({ heartbeatMs: s * 1000 })} />
 
+        <h3>Provenance &amp; privacy</h3>
+
+        <div className="field">
+          <label htmlFor="burnin">Burn the stamp into stored frames</label>
+          <div className="row">
+            <input
+              id="burnin" type="checkbox" checked={settings.burnInStamp}
+              onChange={(e) => set({ burnInStamp: e.target.checked })}
+              style={{ width: 'auto' }}
+            />
+            <span className="hint" style={{ margin: 0 }}>
+              {settings.burnInStamp ? 'Two images per frame' : 'One image per frame'}
+            </span>
+          </div>
+          <div className="hint">
+            The frame&rsquo;s stamp is drawn into the bottom-left corner, so an image that
+            leaves here still says which recording it came from. The capture is kept
+            alongside it untouched, which roughly <b>doubles storage</b> for a change of
+            well under one percent of the pixels. Turn this off and only the unaltered
+            capture is stored.
+          </div>
+        </div>
+
+        <div className="field">
+          <label htmlFor="privacy">Masked password fields</label>
+          <select
+            id="privacy" value={settings.privacyMask}
+            onChange={(e) => set({ privacyMask: e.target.value as CaptureSettings['privacyMask'] })}
+          >
+            <option value="mask">Paint over them and discard the original</option>
+            <option value="flag">Only record that one was seen</option>
+            <option value="off">Do not look</option>
+          </select>
+          <div className="hint">
+            Every frame is checked for a row of identical evenly spaced glyphs — what a
+            password field looks like while it is masked. On <b>mask</b>, the field is
+            painted black and only that version is ever encoded: the unmasked image is
+            never created, so there is no copy to delete and no deletion that can fail.
+            <br /><br />
+            <b>What it does not catch:</b> a password typed in the clear, an empty field, a
+            secret in a document, a key in a terminal, a card number. It works from
+            appearance alone, because the browser hands this application pixels and no
+            structure at all — there is no way to ask where a password field is. Treat it
+            as less exposure, not as a guarantee.
+            {settings.privacyMask === 'mask' && (
+              <>
+                <br /><br />
+                It can also be wrong the other way. A run of eight or more identical, evenly
+                spaced marks that is <i>not</i> a password gets masked, and the original of
+                that frame is gone. <b>Flag</b> keeps both while you judge whether it
+                behaves on your screens.
+              </>
+            )}
+          </div>
+        </div>
+
         <h3>Encoding &amp; playback</h3>
         <Num label="Max width (px)" step={160} value={settings.maxWidth}
           hint="Frames are downscaled to this before encoding."

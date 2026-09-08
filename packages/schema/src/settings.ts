@@ -35,6 +35,30 @@ export interface CaptureSettings {
   /** Store a frame this often even with zero change, to assert "still showing this". */
   heartbeatMs: number;
 
+  // --- Provenance and privacy ---
+  /**
+   * Burn the frame's stamp into the corner of the stored image.
+   *
+   * When on, two images are stored per frame: the capture exactly as it was, and a copy
+   * carrying its own identity. That roughly doubles what a session costs in R2 for a
+   * change of well under one percent of the pixels — the trade is that a frame exported,
+   * pasted or screenshotted still says which recording it came from, which a row in a
+   * database cannot do once the image has left it.
+   */
+  burnInStamp: boolean;
+  /**
+   * What to do when a frame appears to show a masked input field.
+   *
+   * 'mask' paints over the field and stores only that version, discarding the unredacted
+   * capture before it is ever uploaded. 'flag' records the finding and keeps both, which
+   * is the setting to use while judging whether the detector is right about your screens.
+   * 'off' disables the scan.
+   *
+   * Detection works on appearance alone — see findMaskedFields — so it catches a field
+   * showing bullets and not a secret typed in the clear.
+   */
+  privacyMask: 'off' | 'flag' | 'mask';
+
   // --- Encoding ---
   maxWidth: number;
   quality: number;
@@ -80,6 +104,8 @@ export const DEFAULT_SETTINGS: CaptureSettings = {
   settleThreshold: 0.01,
   maxFramesPerSec: 4,
   heartbeatMs: 300_000,
+  burnInStamp: true,
+  privacyMask: 'mask',
   maxWidth: 1920,
   quality: 0.7,
   thumbWidth: 320,

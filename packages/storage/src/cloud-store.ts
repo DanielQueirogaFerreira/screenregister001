@@ -14,7 +14,7 @@ import { DEFAULT_LIMITS, UploadQueue, type UploadLimits, type UploadStatus } fro
  */
 export class CloudStore implements FrameStore {
   private uploads: UploadQueue;
-  private pending: { record: FrameRecord; full: Blob; thumb: Blob } | null = null;
+  private pending: { record: FrameRecord; full: Blob; thumb: Blob; original: Blob | null } | null = null;
   private ageTimer: ReturnType<typeof setInterval> | undefined;
   /** Retention ceiling as reported by the server, so the UI never invents one. */
   retentionDays = 7;
@@ -81,11 +81,13 @@ export class CloudStore implements FrameStore {
 
   // --- frames -------------------------------------------------------------------
 
-  async putFrame(record: FrameRecord, full: Blob, thumb: Blob): Promise<void> {
+  async putFrame(
+    record: FrameRecord, full: Blob, thumb: Blob, original: Blob | null = null,
+  ): Promise<void> {
     // Whatever was pending never got a hold_ms — the session must have been interrupted.
     // Send it anyway with hold unknown rather than discarding a captured frame.
     if (this.pending) this.release(this.pending);
-    this.pending = { record, full, thumb };
+    this.pending = { record, full, thumb, original };
   }
 
   async setHold(frameId: string, holdMs: number): Promise<void> {
@@ -100,8 +102,10 @@ export class CloudStore implements FrameStore {
     await this.api.patchHold(frameId, holdMs);
   }
 
-  private release(job: { record: FrameRecord; full: Blob; thumb: Blob }): void {
-    this.uploads.enqueue(job.record, job.full, job.thumb);
+  private release(
+    job: { record: FrameRecord; full: Blob; thumb: Blob; original: Blob | null },
+  ): void {
+    this.uploads.enqueue(job.record, job.full, job.thumb, job.original);
   }
 
   async flush(): Promise<void> {
@@ -118,6 +122,13 @@ export class CloudStore implements FrameStore {
 
   getFullBlob(frameId: string): Promise<Blob | null> {
     return this.api.imageBlob(frameId, 'full');
+  }
+
+  /** 'original' resolves to null on a redacted frame, which never had one. */
+  getImageBlob(
+    frameId: string, variant: 'full' | 'thumb' | 'original' = 'full',
+  ): Promise<Blob | null> {
+    return this.api.imageBlob(frameId, variant);
   }
 
   getThumbBlob(frameId: string): Promise<Blob | null> {

@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { publicFrame, variantKeys } from './index.js';
 import { buildScenes, resolveWindow, type FrameRow } from './queries.js';
 
 const frame = (min: number, change: number, reason: string, holdMs: number): FrameRow => ({
@@ -76,5 +77,71 @@ describe('resolveWindow', () => {
   it('lets an explicit bound override the hours shorthand', () => {
     const w = resolveWindow({ last_hours: 1, from: '2026-08-01T00:00:00.000Z' });
     expect(w.from).toBe('2026-08-01T00:00:00.000Z');
+  });
+});
+
+describe('publicFrame', () => {
+  const row = {
+    frame_id: '01M1ZF6SKE93Z3RRC90ZXTMTT9',
+    session_id: 's1',
+    user_id: 'u1',
+    device_id: 'dev_1',
+    changed_tiles: '[3,4,5]',
+    redacted_regions: '[{"x":10,"y":20,"w":30,"h":8}]',
+    redacted: 1,
+    storage_key: 'f/u1/s1/01M1ZF6SKE93Z3RRC90ZXTMTT9.webp',
+    original_key: 'o/u1/s1/01M1ZF6SKE93Z3RRC90ZXTMTT9.webp',
+    stamp: 'SR1-01M1ZF6SKE93Z3RRC90ZXTMTT9-4F2A9C1B',
+  };
+
+  it('turns D1 text and integers back into arrays and booleans', () => {
+    const out = publicFrame(row);
+    expect(out.changed_tiles).toEqual([3, 4, 5]);
+    expect(out.redacted_regions).toEqual([{ x: 10, y: 20, w: 30, h: 8 }]);
+    expect(out.redacted).toBe(true);
+  });
+
+  it('reports whether an untouched capture exists, not where it is', () => {
+    // The object keys are where bytes happen to live. A caller holding them would
+    // reasonably conclude it should fetch them directly, bypassing the ownership check
+    // on the image route.
+    const out = publicFrame(row);
+    expect(out.has_original).toBe(true);
+    expect(out.storage_key).toBeUndefined();
+    expect(out.original_key).toBeUndefined();
+    expect(JSON.stringify(out)).not.toContain('f/u1/s1');
+    expect(JSON.stringify(out)).not.toContain('o/u1/s1');
+  });
+
+  it('reports no original when the frame was redacted', () => {
+    const out = publicFrame({ ...row, original_key: null });
+    expect(out.has_original).toBe(false);
+    expect(out.redacted).toBe(true);
+  });
+
+  it('copes with the columns a pre-migration row does not have', () => {
+    const out = publicFrame({ frame_id: 'x', changed_tiles: '[]' });
+    expect(out.redacted).toBe(false);
+    expect(out.redacted_regions).toEqual([]);
+    expect(out.has_original).toBe(false);
+  });
+});
+
+describe('variantKeys', () => {
+  it('derives all three object keys from the stored one', () => {
+    // Derived rather than read from the row so a deletion path cannot forget the original:
+    // it is optional, so nothing would complain if it were left behind — it would simply
+    // outlive its frame and its seven-day window.
+    expect(variantKeys('f/u1/s1/frame.webp')).toEqual([
+      'f/u1/s1/frame.webp',
+      't/u1/s1/frame.webp',
+      'o/u1/s1/frame.webp',
+    ]);
+  });
+
+  it('only rewrites the leading prefix', () => {
+    expect(variantKeys('f/u1/f/f.webp')).toEqual([
+      'f/u1/f/f.webp', 't/u1/f/f.webp', 'o/u1/f/f.webp',
+    ]);
   });
 });

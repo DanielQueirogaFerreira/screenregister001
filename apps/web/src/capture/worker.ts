@@ -1,7 +1,7 @@
 /// <reference lib="webworker" />
-import { TimelineProcessor, toLuma } from '@sr/core';
-import { THUMB_W, THUMB_H, type CaptureSettings } from '@sr/schema';
-import type { ToWorker, FromWorker } from './protocol.js';
+import { TimelineProcessor, findMaskedFields, scaleRegions, toLuma, type Region } from '@sr/core';
+import { STAMP_VERSION, THUMB_W, THUMB_H, ulid, type CaptureSettings } from '@sr/schema';
+import type { CaptureIdentity, ToWorker, FromWorker } from './protocol.js';
 
 /**
  * All pixel work happens here. The main thread never touches frame data, so a 30 FPS
@@ -23,40 +23,107 @@ const MAX_LIVE_BITMAPS = 12;
 /** Above this many un-encoded frames we tell the recorder to back off. */
 const BACKLOG_LIMIT = 24;
 
+/**
+ * Width the privacy scan runs at.
+ *
+ * Not the diff's 160x90 grid: a password bullet is a few pixels across on a 1080p screen
+ * and disappears entirely at thumbnail size. 1280 keeps a bullet four or five pixels wide,
+ * which is the smallest a run of them can be and still be told apart from noise, while
+ * costing one downscale and one read per stored frame rather than per sampled frame.
+ */
+const SCAN_MAX_W = 1280;
+
 const post = (m: FromWorker, transfer: Transferable[] = []) =>
   (self as unknown as Worker).postMessage(m, transfer);
 
 const thumbCanvas = new OffscreenCanvas(THUMB_W, THUMB_H);
 const thumbCtx = thumbCanvas.getContext('2d', { willReadFrequently: true })!;
 
+export interface Encoded {
+  full: Blob;
+  thumb: Blob;
+  original: Blob | null;
+  redacted: boolean;
+  regions: Region[];
+}
+
 /** Lazily-encoded pixels for one buffered frame. */
 class Payload {
-  private encoded: Promise<{ full: Blob; thumb: Blob }> | null = null;
+  private encoded: Promise<Encoded> | null = null;
   released = false;
 
   constructor(
     public bitmap: ImageBitmap | null,
     readonly w: number,
     readonly h: number,
+    /**
+     * Minted when the frame is sampled rather than when it is stored, because the identity
+     * has to be drawn into the pixels and by storage time the bitmap may already be gone.
+     * Frames that are never stored simply spend an id, which costs nothing.
+     */
+    readonly frameId: string,
+    readonly stamp: string,
+    readonly capturedIso: string,
   ) {}
 
   get isLive(): boolean {
     return this.bitmap !== null && !this.released;
   }
 
-  /** Idempotent: demotion and storage share the same encode. */
-  encode(s: CaptureSettings): Promise<{ full: Blob; thumb: Blob }> {
+  /**
+   * Encode once, whether that is triggered by memory pressure or by the decision to store.
+   *
+   * The order here is the whole privacy design, and it only works in this order:
+   *
+   *   1. scan the frame for masked input fields
+   *   2. if any were found, paint over them and encode ONLY that
+   *   3. otherwise encode the capture untouched, and a second copy carrying the stamp
+   *
+   * Step 2 never produces an unredacted blob at all. There is no moment where the original
+   * exists as an encoded image and is then deleted — deletion is something that can fail,
+   * be interrupted, or be beaten by a retry. It is simply never made, and the bitmap it
+   * would have come from is closed here in the worker.
+   */
+  encode(s: CaptureSettings): Promise<Encoded> {
     if (!this.encoded) {
       const bmp = this.bitmap;
       if (!bmp) return Promise.reject(new Error('payload released before encode'));
       this.encoded = (async () => {
         const scale = Math.min(1, s.maxWidth / this.w);
-        const full = await render(bmp, Math.round(this.w * scale), Math.round(this.h * scale), s.quality);
+        const w = Math.round(this.w * scale);
+        const h = Math.round(this.h * scale);
+
+        let regions: Region[] = [];
+        if (s.privacyMask !== 'off') {
+          const scan = grayscale(bmp);
+          regions = scaleRegions(findMaskedFields(scan.gray, scan.w, scan.h), scan.factor * scale);
+        }
+        const redacted = regions.length > 0 && s.privacyMask === 'mask';
+
+        // The image that gets stored. Masks first so the stamp is never painted over.
+        const ctx = stage(bmp, w, h);
+        if (redacted) paintMasks(ctx, regions);
+        if (s.burnInStamp) drawStamp(ctx, w, h, this.stamp, this.capturedIso);
+        const full = await ctx.canvas.convertToBlob({ type: 'image/webp', quality: s.quality });
+
+        // The capture as it was — only when nothing was masked. When burn-in is off there
+        // is nothing to keep a second copy of, since `full` is already unaltered.
+        const original = !redacted && s.burnInStamp
+          ? await render(bmp, w, h, s.quality)
+          : null;
+
         const tScale = Math.min(1, s.thumbWidth / this.w);
-        const thumb = await render(bmp, Math.round(this.w * tScale), Math.round(this.h * tScale), 0.6);
+        const tw = Math.round(this.w * tScale);
+        const th = Math.round(this.h * tScale);
+        const tctx = stage(bmp, tw, th);
+        // The thumbnail is derived from the stored image, so a redacted frame can never
+        // leak through its own preview.
+        if (redacted) paintMasks(tctx, scaleRegions(regions, tw / w));
+        const thumb = await tctx.canvas.convertToBlob({ type: 'image/webp', quality: 0.6 });
+
         bmp.close();
         this.bitmap = null;
-        return { full, thumb };
+        return { full, thumb, original, redacted, regions };
       })();
     }
     return this.encoded;
@@ -79,7 +146,78 @@ async function render(bmp: ImageBitmap, w: number, h: number, quality: number): 
   return c.convertToBlob({ type: 'image/webp', quality });
 }
 
+/** Draw the frame into a canvas at the stored size, so masks and the stamp share one pass. */
+function stage(bmp: ImageBitmap, w: number, h: number): OffscreenCanvasRenderingContext2D {
+  const c = new OffscreenCanvas(Math.max(1, w), Math.max(1, h));
+  const ctx = c.getContext('2d')!;
+  ctx.drawImage(bmp, 0, 0, w, h);
+  return ctx;
+}
+
+/** Grayscale at scan resolution, plus the factor that maps findings back to full size. */
+function grayscale(bmp: ImageBitmap): { gray: Uint8Array; w: number; h: number; factor: number } {
+  const scale = Math.min(1, SCAN_MAX_W / bmp.width);
+  const w = Math.max(1, Math.round(bmp.width * scale));
+  const h = Math.max(1, Math.round(bmp.height * scale));
+  const ctx = new OffscreenCanvas(w, h).getContext('2d', { willReadFrequently: true })!;
+  ctx.drawImage(bmp, 0, 0, w, h);
+  const { data } = ctx.getImageData(0, 0, w, h);
+  const gray = new Uint8Array(w * h);
+  for (let i = 0, p = 0; i < data.length; i += 4, p++) {
+    // Rec. 601 luma, the same weighting the diff uses, so "bright" means one thing here.
+    gray[p] = (data[i]! * 77 + data[i + 1]! * 150 + data[i + 2]! * 29) >> 8;
+  }
+  return { gray, w, h, factor: 1 / scale };
+}
+
+/** Solid black, edge to edge of the detected field. Not a blur: a blur can be undone. */
+function paintMasks(ctx: OffscreenCanvasRenderingContext2D, regions: Region[]): void {
+  ctx.save();
+  ctx.fillStyle = '#000';
+  for (const r of regions) ctx.fillRect(r.x, r.y, r.w, r.h);
+  ctx.restore();
+}
+
+/**
+ * The stamp, drawn into the bottom-left corner.
+ *
+ * Bottom-left because interfaces put their content top-left and their own status bars
+ * bottom-right; the lower left corner is the emptiest part of a typical screen, so this is
+ * the least likely place to cover something that matters.
+ *
+ * It is drawn over a scrim rather than straight onto the pixels, because white text on a
+ * white document is unreadable and a stamp nobody can read is not provenance. The scrim is
+ * sized to the text, so on a 1080p frame this covers well under one percent of the image.
+ */
+function drawStamp(
+  ctx: OffscreenCanvasRenderingContext2D, w: number, h: number, stamp: string, capturedIso: string,
+): void {
+  // Scale with the frame so it stays readable at 720p and does not dominate at 4K.
+  const size = Math.max(9, Math.min(15, Math.round(w / 110)));
+  const pad = Math.round(size * 0.6);
+  const lineHeight = Math.round(size * 1.35);
+  const font = `${size}px ui-monospace, "SF Mono", Menlo, Consolas, monospace`;
+
+  ctx.save();
+  ctx.font = font;
+  ctx.textBaseline = 'alphabetic';
+  const lines = [stamp, capturedIso];
+  const width = Math.max(...lines.map((l) => ctx.measureText(l).width));
+  const boxH = lineHeight * lines.length + pad;
+  const boxW = width + pad * 2;
+  const top = h - boxH - pad;
+
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.72)';
+  ctx.fillRect(pad, top, boxW, boxH);
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.94)';
+  lines.forEach((line, i) => {
+    ctx.fillText(line, pad * 2, top + pad / 2 + lineHeight * (i + 1) - Math.round(size * 0.25));
+  });
+  ctx.restore();
+}
+
 let settings: CaptureSettings | null = null;
+let identity: CaptureIdentity | null = null;
 let proc: TimelineProcessor<Payload> | null = null;
 let live: Payload[] = [];
 let backlog = 0;
@@ -90,6 +228,7 @@ self.onmessage = async (e: MessageEvent<ToWorker>) => {
     switch (msg.type) {
       case 'start':
         settings = msg.settings;
+        identity = msg.identity;
         live = [];
         backlog = 0;
         proc = new TimelineProcessor<Payload>(settings, (f) => f.payload.release());
@@ -116,7 +255,7 @@ self.onmessage = async (e: MessageEvent<ToWorker>) => {
 };
 
 async function onFrame(bitmap: ImageBitmap, seq: number, tMs: number): Promise<void> {
-  if (!proc || !settings) {
+  if (!proc || !settings || !identity) {
     bitmap.close();
     return;
   }
@@ -125,7 +264,17 @@ async function onFrame(bitmap: ImageBitmap, seq: number, tMs: number): Promise<v
   thumbCtx.drawImage(bitmap, 0, 0, THUMB_W, THUMB_H);
   const luma = toLuma(thumbCtx.getImageData(0, 0, THUMB_W, THUMB_H).data);
 
-  const payload = new Payload(bitmap, bitmap.width, bitmap.height);
+  // The identity is fixed now, before any pixel work, so the stamp drawn into the image
+  // and the row written to the database cannot disagree.
+  const capturedMs = identity.startedAtMs + tMs;
+  const frameId = ulid(capturedMs);
+  const stamp =
+    `${STAMP_VERSION}-${frameId}-${identity.deviceFingerprint}${identity.accountFingerprint}`;
+
+  const payload = new Payload(
+    bitmap, bitmap.width, bitmap.height,
+    frameId, stamp, new Date(capturedMs).toISOString(),
+  );
   live.push(payload);
   proc.push({ seq, tMs, luma, payload });
 
@@ -155,10 +304,12 @@ function demoteOldest(): void {
 async function emit(decisions: ReturnType<TimelineProcessor<Payload>['drain']>): Promise<void> {
   if (!settings) return;
   for (const d of decisions) {
-    const { full, thumb } = await d.frame.payload.encode(settings);
+    const { full, thumb, original, redacted, regions } = await d.frame.payload.encode(settings);
     post(
       {
         type: 'stored',
+        frameId: d.frame.payload.frameId,
+        stamp: d.frame.payload.stamp,
         seq: d.frame.seq,
         tMs: d.frame.tMs,
         reason: d.reason,
@@ -168,6 +319,9 @@ async function emit(decisions: ReturnType<TimelineProcessor<Payload>['drain']>):
         height: d.frame.payload.h,
         full,
         thumb,
+        original,
+        redacted,
+        regions,
       },
       [],
     );

@@ -95,6 +95,9 @@ export const ROADMAP: Phase[] = [
       { text: 'Identities carried as one-way fingerprints, never in the clear', done: true },
       { text: 'Stamp shown live beside the frame it identifies', done: true },
       { text: 'Inspector that resolves a stamp to the full record', done: true },
+      { text: 'Stamp burned into the stored image, bottom-left', done: true },
+      { text: 'Masked password fields painted over before upload', done: true },
+      { text: 'Untouched capture kept alongside, except when redacted', done: true },
     ],
   },
   {
@@ -108,7 +111,7 @@ export const ROADMAP: Phase[] = [
       { text: 'Text search across the timeline', done: false },
       // The prerequisite for any credible redaction: the browser hands over pixels and
       // nothing else, so a password field cannot be located until the text is read.
-      { text: 'Redact sensitive regions, once OCR can find them', done: false },
+      { text: 'Redact plaintext secrets, which need OCR to find at all', done: false },
     ],
   },
   {

@@ -38,7 +38,21 @@ export interface FrameRecord {
   height: number;
   bytes: number;
   format: 'image/webp' | 'image/jpeg';
+  /** Of the stored image — the one `variant=full` returns. */
   sha256: string;
+
+  // --- Provenance and redaction ---
+  /** The code drawn into the image's corner, and the one the inspector resolves. */
+  stamp: string;
+  /**
+   * Whether a masked input field was found and painted over before anything was uploaded.
+   * A redacted frame has no original: the unmasked image was never encoded at all.
+   */
+  redacted: boolean;
+  /** Where the masks were painted, in the stored image's pixels. Empty when none were. */
+  redacted_regions: { x: number; y: number; w: number; h: number }[];
+  /** Whether an unstamped copy of the capture was kept alongside the stored image. */
+  has_original: boolean;
 
   // --- Enrichment: columns exist from day one, populated in a later phase. ---
   ocr_text: string | null;

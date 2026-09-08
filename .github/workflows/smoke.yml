@@ -254,6 +254,7 @@ jobs:
           curl -fsS -b "$JAR" -X POST "$BASE/v1/frames" -H "Origin: $BASE" \
             -F "meta={\"frame_id\":\"$FRAME_ID\",\"session_id\":\"$SESSION_ID\",\"captured_at\":\"$CAPTURED_AT\",\"offset_ms\":0,\"seq\":0,\"change_score\":0.5,\"changed_tiles\":[1,2],\"reason\":\"first\",\"width\":1920,\"height\":1080,\"bytes\":16,\"format\":\"image/webp\",\"sha256\":\"deadbeef\"}" \
             -F "full=@/tmp/frame.webp" -F "thumb=@/tmp/frame.webp" \
+            -F "original=@/tmp/frame.webp" \
             -o /tmp/upload.json || fail "frame upload failed"
           cat /tmp/upload.json; echo
 
@@ -271,6 +272,54 @@ jobs:
           assert f['changed_tiles'] == [1, 2], f"changed_tiles did not round-trip: {f['changed_tiles']}"
           assert d['stamp']['handle'] == '$HANDLE'
           assert d['session']['device_id'] == '$DEVICE_ID'
+          PY
+
+          echo "  the untouched capture round-trips too"
+          curl -fsS -b "$JAR" "$BASE/v1/frames/$FRAME_ID/image?variant=original" \
+            -o /tmp/orig.webp || fail "the original variant did not serve"
+          cmp -s /tmp/frame.webp /tmp/orig.webp \
+            || fail "the original variant returned different bytes from what was uploaded"
+          echo "  original: $(wc -c < /tmp/orig.webp) bytes, byte-identical to the upload"
+
+          echo "  a frame uploaded as redacted keeps no original, even if one is sent"
+          # A client claiming both is confused or malicious; the safe reading is that the
+          # frame is sensitive, so the original must not survive. This is the assertion
+          # that would catch the server trusting the client's file over its own flag.
+          R_FRAME=$(python3 -c "
+          import os, time
+          ENC='0123456789ABCDEFGHJKMNPQRSTVWXYZ'
+          ms=int(time.time()*1000); out=''
+          for _ in range(10):
+              out=ENC[ms%32]+out; ms//=32
+          print(out + ''.join(ENC[b%32] for b in os.urandom(16)))")
+          curl -fsS -b "$JAR" -X POST "$BASE/v1/frames" -H "Origin: $BASE" \
+            -F "meta={\"frame_id\":\"$R_FRAME\",\"session_id\":\"$SESSION_ID\",\"captured_at\":\"$CAPTURED_AT\",\"offset_ms\":10,\"seq\":1,\"change_score\":0.5,\"changed_tiles\":[1],\"reason\":\"scene_change\",\"width\":1920,\"height\":1080,\"bytes\":16,\"format\":\"image/webp\",\"sha256\":\"beef\",\"redacted\":true,\"redacted_regions\":[{\"x\":1,\"y\":2,\"w\":3,\"h\":4}]}" \
+            -F "full=@/tmp/frame.webp" -F "thumb=@/tmp/frame.webp" -F "original=@/tmp/frame.webp" \
+            -o /tmp/red.json || fail "redacted frame upload failed"
+          cat /tmp/red.json; echo
+          grep -q '"redacted":true' /tmp/red.json || fail "the server did not record the redaction"
+
+          code=$(curl -s -o /tmp/noorig.json -w '%{http_code}' -b "$JAR" \
+            "$BASE/v1/frames/$R_FRAME/image?variant=original")
+          [ "$code" = "404" ] || fail "a redacted frame served an original (HTTP $code)"
+          grep -q 'no_original' /tmp/noorig.json || fail "expected a no_original refusal"
+          echo "  redacted frame -> original is 404, as it must be"
+
+          # And the listing must agree, since that is what the player's toggle reads.
+          curl -fsS -b "$JAR" "$BASE/v1/sessions/$SESSION_ID/frames" -o /tmp/lst.json \
+            || fail "listing the session's frames failed"
+          python3 - <<PY || exit 1
+          import json
+          frames = {f['frame_id']: f for f in json.load(open('/tmp/lst.json'))['frames']}
+          clean, red = frames['$FRAME_ID'], frames['$R_FRAME']
+          print('  clean   :', clean['redacted'], clean['has_original'], clean['stamp'][:22] + '...')
+          print('  redacted:', red['redacted'], red['has_original'], red['redacted_regions'])
+          assert clean['redacted'] is False and clean['has_original'] is True
+          assert red['redacted'] is True and red['has_original'] is False
+          assert red['redacted_regions'] == [{'x': 1, 'y': 2, 'w': 3, 'h': 4}]
+          # Object keys are where bytes live; a caller must never be handed them.
+          for f in (clean, red):
+              assert 'storage_key' not in f and 'original_key' not in f, f.keys()
           PY
 
           echo "  a stamp for a frame that does not exist is a plain 404"

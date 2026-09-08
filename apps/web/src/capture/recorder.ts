@@ -1,4 +1,6 @@
-import { ulid, type CaptureSettings, type FrameRecord, type SessionRecord } from '@sr/schema';
+import {
+  fingerprint, ulid, type CaptureSettings, type FrameRecord, type SessionRecord,
+} from '@sr/schema';
 import type { ProcessorStats, ActivityPoint } from '@sr/core';
 import { sha256Hex, type FrameStore } from '@sr/storage';
 import { deviceId } from '../lib/device.js';
@@ -142,9 +144,24 @@ export class Recorder {
     };
     await this.store.createSession(this.session);
 
+    // Hashed once per session and handed over. The worker draws these into every frame and
+    // has no use for the values they came from.
+    const [deviceFingerprint, accountFingerprint] = await Promise.all([
+      fingerprint('device', deviceId()),
+      fingerprint('account', this.accountId),
+    ]);
+
     this.worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
     this.worker.onmessage = (e: MessageEvent<FromWorker>) => void this.onWorkerMessage(e.data);
-    this.worker.postMessage({ type: 'start', settings: this.settings } satisfies ToWorker);
+    this.worker.postMessage({
+      type: 'start',
+      settings: this.settings,
+      identity: {
+        startedAtMs: Date.parse(this.startedIso),
+        deviceFingerprint,
+        accountFingerprint,
+      },
+    } satisfies ToWorker);
 
     this.running = true;
     if ('MediaStreamTrackProcessor' in globalThis) this.pumpTrackProcessor(track);
@@ -279,7 +296,8 @@ export class Recorder {
     }
     if (msg.type !== 'stored' || !this.session) return;
 
-    const frameId = ulid(Date.parse(this.startedIso) + msg.tMs);
+    // Minted in the worker, alongside the stamp that was drawn into the image.
+    const frameId = msg.frameId;
 
     // The previous frame stayed on screen until this one arrived. This is where a
     // motionless hour collapses into a single row with hold_ms = 3_600_000.
@@ -306,12 +324,16 @@ export class Recorder {
       bytes: msg.full.size,
       format: 'image/webp',
       sha256: await sha256Hex(msg.full),
+      stamp: msg.stamp,
+      redacted: msg.redacted,
+      redacted_regions: msg.regions,
+      has_original: msg.original !== null,
       ocr_text: null,
       caption: null,
       enrich_status: 'pending',
     };
 
-    await this.store.putFrame(record, msg.full, msg.thumb);
+    await this.store.putFrame(record, msg.full, msg.thumb, msg.original);
     this.openFrame = { id: frameId, tMs: msg.tMs };
     this.stored++;
     this.bytesStored += msg.full.size;

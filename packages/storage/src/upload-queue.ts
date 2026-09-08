@@ -47,6 +47,7 @@ interface Job {
   record: FrameRecord;
   full: Blob;
   thumb: Blob;
+  original: Blob | null;
   enqueuedAt: number;
   attempts: number;
 }
@@ -93,7 +94,9 @@ export class UploadQueue {
     return {
       queued: this.queue.length,
       inFlight: this.inFlight,
-      bytesQueued: this.queue.reduce((n, j) => n + j.full.size + j.thumb.size, 0),
+      bytesQueued: this.queue.reduce(
+        (n, j) => n + j.full.size + j.thumb.size + (j.original?.size ?? 0), 0,
+      ),
       oldestAgeMs: oldest ? this.now() - oldest.enqueuedAt : 0,
     };
   }
@@ -107,11 +110,11 @@ export class UploadQueue {
    * Queue a frame. Returns false when the queue is full, which the caller must treat as
    * "this frame was not recorded" — there is nowhere else for it to go.
    */
-  enqueue(record: FrameRecord, full: Blob, thumb: Blob): boolean {
+  enqueue(record: FrameRecord, full: Blob, thumb: Blob, original: Blob | null = null): boolean {
     const { bytesQueued } = this.counts();
     const wouldExceed =
       this.queue.length >= this.limits.maxFrames ||
-      bytesQueued + full.size + thumb.size > this.limits.maxBytes;
+      bytesQueued + full.size + thumb.size + (original?.size ?? 0) > this.limits.maxBytes;
 
     if (this.halted || wouldExceed) {
       this.status.dropped++;
@@ -123,7 +126,7 @@ export class UploadQueue {
       return false;
     }
 
-    this.queue.push({ record, full, thumb, enqueuedAt: this.now(), attempts: 0 });
+    this.queue.push({ record, full, thumb, original, enqueuedAt: this.now(), attempts: 0 });
     this.emit({ state: 'uploading' });
     void this.pump();
     return true;
@@ -192,7 +195,7 @@ export class UploadQueue {
 
   private async send(job: Job): Promise<void> {
     try {
-      await this.api.postFrame(job.record, job.full, job.thumb);
+      await this.api.postFrame(job.record, job.full, job.thumb, job.original);
       this.status.uploaded++;
       this.emit({
         state: this.drained ? 'idle' : 'uploading',

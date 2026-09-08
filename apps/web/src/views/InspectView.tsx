@@ -13,6 +13,9 @@ interface ResolvedFrame {
   };
   frame: {
     frame_id: string; session_id: string; user_id: string; device_id: string;
+    stamp: string; redacted: boolean;
+    redacted_regions: { x: number; y: number; w: number; h: number }[];
+    has_original: boolean;
     captured_at: string; offset_ms: number; seq: number; hold_ms: number | null;
     change_score: number; changed_tiles: number[]; reason: string;
     width: number; height: number; bytes: number; format: string; sha256: string;
@@ -201,6 +204,22 @@ export function InspectView({ store, accountId, initialStamp, onConsumed }: Insp
               <Row label="Frame id" value={result.frame.frame_id} mono />
               <Row label="Captured at" value={result.frame.captured_at} />
               <Row label="Kept because" value={<span className={`tag ${result.frame.reason}`}>{result.frame.reason}</span>} />
+              <Row
+                label="Redaction"
+                value={result.frame.redacted
+                  ? <span className="tag warn-tag">
+                      {result.frame.redacted_regions.length} field(s) masked
+                    </span>
+                  : 'nothing masked'}
+              />
+              <Row
+                label="Untouched capture"
+                value={result.frame.has_original
+                  ? 'kept alongside the stored image'
+                  : result.frame.redacted
+                    ? 'never created — this frame was redacted before encoding'
+                    : 'not kept; the stored image is the capture'}
+              />
               <Row label="Stayed on screen" value={result.frame.hold_ms === null ? 'still open' : duration(result.frame.hold_ms)} />
               <Row label="Change" value={`${(result.frame.change_score * 100).toFixed(1)}% · ${result.frame.changed_tiles.length} tiles`} />
               <Row label="Size" value={`${result.frame.width}×${result.frame.height} · ${bytes(result.frame.bytes)} ${result.frame.format}`} />

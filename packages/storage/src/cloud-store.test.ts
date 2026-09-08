@@ -9,6 +9,7 @@ const frame = (id: string): FrameRecord => ({
   captured_at: '2026-01-01T00:00:00.000Z', offset_ms: 0, seq: 0,
   hold_ms: null, change_score: 0.1, changed_tiles: [], reason: 'scene_change',
   width: 1920, height: 1080, bytes: 100, format: 'image/webp', sha256: 'x',
+  stamp: `SR1-${id}-AAAABBBB`, redacted: false, redacted_regions: [], has_original: true,
   ocr_text: null, caption: null, enrich_status: 'pending',
 });
 

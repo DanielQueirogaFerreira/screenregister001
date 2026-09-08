@@ -252,16 +252,34 @@ app.post('/v1/frames', async (c) => {
 
   const key = `f/${me.userId}/${sessionId}/${frameId}.webp`;
   const thumbKey = `t/${me.userId}/${sessionId}/${frameId}.webp`;
+  // Optional by design. A redacted frame has no original, because the browser never
+  // encoded one — its absence here is the evidence that the masking happened upstream.
+  const original = filePart(form.get('original'));
+  const originalKey = original ? `o/${me.userId}/${sessionId}/${frameId}.webp` : null;
+
   await Promise.all([
     c.env.FRAMES.put(key, full.stream(), { httpMetadata: { contentType: 'image/webp' } }),
     c.env.FRAMES.put(thumbKey, thumb.stream(), { httpMetadata: { contentType: 'image/webp' } }),
+    ...(original && originalKey
+      ? [c.env.FRAMES.put(originalKey, original.stream(), {
+          httpMetadata: { contentType: 'image/webp' },
+        })]
+      : []),
   ]);
+
+  const redacted = m.redacted === true;
+  // A client claiming both "redacted" and an original is either confused or malicious;
+  // either way the safe reading is that the frame is sensitive. Drop what it sent.
+  if (redacted && originalKey) {
+    await c.env.FRAMES.delete(originalKey).catch(() => undefined);
+  }
 
   await c.env.DB.prepare(
     `INSERT INTO frames (frame_id, session_id, user_id, device_id, captured_at, offset_ms, seq,
        hold_ms, change_score, changed_tiles, reason, width, height, bytes, format, sha256,
-       storage_key, ocr_text, caption, enrich_status)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,'pending')
+       storage_key, stamp, redacted, redacted_regions, original_key,
+       ocr_text, caption, enrich_status)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,'pending')
      ON CONFLICT(frame_id) DO UPDATE SET hold_ms = COALESCE(excluded.hold_ms, frames.hold_ms)`,
   ).bind(
     frameId, sessionId, me.userId, owner.device_id,
@@ -270,9 +288,14 @@ app.post('/v1/frames', async (c) => {
     Number(m.change_score ?? 0), JSON.stringify(m.changed_tiles ?? []), String(m.reason ?? 'first'),
     Number(m.width ?? 0), Number(m.height ?? 0), Number(m.bytes ?? 0),
     String(m.format ?? 'image/webp'), String(m.sha256 ?? ''), key,
+    String(m.stamp ?? ''), redacted ? 1 : 0,
+    JSON.stringify(Array.isArray(m.redacted_regions) ? m.redacted_regions : []),
+    redacted ? null : originalKey,
   ).run();
 
-  return c.json({ ok: true, frame_id: frameId, storage_key: key });
+  return c.json({
+    ok: true, frame_id: frameId, storage_key: key, redacted, original: !redacted && !!originalKey,
+  });
 });
 
 /**
@@ -324,13 +347,7 @@ app.get('/v1/frames/stamp/:code', async (c) => {
       device_fingerprint: parts.device,
       account_fingerprint: parts.account,
     },
-    frame: {
-      ...row,
-      changed_tiles: JSON.parse(String(row.changed_tiles ?? '[]')) as number[],
-      // The object key is an internal detail of where bytes live; the frame id is the
-      // handle callers are meant to use.
-      storage_key: undefined,
-    },
+    frame: publicFrame(row),
     session,
   });
 });
@@ -343,23 +360,69 @@ app.patch('/v1/frames/:id', async (c) => {
   return c.json({ ok: true });
 });
 
+/**
+ * A frames row as the API presents it.
+ *
+ * D1 has no boolean and no array, so three columns need converting on the way out, and two
+ * need removing: the object keys are where bytes happen to live, and a caller that had
+ * them might reasonably conclude it should fetch them directly. What a caller needs is
+ * whether an untouched capture exists, which is `has_original`.
+ */
+export function publicFrame(row: Record<string, unknown>): Record<string, unknown> {
+  const { storage_key: _s, original_key, ...rest } = row;
+  return {
+    ...rest,
+    changed_tiles: JSON.parse(String(row.changed_tiles ?? '[]')) as number[],
+    redacted_regions: JSON.parse(String(row.redacted_regions ?? '[]')) as unknown[],
+    redacted: Boolean(row.redacted),
+    has_original: Boolean(original_key),
+  };
+}
+
 app.get('/v1/sessions/:id/frames', async (c) => {
   const { results } = await c.env.DB.prepare(
     `SELECT * FROM frames WHERE session_id = ? AND user_id = ? ORDER BY seq ASC`,
   ).bind(c.req.param('id'), c.get('me').userId).all();
-  return c.json({
-    frames: results.map((r) => ({ ...r, changed_tiles: JSON.parse(String(r.changed_tiles)) })),
-  });
+  return c.json({ frames: results.map(publicFrame) });
 });
 
+/**
+ * The frame's pixels, in one of three forms.
+ *
+ *   full      the stored image: the stamp burned in, and the masks if there were any
+ *   thumb     a small copy of that same image, masks included
+ *   original  the capture untouched — present only when nothing was masked
+ *
+ * `original` on a redacted frame is a 404 rather than a fallback to `full`. Silently
+ * serving the redacted image under the name "original" would teach a caller that the
+ * original still exists somewhere, and the entire point is that it does not.
+ */
 app.get('/v1/frames/:id/image', async (c) => {
   const me = c.get('me');
   const row = await c.env.DB.prepare(
-    `SELECT storage_key FROM frames WHERE frame_id = ? AND user_id = ?`,
-  ).bind(c.req.param('id'), me.userId).first<{ storage_key: string }>();
+    `SELECT storage_key, original_key, redacted FROM frames WHERE frame_id = ? AND user_id = ?`,
+  ).bind(c.req.param('id'), me.userId)
+    .first<{ storage_key: string; original_key: string | null; redacted: number }>();
   if (!row) return c.json({ error: 'not found' }, 404);
 
-  const key = c.req.query('variant') === 'thumb' ? row.storage_key.replace(/^f\//, 't/') : row.storage_key;
+  const variant = c.req.query('variant');
+  let key: string;
+  if (variant === 'thumb') {
+    key = row.storage_key.replace(/^f\//, 't/');
+  } else if (variant === 'original') {
+    if (!row.original_key) {
+      return c.json({
+        error: 'no_original',
+        detail: row.redacted
+          ? 'This frame was redacted, so no unmasked copy was ever created.'
+          : 'No separate original was stored for this frame; the stored image is the capture.',
+      }, 404);
+    }
+    key = row.original_key;
+  } else {
+    key = row.storage_key;
+  }
+
   const obj = await c.env.FRAMES.get(key);
   if (!obj) return c.json({ error: 'object missing' }, 404);
 
@@ -438,8 +501,22 @@ function filePart(v: unknown): Blob | null {
   return v !== null && v !== undefined && typeof v !== 'string' ? (v as Blob) : null;
 }
 
+/**
+ * Delete every object belonging to a frame, from its stored-image key alone.
+ *
+ * All three variants are derived here rather than read from the row, so a caller cannot
+ * forget one. That matters most for the original: it is optional, so nothing would
+ * complain if it were left behind — it would simply sit in R2 after its frame was deleted
+ * and after the retention window had closed on it, which is the one thing a seven-day
+ * promise cannot survive. Deleting a key that does not exist is a no-op, so asking for all
+ * three unconditionally is both correct and cheaper than looking up which exist.
+ */
+export function variantKeys(storageKey: string): string[] {
+  return [storageKey, storageKey.replace(/^f\//, 't/'), storageKey.replace(/^f\//, 'o/')];
+}
+
 async function deleteObjects(env: Env, keys: string[]): Promise<void> {
-  const all = keys.flatMap((k) => [k, k.replace(/^f\//, 't/')]);
+  const all = keys.flatMap(variantKeys);
   // R2 caps a bulk delete at 1000 keys per call.
   for (let i = 0; i < all.length; i += 1000) await env.FRAMES.delete(all.slice(i, i + 1000));
 }

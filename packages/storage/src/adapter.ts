@@ -37,7 +37,7 @@ export interface FrameStore {
    * at which point `setHold` releases it to the upload queue — so each frame is uploaded
    * exactly once, complete, instead of being patched afterwards.
    */
-  putFrame(record: FrameRecord, full: Blob, thumb: Blob): Promise<void>;
+  putFrame(record: FrameRecord, full: Blob, thumb: Blob, original?: Blob | null): Promise<void>;
   /** Close out a frame once we know how long it stayed on screen, and queue it for upload. */
   setHold(frameId: string, holdMs: number): Promise<void>;
   /** Wait for the queue to drain. Called when a session ends. */

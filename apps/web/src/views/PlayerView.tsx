@@ -13,6 +13,8 @@ interface Props {
 }
 
 type Mode = 'realtime' | 'condensed';
+/** Which of a frame's two images to draw. */
+type Variant = 'full' | 'original';
 
 /** Screen time each frame gets in condensed mode — a whole day in about a minute. */
 const CONDENSED_MS = 200;
@@ -45,6 +47,7 @@ export function PlayerView({ store, session, settings, accountId, onBack, onInsp
   const [playing, setPlaying] = useState(false);
   const [index, setIndex] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [variant, setVariant] = useState<Variant>('full');
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const cache = useRef(new Map<string, ImageBitmap>());
@@ -108,24 +111,28 @@ export function PlayerView({ store, session, settings, accountId, onBack, onInsp
 
   const bitmapFor = useCallback(
     async (f: FrameRecord): Promise<ImageBitmap | null> => {
-      const hit = cache.current.get(f.frame_id);
+      // Keyed by variant as well as by frame: without that, toggling to the original
+      // would hand back the stamped bitmap already cached under the same id.
+      const key = `${variant}:${f.frame_id}`;
+      const hit = cache.current.get(key);
       if (hit) return hit;
       // Fetched from R2 through the Worker, with this device's token. The cache below
       // is a decode cache for the current playback pass, not a copy of the recording.
-      const blob = await store.getFullBlob(f.frame_id).catch(() => null);
+      const wanted = variant === 'original' && f.has_original ? 'original' : 'full';
+      const blob = await store.getImageBlob(f.frame_id, wanted).catch(() => null);
       if (!blob) return null;
       const bmp = await createImageBitmap(blob);
-      cache.current.set(f.frame_id, bmp);
+      cache.current.set(key, bmp);
       if (cache.current.size > CACHE_MAX) {
         const oldest = cache.current.keys().next().value as string | undefined;
-        if (oldest && oldest !== f.frame_id) {
+        if (oldest && oldest !== key) {
           cache.current.get(oldest)?.close();
           cache.current.delete(oldest);
         }
       }
       return bmp;
     },
-    [store],
+    [store, variant],
   );
 
   // Decode ahead so playback never stalls waiting on a frame fetch.
@@ -221,6 +228,20 @@ export function PlayerView({ store, session, settings, accountId, onBack, onInsp
     }).then(onInspect);
   }, [frames, session.device_id, accountId, onInspect]);
 
+  /**
+   * Switch between the stored image and the untouched capture.
+   *
+   * The drawn index is reset rather than left alone: the paint loop only repaints when the
+   * frame changes, so without this the toggle would do nothing visible until playback
+   * moved on. The fade source is dropped too, since cross-fading from one variant into the
+   * other reads as a glitch rather than a transition.
+   */
+  const showVariant = useCallback((next: Variant) => {
+    fadeFrom.current = null;
+    drawnIndex.current = -1;
+    setVariant(next);
+  }, []);
+
   const seek = useCallback((ms: number) => {
     playhead.current = Math.max(0, Math.min(timeline.total, ms));
   }, [timeline.total]);
@@ -270,6 +291,26 @@ export function PlayerView({ store, session, settings, accountId, onBack, onInsp
           <select value={speed} onChange={(e) => setSpeed(Number(e.target.value))} style={{ width: 80 }}>
             {[0.5, 1, 2, 4, 8].map((v) => <option key={v} value={v}>{v}×</option>)}
           </select>
+          {/* Only offered when this session actually kept originals. A toggle that does
+              nothing on most sessions is worse than no toggle. */}
+          {frames.some((f) => f.has_original) && (
+            <div className="row" style={{ gap: 4 }}>
+              <button
+                className={variant === 'full' ? 'on' : ''}
+                onClick={() => showVariant('full')}
+                title="The stored image, with its stamp and any masks"
+              >
+                Stamped
+              </button>
+              <button
+                className={variant === 'original' ? 'on' : ''}
+                onClick={() => showVariant('original')}
+                title="The capture as it was, where one was kept"
+              >
+                Original
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -281,6 +322,13 @@ export function PlayerView({ store, session, settings, accountId, onBack, onInsp
         <canvas ref={canvasRef} />
         {skipping && (
           <div className="skip">⏩ screen unchanged for {duration(realHold)} — skipped</div>
+        )}
+        {variant === 'original' && !current.has_original && (
+          <div className="skip">
+            {current.redacted
+              ? '\u26ca This frame was redacted — no unmasked copy was ever created. Showing the stored image.'
+              : 'No separate original was kept for this frame. Showing the stored image.'}
+          </div>
         )}
       </div>
 
@@ -331,6 +379,11 @@ export function PlayerView({ store, session, settings, accountId, onBack, onInsp
           Next →
         </button>
         <span className={`tag ${current.reason}`}>{current.reason}</span>
+        {current.redacted && (
+          <span className="tag warn-tag" title={`${current.redacted_regions.length} field(s) masked before upload`}>
+            redacted
+          </span>
+        )}
         <span style={{ color: 'var(--dim)' }}>
           {clock(current.captured_at)} · frame {index + 1}/{frames.length} · held{' '}
           {duration(realHold)} · change {(current.change_score * 100).toFixed(1)}%

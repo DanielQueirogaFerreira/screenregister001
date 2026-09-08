@@ -97,11 +97,16 @@ export class ApiClient {
     return this.request(`/v1/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
   }
 
-  postFrame(record: FrameRecord, full: Blob, thumb: Blob): Promise<{ ok: boolean; frame_id: string }> {
+  postFrame(
+    record: FrameRecord, full: Blob, thumb: Blob, original: Blob | null = null,
+  ): Promise<{ ok: boolean; frame_id: string }> {
     const form = new FormData();
     form.set('meta', JSON.stringify(record));
     form.set('full', full, `${record.frame_id}.webp`);
     form.set('thumb', thumb, `${record.frame_id}.thumb.webp`);
+    // Absent for a redacted frame, by construction rather than by omission: the worker
+    // never encoded one.
+    if (original) form.set('original', original, `${record.frame_id}.original.webp`);
     return this.request('/v1/frames', { method: 'POST', body: form });
   }
 
@@ -140,7 +145,9 @@ export class ApiClient {
    * request carries no Authorization header. Fetching to a Blob keeps every read behind
    * the same token as the metadata.
    */
-  async imageBlob(frameId: string, variant: 'full' | 'thumb' = 'full'): Promise<Blob | null> {
+  async imageBlob(
+    frameId: string, variant: 'full' | 'thumb' | 'original' = 'full',
+  ): Promise<Blob | null> {
     try {
       const res = await this.raw(
         `/v1/frames/${encodeURIComponent(frameId)}/image?variant=${variant}`,
