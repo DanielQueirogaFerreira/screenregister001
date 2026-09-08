@@ -5,6 +5,7 @@ import { AuthNotConfiguredError, isAuthConfigured } from './auth.js';
 import { authRoutes, requireAuth } from './auth-routes.js';
 import { mailConfigured } from './mailer.js';
 import { pruneAuthTables } from './accounts.js';
+import { buildStatus, pruneStatusTables, recordProbes, runProbes } from './status.js';
 import { handleMcp } from './mcp.js';
 import { buildScenes, listFrames, resolveWindow } from './queries.js';
 import { OPENAPI } from './openapi.js';
@@ -104,6 +105,21 @@ app.get('/v1/health', async (c) => {
         'wrangler secret put AUTH_SECRET',
     }),
   });
+});
+
+/**
+ * Everything the status dashboard renders: live probes, recorded history, uptime,
+ * deployment log and roadmap.
+ *
+ * Public, like /v1/health, and for the same reason: the moment it is most needed is when
+ * authentication is the thing that is broken. It exposes no recordings, no counts of them,
+ * and no account data — only whether the platform's own dependencies are answering.
+ */
+app.get('/v1/status', async (c) => {
+  const payload = await buildStatus(c.env);
+  // Short cache: the page is safe to hammer on refresh, but must not show stale state.
+  c.header('Cache-Control', 'public, max-age=15');
+  return c.json(payload);
 });
 
 /** Machine-readable description of this API, for clients that do not speak MCP. */
@@ -342,6 +358,9 @@ app.get('/v1/usage', async (c) => {
   return c.json(row ?? {});
 });
 
+/** Must match the nightly entry in wrangler.toml's `crons`. */
+const RETENTION_CRON = '0 3 * * *';
+
 /** A multipart file part is any entry that is not a plain string. */
 function filePart(v: unknown): Blob | null {
   return v !== null && v !== undefined && typeof v !== 'string' ? (v as Blob) : null;
@@ -384,10 +403,22 @@ async function prune(env: Env): Promise<number> {
 
 export default {
   fetch: app.fetch,
-  async scheduled(_evt: ScheduledController, env: Env): Promise<void> {
-    const n = await prune(env);
-    await pruneAuthTables(env);
-    console.log(`retention sweep removed ${n} frames; auth tables pruned`);
+  /**
+   * Two schedules on one handler, told apart by the cron expression.
+   *
+   * The probe runs every five minutes because a status page whose history has hour-wide
+   * gaps cannot answer "was it down when I was recording". The sweep runs nightly because
+   * deleting a day of expired frames is expensive and needs to happen exactly once.
+   */
+  async scheduled(evt: ScheduledController, env: Env): Promise<void> {
+    if (evt.cron === RETENTION_CRON) {
+      const n = await prune(env);
+      await pruneAuthTables(env);
+      await pruneStatusTables(env);
+      console.log(`retention sweep removed ${n} frames; auth and status tables pruned`);
+      return;
+    }
+    await recordProbes(env, await runProbes(env));
   },
 };
 

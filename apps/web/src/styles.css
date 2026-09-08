@@ -132,3 +132,101 @@ code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-si
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* --- Status dashboard ------------------------------------------------------ */
+
+.linkish { color: var(--accent); text-decoration: none; font-size: 13px; }
+.linkish:hover { text-decoration: underline; }
+
+.status-hero { display: flex; gap: 16px; align-items: center; }
+.status-hero-mark { font-size: 34px; line-height: 1; }
+.status-hero h2 { font-size: 20px; }
+
+.status-grid { grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
+.status-card { display: flex; flex-direction: column; }
+
+.status-pill { font-size: 12px; font-weight: 600; letter-spacing: .2px; white-space: nowrap; }
+
+/*
+ * One cell per hour. A 2px gap keeps adjacent cells from reading as one block, and the
+ * neutral track colour shows through for hours with no probe — so a gap in monitoring
+ * looks like a gap rather than like uptime.
+ */
+.status-strip { display: flex; gap: 2px; height: 26px; }
+.status-strip i {
+  flex: 1 1 0;
+  min-width: 2px;
+  border-radius: 2px;
+  opacity: .85;
+  transition: opacity .12s ease;
+}
+.status-strip i:hover { opacity: 1; }
+
+.status-strip-axis {
+  display: flex; justify-content: space-between;
+  font-size: 10.5px; color: var(--dim); margin-top: 5px;
+}
+
+.progress-track {
+  height: 8px; border-radius: 999px; background: var(--panel-2);
+  border: 1px solid var(--line); overflow: hidden;
+}
+.progress-fill { height: 100%; background: var(--good); border-radius: 999px; }
+
+.phase-list { margin-top: 16px; display: grid; gap: 12px; }
+.phase {
+  border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 12px 14px; background: var(--panel-2);
+}
+/* A left edge carries phase state, so it is legible without reading the tag. */
+.phase.done { border-left: 3px solid var(--good); }
+.phase.in_progress { border-left: 3px solid var(--accent); }
+.phase.planned { border-left: 3px solid var(--line); }
+
+.tag.done { border-color: var(--good); color: var(--good); }
+.tag.in_progress { border-color: var(--accent); color: var(--accent); }
+.tag.planned { border-color: var(--line); color: var(--dim); }
+
+.checklist { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 4px; }
+.checklist li {
+  display: grid; grid-template-columns: 16px 1fr; gap: 6px;
+  font-size: 13px; color: var(--dim); align-items: baseline;
+}
+.checklist li.done { color: var(--fg); }
+.checklist li.done span:first-child { color: var(--good); }
+
+.deploy-message {
+  max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+@media (max-width: 620px) {
+  .status-grid { grid-template-columns: 1fr; }
+  .deploy-message { max-width: 160px; }
+}
+
+/*
+ * Three even columns inside a service card. The shared auto-fit grid wraps 3 tiles to
+ * 2 + 1, which leaves an orphan that reads as a layout fault rather than a number.
+ */
+.status-card .stats { grid-template-columns: repeat(3, 1fr); }
+@media (max-width: 420px) {
+  .status-card .stats { grid-template-columns: 1fr 1fr; }
+}
+
+/*
+ * A table is the one element that refuses to shrink. Let it scroll inside its panel so a
+ * narrow screen never scrolls the whole page sideways.
+ */
+.table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.table-scroll table { min-width: 520px; }
+
+/*
+ * The version badge is fixed, so without this the last line of the page sits underneath it
+ * permanently — not merely overlapped while scrolling, but unreachable.
+ */
+.app { padding-bottom: 52px; }
+
+/* "<1 ms" wraps between the operator and the unit at narrow tile widths, which makes one
+   tile taller than its neighbours and reads as a broken value. */
+.status-card .stat b { white-space: nowrap; font-size: 17px; }
+.status-card .stat span { white-space: nowrap; }

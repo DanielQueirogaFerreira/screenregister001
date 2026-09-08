@@ -22,6 +22,10 @@ database_id = "c92f63da-e3a4-4852-ace5-ed30ea851db3"
 # to configure. Requests that do not match a built asset fall through to the Worker.
 [assets]
 directory = "../web/dist"
+# The client owns its own routing. Without this, any path that is not a built file —
+# /status, and the /verify and /reset links sent by email — misses the assets, falls
+# through to the Worker, and 404s. Serving index.html lets the app route them.
+not_found_handling = "single-page-application"
 
 [vars]
 RETENTION_DAYS = "7"
@@ -32,9 +36,16 @@ RETENTION_DAYS = "7"
 # development turns this on through apps/api/.dev.vars, which never ships.
 ALLOW_LOCALHOST_ORIGINS = "false"
 
-# Nightly prune. The 7-day ceiling is enforced server-side, not merely by the client.
+# Two schedules, told apart inside the handler by `event.cron`.
+#
+# Every five minutes: probe D1 and R2 and record the result, so the status page can answer
+# "was it working at 14:35" rather than only "is it working now". Hourly sampling would
+# leave gaps wider than most incidents.
+#
+# Nightly at 03:00: the retention sweep, which enforces the 7-day ceiling server-side and
+# is expensive enough to want exactly once a day.
 [triggers]
-crons = ["0 3 * * *"]
+crons = ["*/5 * * * *", "0 3 * * *"]
 
 # Logs, so the first production incident is diagnosable rather than guessed at. The
 # retention sweep in particular runs unattended at 03:00 and is otherwise invisible.
