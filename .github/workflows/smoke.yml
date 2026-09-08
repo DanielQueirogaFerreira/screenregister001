@@ -418,6 +418,22 @@ jobs:
             -H "Origin: $BASE" "$BASE/v1/sessions/does-not-exist/finish")
           [ "$code" = "404" ] || fail "finishing an unknown session returned HTTP $code"
 
+          echo "  the end time comes from the last frame, not from now"
+          curl -fsS -b "$JAR" "$BASE/v1/sessions" -o /tmp/sess2.json || fail "/v1/sessions failed"
+          python3 - <<PY || exit 1
+          import json
+          from datetime import datetime, timezone
+          s = next(x for x in json.load(open('/tmp/sess2.json'))['sessions']
+                   if x['session_id'] == '$SESSION_ID')
+          print('  started', s['started_at'], '-> ended', s['ended_at'])
+          assert s['ended_at'], 'the session is still open after being closed'
+          ended = datetime.fromisoformat(s['ended_at'].replace('Z', '+00:00'))
+          # Closing must never stamp the current time: a recording whose browser died on
+          # Friday and was noticed on Monday did not run for three days.
+          drift = abs((datetime.now(timezone.utc) - ended).total_seconds())
+          assert drift < 300, f'ended_at looks like now rather than the recording: {drift}s'
+          PY
+
           echo
           echo "--- the operator surface is closed to an ordinary account"
           # A 404 rather than a 403: whether this deployment has an operator surface at all

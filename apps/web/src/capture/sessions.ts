@@ -192,10 +192,20 @@ export class CaptureSessions {
           bytes_stored: e.bytes,
         });
         if (res.stop_requested) await this.stop(e.key);
-      } catch {
-        // Losing a beat is not losing the recording. Capture continues locally and the
-        // frames still queue for upload; the session simply reads as stale elsewhere until
-        // the next beat lands.
+      } catch (err) {
+        /**
+         * A 404 here is the server saying this session is not open any more — closed by an
+         * operator, or by the sweep that tidies up abandoned recordings. Carrying on would
+         * mean holding the screen and uploading frames into a session everything else
+         * considers finished, which is exactly the state that leaves the browser's sharing
+         * indicator lit over a recording nobody believes is running.
+         *
+         * Every other failure is a lost beat and nothing more: capture continues, frames
+         * still queue, and the session simply reads as stale elsewhere until one lands.
+         */
+        if (/\b404\b|not_recording/.test(err instanceof Error ? err.message : String(err))) {
+          await this.stop(e.key);
+        }
       }
     }
   }

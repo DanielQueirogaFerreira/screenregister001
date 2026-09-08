@@ -242,6 +242,39 @@ app.post('/v1/admin/sessions/:id/request-stop', adminOnly(async (c, admin) => {
   return c.json({ ok: true, note: 'The recording device stops on its next heartbeat.' });
 }));
 
+/**
+ * Close any account's open session.
+ *
+ * The counterpart to Ask to stop, for when that went unanswered. A stop request needs the
+ * recording browser to still be running to collect it; when that browser is gone, nothing
+ * collects it and the row stays open. The sweep closes these within minutes on its own —
+ * this is the way to not wait.
+ */
+app.post('/v1/admin/sessions/:id/finish', adminOnly(async (c, admin) => {
+  // adminOnly hands back a Context with no path generic, so the parameter is not inferred
+  // as present. Checked rather than asserted: an empty id would close nothing and report
+  // success, which is a worse answer than a refusal.
+  const id = c.req.param('id');
+  if (!id) return c.json({ error: 'not_found' }, 404);
+
+  const row = await c.env.DB.prepare(
+    `SELECT ended_at, last_seen_at FROM sessions WHERE session_id = ?`,
+  ).bind(id).first<{ ended_at: string | null; last_seen_at: string | null }>();
+  if (!row) return c.json({ error: 'not_found' }, 404);
+  if (row.ended_at) return c.json({ ok: true, already_finished: true, ended_at: row.ended_at });
+  if (row.last_seen_at && row.last_seen_at >= liveCutoff()) {
+    return c.json({
+      error: 'still_recording',
+      detail: 'This capture is still reporting in. Ask it to stop; it closes itself.',
+    }, 409);
+  }
+
+  const closed = await closeSession(c.env, id);
+  await adminAudit(c.env, c.req.raw, admin, 'finish_session', id,
+    `closed at ${closed.ended_at ?? 'its start'}, ${closed.frames} frame(s)`);
+  return c.json({ ok: true, ...closed });
+}));
+
 /** Delete any account's session and its images. Irreversible, and logged with its size. */
 app.delete('/v1/admin/sessions/:id', adminOnly(async (c, admin) => {
   const id = c.req.param('id');
@@ -299,6 +332,82 @@ app.all('/mcp', (c) => handleMcp(c.req.raw, c.env, c.get('me')));
 
 
 /**
+ * Close a session at the moment its recording actually reached, not at now.
+ *
+ * The end time comes from the last frame plus how long it stayed on screen. Using the
+ * current time would claim the recording ran until whoever noticed got round to it — for a
+ * laptop closed on Friday and reopened on Monday, a three-day session that never happened.
+ *
+ * Shared by the three things that close a session someone else's browser did not: the
+ * owner's Finish button, an operator's, and the sweep that closes abandoned ones without
+ * anybody asking. One description of what closing means, in one place.
+ */
+async function closeSession(
+  env: Env, sessionId: string, userId?: string,
+): Promise<{ ended_at: string | null; frames: number }> {
+  const scope = userId ? 'AND user_id = ?' : '';
+  const binds = userId ? [sessionId, userId] : [sessionId];
+
+  const last = await env.DB.prepare(
+    `SELECT captured_at, hold_ms FROM frames WHERE session_id = ? ${scope}
+      ORDER BY seq DESC LIMIT 1`,
+  ).bind(...binds).first<{ captured_at: string | null; hold_ms: number | null }>();
+
+  const tally = await env.DB.prepare(
+    `SELECT COUNT(*) AS n, COALESCE(SUM(bytes), 0) + COALESCE(SUM(original_bytes), 0) AS bytes
+       FROM frames WHERE session_id = ? ${scope}`,
+  ).bind(...binds).first<{ n: number; bytes: number }>();
+
+  const endedAt = last?.captured_at
+    ? new Date(Date.parse(last.captured_at) + (last.hold_ms ?? 0)).toISOString()
+    // No frames at all: there is no moment the recording reached, so the only honest end
+    // is the moment it began. It shows as a zero-length session, which is what it was.
+    : null;
+
+  await env.DB.prepare(
+    `UPDATE sessions
+        SET ended_at = COALESCE(?, started_at),
+            frames_stored = ?, bytes_stored = ?, stop_requested_at = NULL
+      WHERE session_id = ? ${scope} AND ended_at IS NULL`,
+  ).bind(endedAt, tally?.n ?? 0, tally?.bytes ?? 0, ...binds).run();
+
+  return { ended_at: endedAt, frames: tally?.n ?? 0 };
+}
+
+/**
+ * How long a session may go without a heartbeat before it is treated as abandoned.
+ *
+ * Far longer than the 45 seconds that decides "recording right now", because these are
+ * different questions. Dropping out of the live list should be quick — a stale entry there
+ * is a lie about the present. Closing the row is irreversible bookkeeping, and a laptop
+ * whose lid was shut for five minutes should come back to the recording it left.
+ */
+const ABANDONED_AFTER_MS = 10 * 60_000;
+
+/**
+ * Close sessions whose browser never did.
+ *
+ * A session is completed by the browser that made it. When that browser is closed, crashes,
+ * loses power, or is asked to stop and never hears the request, the row stays open forever
+ * — and "open" is what the library and the operator view then show, indefinitely, for a
+ * recording that ended hours ago. Nothing reconciled that, so it needed a person to notice
+ * and press a button. It should not.
+ */
+async function closeAbandoned(env: Env): Promise<number> {
+  const cutoff = new Date(Date.now() - ABANDONED_AFTER_MS).toISOString();
+  const { results } = await env.DB.prepare(
+    `SELECT session_id FROM sessions
+      WHERE ended_at IS NULL
+        AND COALESCE(last_seen_at, started_at) < ?
+      LIMIT 200`,
+  ).bind(cutoff).all<{ session_id: string }>();
+
+  for (const row of results) await closeSession(env, row.session_id);
+  if (results.length) console.log(`closed ${results.length} abandoned session(s)`);
+  return results.length;
+}
+
+/**
  * Close a recording that was never closed.
  *
  * A session is completed by the browser that made it, so one whose browser was closed,
@@ -331,27 +440,8 @@ app.post('/v1/sessions/:id/finish', async (c) => {
     }, 409);
   }
 
-  const last = await c.env.DB.prepare(
-    `SELECT captured_at, hold_ms, COUNT(*) AS n, COALESCE(SUM(bytes), 0) AS bytes
-       FROM frames WHERE session_id = ? AND user_id = ?
-      ORDER BY seq DESC LIMIT 1`,
-  ).bind(id, me.userId)
-    .first<{ captured_at: string | null; hold_ms: number | null; n: number; bytes: number }>();
-
-  const endedAt = last?.captured_at
-    ? new Date(Date.parse(last.captured_at) + (last.hold_ms ?? 0)).toISOString()
-    // No frames at all: there is no moment the recording reached, so the only honest end
-    // is the moment it began. It shows as a zero-length session, which is what it was.
-    : null;
-
-  await c.env.DB.prepare(
-    `UPDATE sessions
-        SET ended_at = COALESCE(?, started_at),
-            frames_stored = ?, bytes_stored = ?, stop_requested_at = NULL
-      WHERE session_id = ? AND user_id = ? AND ended_at IS NULL`,
-  ).bind(endedAt, last?.n ?? 0, last?.bytes ?? 0, id, me.userId).run();
-
-  return c.json({ ok: true, ended_at: endedAt, frames: last?.n ?? 0 });
+  const closed = await closeSession(c.env, id, me.userId);
+  return c.json({ ok: true, ...closed });
 });
 
 /** Upsert, so the client can call it before every batch without tracking whether it exists. */
@@ -918,10 +1008,14 @@ export default {
       return;
     }
     await recordProbes(env, await runProbes(env));
+    // Cheap, indexed, and almost always a no-op. Running it beside the probe rather than
+    // in the nightly sweep means an abandoned recording reads as finished within minutes
+    // instead of the next morning.
+    await closeAbandoned(env).catch((err) => console.error('abandoned sweep failed', err));
   },
 };
 
-export { prune };
+export { prune, closeAbandoned, ABANDONED_AFTER_MS };
 
 /**
  * The Hono app itself, for tests that need to dispatch a real request through the whole

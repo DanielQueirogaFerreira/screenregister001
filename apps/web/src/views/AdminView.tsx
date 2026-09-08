@@ -145,7 +145,11 @@ export function AdminView() {
           <b>Recording right now</b>
         </div>
         {live.length === 0 ? (
-          <div className="hint">Nothing is capturing anywhere.</div>
+          <div className="hint">
+            Nothing is capturing anywhere. A session still shown as open below has stopped
+            reporting in — its browser is gone — and closes itself within ten minutes, or
+            immediately with <b>Finish</b>.
+          </div>
         ) : (
           <div className="table-scroll">
             <table>
@@ -245,7 +249,12 @@ export function AdminView() {
                         ? <span className="row" style={{ gap: 5, flexWrap: 'nowrap' }}>
                             <span className="dot live" /> recording
                           </span>
-                        : <span style={{ color: 'var(--bad)' }}>open</span>}
+                        // Open but not reporting in: its browser is gone, so nothing will
+                        // ever close it from that side. Saying "open" alone reads as
+                        // "still going", which is the opposite of what it means here.
+                        : <span style={{ color: 'var(--warn)' }} title="No heartbeat — its browser is gone. Closes itself within ten minutes.">
+                            not reporting
+                          </span>}
                   </td>
                   <td>{r.frames_stored}</td>
                   <td>{bytes(r.bytes_stored)}</td>
@@ -257,7 +266,13 @@ export function AdminView() {
                           the same row in another table to act on it is friction for
                           nothing. Offered for any session still open — a stop request on
                           one that has quietly died is harmless and answers 404. */}
-                      {!r.ended_at && (
+                      {/*
+                        Which control depends on whether anything is listening. Ask to
+                        stop needs the recording browser alive to collect the request; when
+                        it is gone that button does nothing and the row sits open, which is
+                        exactly what happened. Finish closes it here instead.
+                      */}
+                      {!r.ended_at && (liveIds.has(r.session_id) ? (
                         <button
                           disabled={busy !== null}
                           title="Ask the device holding this capture to stop"
@@ -267,7 +282,17 @@ export function AdminView() {
                         >
                           Ask to stop
                         </button>
-                      )}
+                      ) : (
+                        <button
+                          disabled={busy !== null}
+                          title="Close this recording at its last frame; its browser is gone"
+                          onClick={() => void act(
+                            `/v1/admin/sessions/${r.session_id}/finish`, 'POST',
+                          )}
+                        >
+                          Finish
+                        </button>
+                      ))}
                       <button
                         className="danger"
                         disabled={busy !== null}
