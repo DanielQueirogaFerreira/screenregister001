@@ -75,8 +75,23 @@ Add one repository secret under **Settings → Secrets and variables → Actions
 | `CLOUDFLARE_API_TOKEN` | a token with *Workers Scripts:Edit*, *D1:Edit*, *Workers R2 Storage:Edit* |
 | `CLOUDFLARE_ACCOUNT_ID` | optional — only if the token can see more than one account |
 
-`AUTH_SECRET` is deliberately **not** in that table. It signs every device token, so it is
-a Worker secret set once with `wrangler secret put` and never passed through CI.
+`AUTH_SECRET` is deliberately **not** in that table. It is a Worker secret set once with
+`wrangler secret put` and never passed through CI.
+
+Two optional Worker secrets turn on transactional email. Without them, verification and
+reset links are returned in the API response and logged, rather than sent — the flows work,
+but only for someone who can read the response:
+
+```bash
+npx wrangler secret put RESEND_API_KEY     # from resend.com
+npx wrangler secret put MAIL_FROM          # e.g. ScreenRegister <no-reply@yourdomain>
+```
+
+> **Accounts require the Workers Paid plan.** Password hashing runs 600,000 PBKDF2
+> iterations — about 100 ms of CPU — and Workers Free allows 10 ms per request, so a login
+> there fails with Error 1102. Reducing the work factor to fit would make stolen password
+> hashes materially cheaper to crack, so this is a plan requirement rather than a tuning
+> knob.
 
 **Do these three once, before the first deploy.** CI does not do them for you, and a deploy
 succeeds without them — it just fails at request time:
@@ -143,6 +158,28 @@ Four things go wrong at the defaults:
   build look like a deploy that worked. Both deploy fields — production *and*
   non-production — have to say `pnpm run deploy`.
 - **Nothing applies migrations.** Run them yourself, or use the workflow above.
+
+### Account endpoints
+
+| | |
+|---|---|
+| `POST /v1/auth/signup` | Create an account. Same response whether or not the address is taken. |
+| `POST /v1/auth/login` | Sets the session cookie. Rate limited per IP *and* per address. |
+| `POST /v1/auth/logout` | Revokes the session server-side and clears the cookie. |
+| `GET  /v1/auth/me` | The signed-in account and the current credential's scope. |
+| `POST /v1/auth/verify` · `/verify/resend` | Confirm an address from a single-use link. |
+| `POST /v1/auth/reset/request` · `/reset/confirm` | Password reset. Confirming revokes every session. |
+| `POST /v1/auth/password` | Change password; signs out every *other* device. |
+| `GET`/`DELETE` `/v1/auth/sessions[/:id]` | See and revoke where you are signed in. |
+| `GET`/`POST`/`DELETE` `/v1/auth/tokens[/:id]` | Scoped API tokens for MCP and scripts. |
+| `GET  /v1/auth/events` | 90 days of account activity. |
+| `POST /v1/account/claim` | Move pre-account recordings into the signed-in account. |
+| `DELETE /v1/account` | Delete the account, its sessions and its tokens. |
+
+Browsers authenticate with the `sr_session` cookie — HttpOnly, SameSite=Strict, Secure —
+and every cookie-authenticated state change is additionally checked against the request's
+`Origin`. Non-browser clients send `Authorization: Bearer srp_…`. A `read` token may call
+every `GET` and `POST /mcp` (JSON-RPC, all of whose tools are reads) and nothing else.
 
 ### Check the deploy landed
 

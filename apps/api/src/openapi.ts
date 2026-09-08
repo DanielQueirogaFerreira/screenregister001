@@ -21,29 +21,17 @@ export const OPENAPI = (origin: string) => ({
   security: [{ bearerAuth: [] }],
   components: {
     securitySchemes: {
-      bearerAuth: { type: 'http', scheme: 'bearer', description: 'Device token from POST /v1/devices' },
+      bearerAuth: {
+        type: 'http',
+        scheme: 'bearer',
+        description:
+          'A ScreenRegister API token (srp_…), created under Settings > Account & security. ' +
+          'Use a read-scoped token: it can read this history but cannot record, delete, or ' +
+          'create further tokens.',
+      },
     },
   },
   paths: {
-    '/v1/devices': {
-      post: {
-        summary: 'Register a device and obtain a token',
-        security: [],
-        requestBody: {
-          required: true,
-          content: {
-            'application/json': {
-              schema: {
-                type: 'object',
-                required: ['user_id', 'device_id'],
-                properties: { user_id: { type: 'string' }, device_id: { type: 'string' } },
-              },
-            },
-          },
-        },
-        responses: { 200: { description: 'A bearer token' } },
-      },
-    },
     '/v1/sessions': {
       get: { summary: "The caller's recording sessions, newest first", responses: { 200: { description: 'Sessions' } } },
     },

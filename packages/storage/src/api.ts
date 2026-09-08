@@ -7,7 +7,13 @@ export interface ApiConfig {
    * nothing for a user to configure. Tests pass an absolute base.
    */
   baseUrl?: string;
+  /** Bearer token for non-browser clients (MCP, scripts). Null in the browser. */
   token: string | null;
+  /**
+   * Set to 'same-origin' in the browser so the HttpOnly session cookie rides along.
+   * Omitted elsewhere, where there is no cookie jar and a bearer token is used instead.
+   */
+  credentials?: RequestCredentials;
 }
 
 export class ApiError extends Error {
@@ -28,6 +34,7 @@ export interface HealthReport {
   schema: 'ready' | 'missing' | 'error';
   retention_days: number;
   auth_configured: boolean;
+  email_configured: boolean;
   cors_localhost: boolean;
   hint?: string;
   auth_hint?: string;
@@ -58,7 +65,11 @@ export class ApiClient {
     const headers = new Headers(init.headers);
     if (this.config.token) headers.set('Authorization', `Bearer ${this.config.token}`);
 
-    const res = await fetch(this.url(path), { ...init, headers });
+    const res = await fetch(this.url(path), {
+      ...init,
+      credentials: this.config.credentials,
+      headers,
+    });
     if (!res.ok) {
       throw new ApiError(
         res.status,
@@ -69,22 +80,9 @@ export class ApiClient {
   }
 
   async health(): Promise<HealthReport> {
-    const res = await fetch(this.url('/v1/health'));
+    const res = await fetch(this.url('/v1/health'), { credentials: this.config.credentials });
     if (!res.ok) throw new ApiError(res.status, `health check failed: ${res.status}`);
     return (await res.json()) as HealthReport;
-  }
-
-  /** Exchange locally-generated ids for a signed token that makes them unforgeable. */
-  async registerDevice(userId: string, deviceId: string): Promise<string> {
-    const res = await fetch(this.url('/v1/devices'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: userId, device_id: deviceId }),
-    });
-    if (!res.ok) throw new ApiError(res.status, `device registration failed: ${res.status}`);
-    const { token } = (await res.json()) as { token: string };
-    this.config.token = token;
-    return token;
   }
 
   putSession(s: SessionRecord): Promise<{ ok: boolean }> {

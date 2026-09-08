@@ -15,10 +15,10 @@ frame images in R2, the session timeline and metadata in D1.
 The rule that shapes everything: **do not store what did not change.** A screen that sat
 still for an hour is one frame, and both the player and the API skip straight over it.
 
-> **Status: Phase 3.** Capture and change detection run in the browser; every frame that
+> **Status: Phase 4.** Capture and change detection run in the browser; every frame that
 > survives is uploaded to a Cloudflare Worker backed by R2 and D1, which also serves the
-> UI and the read API; and an LLM can read that history over **MCP** or plain REST. Next
-> up is accounts (see [Roadmap](#roadmap)).
+> UI and the read API; access is behind email-and-password accounts; and an LLM can read
+> that history over **MCP** or plain REST with a scoped, revocable token.
 
 ---
 
@@ -44,15 +44,17 @@ pnpm test                                   # unit tests
 npx vite-node packages/core/src/bench.ts    # threshold tuning bench
 ```
 
-To let an assistant read your screen history, deploy the Worker and point a client at it:
+To let an assistant read your screen history, create a **read-only** API token under
+**Settings → Account & security → API tokens**, then:
 
 ```bash
 claude mcp add --transport http screenregister https://<your-worker>/mcp \
-  --header "Authorization: Bearer <device token>"
+  --header "Authorization: Bearer srp_<your token>"
 ```
 
-Then ask *"what was I working on yesterday afternoon?"* — see
-[`apps/api/README.md`](apps/api/README.md) for the tools and the token.
+Then ask *"what was I working on yesterday afternoon?"* A read token can see your history
+but cannot record, delete or mint another token, so handing one to an assistant grants
+exactly the access you meant — and revoking it later does not sign you out.
 
 ```bash
 pnpm migrate:api     # apply D1 migrations to the remote database
@@ -187,7 +189,7 @@ ocr_text, caption, enrich_status    <- reserved for Phase 5, unused today
 | **1 — done** | Browser capture, change detection, preroll buffer, WebP encoding, playback |
 | **2 — done** | Cloudflare Worker API over R2 (blobs) and D1 (catalogue), signed device tokens, server-side retention sweep — and R2/D1 became the only store |
 | **3 — done** | MCP server over Streamable HTTP (`list_sessions`, `get_scene_summary`, `search_timeline`, `get_frame`, `get_frames`) plus mirrored REST + OpenAPI for clients without MCP |
-| **4** | Accounts — email magic link, multi-device |
+| **4 — done** | Accounts — email and password, HttpOnly sessions, scoped API tokens, rate limiting, lockout, audit log |
 | **5** | Enrichment — OCR, captions, embeddings; turns "download 400 screenshots" into "search text, fetch 3 images" |
 | **6** | Native iOS/Android capture posting to the same ingest contract |
 
@@ -204,6 +206,27 @@ nothing to serve; on S3 the same access pattern would be dominated by egress. Pr
 
 ---
 
+## Security
+
+Screen recordings are the most sensitive data a machine holds, so the access layer is
+deliberately more than a login form.
+
+| | |
+|---|---|
+| **Passwords** | PBKDF2-HMAC-SHA256, 600,000 iterations (OWASP's floor), random 16-byte salt per password, constant-time comparison. The work factor is stored *with* the digest, so it can be raised later and old passwords rehash transparently on next login. Argon2id would be better and is not available in the Workers runtime; that tradeoff is documented in `password.ts` rather than hidden. |
+| **Policy** | 12 characters minimum, common passwords and email-derived passwords rejected, length capped so the KDF cannot be used as a denial-of-service lever. No composition rules — they push people toward `Passw0rd!`. |
+| **Sessions** | Random 256-bit token in an **HttpOnly, SameSite=Strict, Secure** cookie. Script cannot read it, so an XSS bug cannot steal a login the way it could read a token from `localStorage`. Only the SHA-256 hash is stored, so a database dump yields nothing replayable. |
+| **CSRF** | `SameSite=Strict` plus a server-side Origin check on every cookie-authenticated state change. A missing `Origin` fails closed. |
+| **API tokens** | Separate credential for MCP clients and scripts, with a `read` or `write` scope, optional expiry, and revocation that is independent of your browser sessions. A token cannot mint another token. Shown once; stored hashed. |
+| **Rate limiting** | Per-IP *and* per-address windows on login, signup and reset — either alone leaves an obvious hole. Counters live in D1 because Workers are stateless and a per-isolate counter would limit nothing. |
+| **Lockout** | Eight failed attempts locks an account for fifteen minutes. |
+| **Enumeration** | Signup, login and password reset return identical responses whether or not the address exists, and login spends the KDF time even when it does not, so timing does not leak the user table either. |
+| **Audit** | Every sign-in, failure, token and password change is recorded with IP and user agent, visible under Settings, kept 90 days. |
+| **Isolation** | Every query filters on the session's own `user_id`, and the server stamps ownership from the session rather than trusting anything the client sends. There is no code path that reads another account's rows. |
+
+Two limits stated plainly: there is **no MFA yet**, and hashing at this work factor needs
+the **Workers Paid** plan — the free plan's 10 ms CPU ceiling cannot run a real KDF.
+
 ## Privacy
 
 Screen frames are the most sensitive data a machine holds — passwords in plaintext,
@@ -213,12 +236,13 @@ you share, because this is a service that uploads.
 - **Capture starts only after you explicitly pick a screen or window** in the browser's own
   share dialog, and every frame that survives change detection is uploaded to Cloudflare.
   The UI says so on the Record tab rather than burying it in a settings page.
-- Frames are readable only with the device token that wrote them. No cross-user access path
-  exists in the schema; every query filters on the token's `user_id`.
+- Frames are readable only by the account that recorded them, and only over an
+  authenticated session or a token you issued. No cross-account path exists in the schema.
 - Retention is a hard ceiling enforced **server-side** by a nightly sweep that deletes the
   D1 row and the R2 object in the same pass, so the catalogue and the images cannot drift
   apart. There is no client setting that can extend it.
-- **Erase everything** deletes every session, row and object in one server-side operation.
+- **Erase everything** deletes every session, row and object in one server-side operation,
+  and deleting your account erases the recordings with it.
 - Always-visible recording indicator; **Pause** stops capture without ending the session.
 - **Known limitation:** the browser gives us pixels but not window titles, so a reliable
   app/site denylist is not possible until frame text extraction lands in Phase 5.
@@ -237,8 +261,17 @@ you share, because this is a service that uploads.
   when the server rejects an upload outright, capture **pauses** and says so. It does not
   keep sampling into browser storage, because that would imply a durable local copy that
   does not exist. Resuming is one click once the connection is back.
-- Device tokens are unforgeable but not revocable, and a token is as good as the device
-  holding it. Accounts (Phase 4) replace this.
+- **No second factor.** A password is the only thing between an attacker and seven days of
+  your screen. TOTP is the obvious next addition; the schema and audit log are already
+  shaped for it.
+- **Accounts need the Workers Paid plan.** Password hashing at 600,000 PBKDF2 iterations
+  costs roughly 100 ms of CPU, and the free plan allows 10 ms per request. Lowering the
+  work factor to fit would make the password database materially cheaper to crack, so the
+  requirement is documented instead.
+- **Email is optional and therefore so is recovery.** With no mail provider configured,
+  signup and reset still work but the link is returned in the response rather than sent,
+  which is fine for a single operator and not fine for real users. Set `RESEND_API_KEY`
+  and `MAIL_FROM` before anyone else signs up.
 - The MCP server authenticates with a bearer token, not OAuth, so any client that can set
   an `Authorization` header works — but claude.ai's one-click custom connector, which
-  expects an OAuth authorization server, does not. That belongs with accounts.
+  expects an OAuth authorization server, does not.
