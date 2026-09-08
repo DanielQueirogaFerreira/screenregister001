@@ -137,11 +137,34 @@ async function probeKdf(): Promise<ProbeResult> {
       detail: `password hashing failed at ${TOTAL_ITERATIONS} iterations: ${message(error)}`,
     };
   }
+  if (ms > SLOW_MS) {
+    return {
+      service: 'kdf',
+      status: 'degraded',
+      latencyMs: ms,
+      detail: `slow: ${ms}ms for ${TOTAL_ITERATIONS} iterations`,
+    };
+  }
   return {
     service: 'kdf',
-    status: ms > SLOW_MS ? 'degraded' : 'up',
-    latencyMs: ms,
-    detail: ms > SLOW_MS ? `slow: ${ms}ms for ${TOTAL_ITERATIONS} iterations` : null,
+    status: 'up',
+    /**
+     * Zero here means "not measured", not "instant".
+     *
+     * With the timing bug fixed, D1 and R2 report real numbers — 140ms and 820ms in the
+     * first production pass. This one still reads exactly 0, and that is the platform:
+     * Workers advances Date.now() only when the runtime performs I/O, as a timing-attack
+     * mitigation, and key derivation is pure computation. There is no clock inside a
+     * Worker that can see it.
+     *
+     * Reporting 0 would render as "<1 ms" for six chained 100,000-iteration rounds, which
+     * is the opposite of true. A null renders as an em dash and says nothing it cannot
+     * support.
+     */
+    latencyMs: ms > 0 ? ms : null,
+    detail: ms > 0 ? null
+      : `completed ${TOTAL_ITERATIONS} iterations; duration is not measurable from inside ` +
+        'a Worker, whose clock only advances on I/O',
   };
 }
 
