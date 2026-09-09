@@ -35,23 +35,31 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           KEY: ${{ inputs.key }}
         run: |
+          # The heredoc lives here, at the base indentation of this block, and not inside
+          # the `if` below. YAML strips the common indentation from a block scalar, so a
+          # terminator indented deeper than its neighbours still carries leading spaces
+          # when bash sees it — and bash then reads to end of file looking for it.
+          cat > /tmp/pick.py <<'PY'
+          import json
+          d = json.load(open('/tmp/newest.json'))
+          rows = d[0]['results'] if isinstance(d, list) else d['result'][0]['results']
+          if not rows:
+              raise SystemExit('no frames are stored')
+          r = rows[0]
+          print(f"newest frame: captured {r['captured_at']}  "
+                f"{r['width']}x{r['height']}  {r['bytes']} bytes")
+          open('/tmp/key.txt', 'w').write(r['storage_key'])
+          PY
+
           if [ -n "$KEY" ]; then
             echo "$KEY" > /tmp/key.txt
           else
             npx --yes wrangler@4 d1 execute screenregister001 --remote --json --command \
               "SELECT storage_key, captured_at, width, height, bytes FROM frames
                  ORDER BY captured_at DESC LIMIT 1" > /tmp/newest.json
-            python3 - <<'PY'
-            import json
-            d = json.load(open('/tmp/newest.json'))
-            rows = d[0]['results'] if isinstance(d, list) else d['result'][0]['results']
-            if not rows:
-                raise SystemExit('no frames stored')
-            r = rows[0]
-            print(f"newest frame: captured {r['captured_at']}  {r['width']}x{r['height']}  {r['bytes']} bytes")
-            open('/tmp/key.txt', 'w').write(r['storage_key'])
-            PY
+            python3 /tmp/pick.py
           fi
+
           echo "key: $(cat /tmp/key.txt)"
           npx --yes wrangler@4 r2 object get "screenregister-frames/$(cat /tmp/key.txt)" \
             --remote --file /tmp/frame.webp
