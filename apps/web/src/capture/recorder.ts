@@ -1,5 +1,6 @@
 import {
-  fingerprint, ulid, type CaptureSettings, type FrameRecord, type SessionRecord,
+  fingerprint, timeZoneName, ulid,
+  type CaptureSettings, type FrameRecord, type SessionRecord,
 } from '@sr/schema';
 import type { ProcessorStats, ActivityPoint } from '@sr/core';
 import { sha256Hex, type FrameStore } from '@sr/storage';
@@ -143,6 +144,12 @@ export class Recorder {
       frames_skipped: 0,
       bytes_stored: 0,
       label: null,
+      // Recorded so the register can be checked afterwards rather than inferred. The zone
+      // name survives questions an offset cannot answer — whether a machine's clock is set
+      // to the region its owner thinks it is, and whether two recordings that both say
+      // UTC-4 came from the same place.
+      tz_name: timeZoneName(),
+      tz_offset_minutes: new Date().getTimezoneOffset(),
     };
     await this.store.createSession(this.session);
 

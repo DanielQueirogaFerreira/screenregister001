@@ -1,10 +1,10 @@
-import { useMemo, useState, useSyncExternalStore } from 'react';
+import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import type { CaptureSettings } from '@sr/schema';
 import { withSensitivity } from '@sr/schema';
 import type { CloudStore, UploadStatus } from '@sr/storage';
 import type { CaptureSessions, LiveSession, RemoteSession } from '../capture/sessions.js';
 import { detectSupport } from '../capture/recorder.js';
-import { bytes, clock, duration } from '../lib/format.js';
+import { bytes, clock, duration, timeZoneName, utcOffset } from '../lib/format.js';
 
 interface Props {
   store: CloudStore;
@@ -160,6 +160,28 @@ export function RecordView({
 }: Props) {
   const support = useMemo(detectSupport, []);
   const [error, setError] = useState<string | null>(null);
+
+  /**
+   * Ticks, because a frozen clock would be worse than no clock at all: the whole purpose
+   * of showing this is that someone can compare it against the wall, and a time that
+   * stopped when the tab loaded would send them chasing a mismatch that is not there.
+   *
+   * Once a second, and only while this view is mounted.
+   */
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const t = window.setInterval(() => setNow(new Date()), 1000);
+    return () => window.clearInterval(t);
+  }, []);
+  const clockNow = {
+    // Local wall clock, rendered from the parts the machine reports rather than by
+    // shifting UTC — this is what the operating system believes the time to be.
+    local: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+      + `-${String(now.getDate()).padStart(2, '0')} ${now.toTimeString().slice(0, 8)}`,
+    offset: utcOffset(now),
+    utc: now.toISOString(),
+    zone: timeZoneName(),
+  };
   const live = useSyncExternalStore(sessions.subscribe, sessions.getSnapshot);
   const remote = useSyncExternalStore(sessions.subscribe, sessions.getRemotes);
 
@@ -243,6 +265,46 @@ export function RecordView({
       </div>
 
       <div className="panel" style={{ alignSelf: 'start' }}>
+        {/*
+          The clock every frame will be stamped with, shown before anything is recorded.
+          A stamp reading "06:26:34.762Z UTC-4" is correct and still hard to check against
+          your own wall clock in your head — someone read exactly that against a clock
+          saying 02:29, concluded the offset was wrong, and reported a bug against a
+          correct timestamp. So the machine states its clock up front, in both forms, where
+          a mismatch is obvious before a recording rather than after it.
+        */}
+        <div className="field">
+          <label>This machine's clock</label>
+          <div className="health-list">
+            <div className="health-row">
+              <span className="health-mark" aria-hidden="true" />
+              <span className="health-label">Local now</span>
+              <span className="health-value" style={{ fontFamily: 'ui-monospace, monospace' }}>
+                {clockNow.local} {clockNow.offset}
+              </span>
+            </div>
+            <div className="health-row">
+              <span className="health-mark" aria-hidden="true" />
+              <span className="health-label">Same moment in UTC</span>
+              <span className="health-value" style={{ fontFamily: 'ui-monospace, monospace' }}>
+                {clockNow.utc}
+              </span>
+            </div>
+            <div className="health-row">
+              <span className="health-mark" aria-hidden="true" />
+              <span className="health-label">Time zone</span>
+              <span className="health-value" style={{ fontFamily: 'ui-monospace, monospace' }}>
+                {clockNow.zone ?? 'not reported by this browser'}
+              </span>
+            </div>
+          </div>
+          <div className="hint">
+            Every frame is stamped with both of these. If the local time here does not match
+            the clock on your wall, this machine's time zone is set wrong — the recording
+            will be labelled with whatever it says here.
+          </div>
+        </div>
+
         <div className="field">
           <label>
             Capture rate <b>{settings.captureFps} FPS</b>

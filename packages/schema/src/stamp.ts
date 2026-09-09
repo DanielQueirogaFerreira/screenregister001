@@ -215,19 +215,6 @@ export const utcOffset = (at: Date = new Date()): string =>
   formatUtcOffset(at.getTimezoneOffset());
 
 /**
- * The second line burned into a stored frame: the exact instant, in UTC, to the
- * millisecond, followed by the offset the recording device was on.
- *
- * Both halves are needed and neither substitutes for the other. UTC alone is unambiguous
- * but says nothing about whether this was the middle of someone's working day or three in
- * the morning. A local time alone is readable but meaningless once the image has left the
- * machine that made it. Together they are a complete statement that survives export.
- */
-export function stampTimeLine(capturedMs: number, minutesBehindUtc: number): string {
-  return `${new Date(capturedMs).toISOString()} ${formatUtcOffset(minutesBehindUtc)}`;
-}
-
-/**
  * The wall-clock time a frame was captured, as the clock on that machine read it.
  *
  * `getTimezoneOffset` counts minutes *behind* UTC, so local = UTC − offset: a machine on
@@ -242,4 +229,55 @@ export function stampTimeLine(capturedMs: number, minutesBehindUtc: number): str
 export function localWallClock(capturedIso: string, minutesBehindUtc: number): string {
   const local = Date.parse(capturedIso) - minutesBehindUtc * 60_000;
   return new Date(local).toISOString().replace('T', ' ').replace('Z', '');
+}
+
+/**
+ * The time lines burned into a stored frame: local wall clock first, absolute instant
+ * second.
+ *
+ * The order is the whole point, and the first version had it wrong. It printed only
+ * `2026-09-09T06:26:34.762Z UTC-4`, which is complete and correct and still left the
+ * person looking at it to subtract four hours in their head to find out what time it
+ * actually was — and the first thing that happened is that someone read 06:26 against a
+ * clock saying 02:29, concluded the offset was wrong, and reported a bug against a
+ * correct timestamp. A provenance mark that needs arithmetic before it can be checked is
+ * not doing its job.
+ *
+ * So the readable form leads: `2026-09-09 02:26:34.762 UTC-4` is what a human compares
+ * against their own clock and their own memory of the afternoon. The Z line stays
+ * underneath because it is the durable half — the one that still means something after
+ * the image has been exported, pasted into a document, and read on a machine in another
+ * country — and because two frames from two timezones can only be ordered by it.
+ *
+ * Neither substitutes for the other, which is why both are drawn rather than one.
+ */
+export function stampTimeLines(
+  capturedMs: number, minutesBehindUtc: number,
+): [local: string, utc: string] {
+  const iso = new Date(capturedMs).toISOString();
+  return [
+    `${localWallClock(iso, minutesBehindUtc)} ${formatUtcOffset(minutesBehindUtc)}`,
+    iso,
+  ];
+}
+
+
+/**
+ * The IANA zone this machine is set to — "America/New_York", "Europe/Lisbon" — or null if
+ * the runtime will not say.
+ *
+ * Stored beside the offset because the two answer different questions. An offset renders a
+ * local time and nothing more; the name is what tells you whether a machine's clock is
+ * configured for the region its owner thinks it is, and whether two recordings that both
+ * read UTC-4 came from the same place or from Eastern in summer and Atlantic in winter.
+ *
+ * Wrapped because Intl is not guaranteed: a locked-down runtime can throw, and failing to
+ * report a zone must not fail a recording.
+ */
+export function timeZoneName(): string | null {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || null;
+  } catch {
+    return null;
+  }
 }

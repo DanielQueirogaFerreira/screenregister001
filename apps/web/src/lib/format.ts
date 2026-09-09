@@ -37,16 +37,7 @@ export function duration(ms: number): string {
  * image, and are re-exported here so callers keep one import. Two copies of a sign
  * inversion is exactly the kind of thing that drifts and is wrong by twice the offset.
  */
-export { formatUtcOffset, utcOffset } from '@sr/schema';
-
-/** The IANA zone this browser is set to, when it will say — for the badge's tooltip. */
-export function timeZoneName(): string | null {
-  try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone || null;
-  } catch {
-    return null;
-  }
-}
+export { formatUtcOffset, timeZoneName, utcOffset } from '@sr/schema';
 
 export const clock = (iso: string): string =>
   new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });

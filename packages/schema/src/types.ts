@@ -80,6 +80,16 @@ export interface SessionRecord {
   frames_skipped: number;
   bytes_stored: number;
   label: string | null;
+  /**
+   * The IANA zone the recording machine was keeping, e.g. "America/New_York". Null when
+   * the browser declines to report one, and on sessions recorded before it was stored.
+   *
+   * An offset alone cannot answer "is this machine's clock configured correctly": UTC-4 is
+   * Eastern in summer and Atlantic all year. The name can.
+   */
+  tz_name: string | null;
+  /** The offset in force when the recording started, as getTimezoneOffset reports it. */
+  tz_offset_minutes: number | null;
 }
 
 /** A contiguous run of low-change frames — what an LLM should see instead of 400 near-identical stills. */

@@ -737,8 +737,9 @@ app.put('/v1/sessions/:id', async (c) => {
   const s = await c.req.json<Record<string, unknown>>();
   await c.env.DB.prepare(
     `INSERT INTO sessions (session_id, user_id, device_id, started_at, ended_at, capture_fps,
-       sensitivity, screen_w, screen_h, frames_stored, frames_skipped, bytes_stored, label)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+       sensitivity, screen_w, screen_h, frames_stored, frames_skipped, bytes_stored, label,
+       tz_name, tz_offset_minutes)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
      ON CONFLICT(session_id) DO UPDATE SET
        ended_at = excluded.ended_at, frames_stored = excluded.frames_stored,
        frames_skipped = excluded.frames_skipped, bytes_stored = excluded.bytes_stored,
@@ -748,6 +749,14 @@ app.put('/v1/sessions/:id', async (c) => {
     s.ended_at ?? null, Number(s.capture_fps ?? 0), Number(s.sensitivity ?? 0),
     Number(s.screen_w ?? 0), Number(s.screen_h ?? 0), Number(s.frames_stored ?? 0),
     Number(s.frames_skipped ?? 0), Number(s.bytes_stored ?? 0), s.label ?? null,
+    // Set once, on the row's first write, and deliberately absent from the DO UPDATE list:
+    // this describes the machine that started the recording, and the heartbeat that keeps
+    // frames_stored current has no business rewriting it. Null when the browser would not
+    // say, which is a real answer and not a reason to guess.
+    s.tz_name === null || s.tz_name === undefined ? null : String(s.tz_name).slice(0, 64),
+    s.tz_offset_minutes === null || s.tz_offset_minutes === undefined
+      ? null
+      : Number(s.tz_offset_minutes),
   ).run();
   return c.json({ ok: true });
 });

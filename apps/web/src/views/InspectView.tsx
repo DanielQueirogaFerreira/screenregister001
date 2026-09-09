@@ -27,6 +27,7 @@ interface ResolvedFrame {
   session: {
     session_id: string; device_id: string; started_at: string; ended_at: string | null;
     screen_w: number; screen_h: number; label: string | null;
+    tz_name: string | null; tz_offset_minutes: number | null;
   } | null;
 }
 
@@ -339,6 +340,20 @@ export function InspectView({ store, accountId, initialStamp, onConsumed }: Insp
                   <Row label="Session" value={result.session.session_id} mono />
                   <Row label="Session started" value={`${day(result.session.started_at)} ${clock(result.session.started_at)}`} />
                   <Row label="Screen" value={`${result.session.screen_w}×${result.session.screen_h}`} />
+                  {/*
+                    The zone the recording machine was keeping. The per-frame offset above
+                    already renders a local time; this answers the question an offset
+                    cannot — whether that machine's clock is set to the region its owner
+                    thinks it is. UTC-4 is Eastern in summer and Atlantic all year.
+                  */}
+                  <Row
+                    label="Recorded on a clock set to"
+                    value={result.session.tz_name
+                      ?? (result.session.tz_offset_minutes === null
+                        ? 'not recorded'
+                        : `${formatUtcOffset(result.session.tz_offset_minutes)} (zone name not reported)`)}
+                    mono
+                  />
                 </>
               )}
             </div>
