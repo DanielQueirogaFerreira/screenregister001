@@ -24,6 +24,7 @@ const frame = (id: string, bytes = 1000): FrameRecord => ({
   bytes,
   format: 'image/webp',
   sha256: 'x',
+  tz_offset_minutes: 240,   // UTC-4, as getTimezoneOffset reports it
   ocr_text: null,
   caption: null,
   enrich_status: 'pending',

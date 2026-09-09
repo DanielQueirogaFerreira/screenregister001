@@ -10,6 +10,7 @@ const frame = (id: string): FrameRecord => ({
   hold_ms: null, change_score: 0.1, changed_tiles: [], reason: 'scene_change',
   width: 1920, height: 1080, bytes: 100, format: 'image/webp', sha256: 'x',
   stamp: `SR1-${id}-AAAABBBB`, redacted: false, redacted_regions: [], has_original: true,
+  tz_offset_minutes: 240,   // UTC-4, as getTimezoneOffset reports it
   ocr_text: null, caption: null, enrich_status: 'pending',
 });
 
