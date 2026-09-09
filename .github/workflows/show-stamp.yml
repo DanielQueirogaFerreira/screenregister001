@@ -54,16 +54,32 @@ jobs:
           if [ -n "$KEY" ]; then
             echo "$KEY" > /tmp/key.txt
           else
+            # Not the very newest. The row is written when the upload lands, but asking
+            # for the frame captured a moment ago while a recording is running invites a
+            # race with whatever is still settling, and the failure mode is a file that is
+            # not a WebP at all. A frame a minute old is just as good a witness.
             npx --yes wrangler@4 d1 execute screenregister001 --remote --json --command \
               "SELECT storage_key, captured_at, width, height, bytes FROM frames
-                 ORDER BY captured_at DESC LIMIT 1" > /tmp/newest.json
+                WHERE captured_at < strftime('%Y-%m-%dT%H:%M:%SZ','now','-60 seconds')
+                ORDER BY captured_at DESC LIMIT 1" > /tmp/newest.json
             python3 /tmp/pick.py
           fi
 
           echo "key: $(cat /tmp/key.txt)"
+          rm -f /tmp/frame.webp
           npx --yes wrangler@4 r2 object get "screenregister-frames/$(cat /tmp/key.txt)" \
             --remote --file /tmp/frame.webp
           ls -l /tmp/frame.webp
+
+          # Check it is actually a WebP before handing it to an image library. A previous
+          # run died with "unsupported image format" and the log said nothing about what
+          # had landed on disk instead, which turned a one-line problem into a guess.
+          head -c 16 /tmp/frame.webp | od -c | head -2
+          if ! head -c 12 /tmp/frame.webp | grep -q 'WEBP'; then
+            echo "::error::downloaded file is not a WebP — first bytes above"
+            exit 1
+          fi
+          echo "confirmed: RIFF/WEBP container, $(stat -c%s /tmp/frame.webp) bytes"
 
       - name: Crop the stamp corner and print it
         # Not in apps/api: that is a pnpm workspace package, and npm installing into it
