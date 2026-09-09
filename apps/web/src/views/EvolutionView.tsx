@@ -4,6 +4,9 @@ import {
   siblingGroups, stepLayout, type EvoLog, type EvoNode, type Layout,
 } from '@sr/core';
 import { VersionBadge } from './VersionBadge.js';
+import {
+  ACTION_COLOUR, ACTION_LABEL, FILE_KINDS, fileColour,
+} from '../lib/evolution-palette.js';
 
 /**
  * The codebase, animated the way Gource animates one: a tree that springs itself apart,
@@ -25,23 +28,6 @@ const DECAY_MS = 14_000;
 const SWEEP_MS = 75_000;
 
 const AUTHOR_COLOURS = ['#4da3ff', '#35c98b', '#f0b23c', '#c98bf0', '#f0645c', '#3ccfd0'];
-
-const ACTION_COLOUR: Record<string, string> = {
-  A: '#35c98b',   // added
-  M: '#4da3ff',   // modified
-  D: '#f0645c',   // deleted
-};
-
-/** Extension families, so a glance says "this was all frontend" without reading labels. */
-function fileColour(name: string): string {
-  if (/\.(tsx|jsx)$/.test(name)) return '#7cc4ff';
-  if (/\.(ts|mjs|js)$/.test(name)) return '#5b8fc9';
-  if (/\.(css|html)$/.test(name)) return '#c98bf0';
-  if (/\.(md|txt)$/.test(name)) return '#8a99ad';
-  if (/\.(yml|yaml|toml|json)$/.test(name)) return '#f0b23c';
-  if (/\.sql$/.test(name)) return '#35c98b';
-  return '#6c7c90';
-}
 
 const timeOf = (s: number) => new Date(s * 1000);
 
@@ -258,11 +244,28 @@ function Evolution({ log }: { log: EvoLog }) {
           )}
         </div>
 
+        {/*
+          Two rows, because a dot's colour means two different things depending on whether a
+          commit is touching it, and the previous single row explained only one of them.
+        */}
         <div className="evo-key">
-          <span><i style={{ background: ACTION_COLOUR.A }} /> added</span>
-          <span><i style={{ background: ACTION_COLOUR.M }} /> modified</span>
-          <span><i style={{ background: ACTION_COLOUR.D }} /> deleted</span>
-          <span><i style={{ background: '#6c7c90' }} /> untouched right now</span>
+          <b>The ring — what just happened</b>
+          {(['A', 'M', 'D'] as const).map((a) => (
+            <span key={a}><i className="ring" style={{ borderColor: ACTION_COLOUR[a] }} /> {ACTION_LABEL[a]}</span>
+          ))}
+          <span className="evo-key-note">expands and fades over a few seconds</span>
+        </div>
+        <div className="evo-key">
+          <b>The dot — what the file is</b>
+          {FILE_KINDS.map((k) => (
+            <span key={k.id} title={k.hint}>
+              <i style={{ background: k.colour }} /> {k.label}
+            </span>
+          ))}
+          <span className="evo-key-note">
+            always, brightening when touched; a deleted file shows faded, and only while its
+            own commit is on screen
+          </span>
         </div>
       </div>
 
@@ -401,8 +404,12 @@ function render(
     const warmth = h?.heat ?? 0;
     const r = 2.6 + warmth * 5.5;
     ctx.globalAlpha = exists ? 1 : 0.35 + warmth * 0.65;
+    // Toward white, never toward the action colour. A warm dot gets bigger and brighter
+    // but keeps its hue, so hue answers exactly one question — what kind of file is this —
+    // and the ring below answers the other. Mixing the action colour in here meant a blue
+    // dot could be "a source file" or "just modified", ΔE 7.0 apart and indistinguishable.
     ctx.fillStyle = warmth > 0
-      ? mix(fileColour(n.name), ACTION_COLOUR[h!.action] ?? '#4da3ff', warmth)
+      ? mix(fileColour(n.name), '#ffffff', warmth * 0.42)
       : fileColour(n.name);
     ctx.beginPath();
     ctx.arc(x, y, r, 0, Math.PI * 2);
@@ -410,10 +417,11 @@ function render(
 
     if (warmth > 0) {
       // The ring expands and fades as the heat decays, so the eye is drawn to what just
-      // changed rather than having to compare brightnesses.
-      ctx.globalAlpha = warmth * 0.55;
+      // changed rather than having to compare brightnesses. It is also the only place the
+      // action colour appears, which is what lets the dot keep meaning one thing.
+      ctx.globalAlpha = warmth * 0.75;
       ctx.strokeStyle = ACTION_COLOUR[h!.action] ?? '#4da3ff';
-      ctx.lineWidth = 1.5;
+      ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.arc(x, y, r + (1 - warmth) * 22, 0, Math.PI * 2);
       ctx.stroke();

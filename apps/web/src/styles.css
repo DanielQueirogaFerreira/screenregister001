@@ -457,8 +457,17 @@ tbody tr:has(input[type="checkbox"]:checked) { background: var(--panel-2); }
   /* One line, always. A long subject must not resize the panel under the animation. */
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.evo-key { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 10px;
-  color: var(--dim); font-size: 12px; }
+.evo-key { display: flex; gap: 6px 14px; flex-wrap: wrap; align-items: baseline;
+  margin-top: 10px; color: var(--dim); font-size: 12px; }
+/* The row heading. Its own colour so the eye can find where one group ends: two rows of
+   identical swatches with no headings read as one list of seven unrelated things. */
+.evo-key b { color: var(--fg); font-weight: 600; font-size: 11px;
+  text-transform: uppercase; letter-spacing: .4px; flex: 0 0 100%; }
+@media (min-width: 721px) { .evo-key b { flex: 0 0 auto; min-width: 156px; } }
+.evo-key-note { font-style: italic; opacity: .75; }
+/* A ring, not a disc — the legend swatch has to be the shape the canvas draws, or it is
+   explaining something the reader cannot find. */
+.evo-key i.ring { background: none !important; border: 2px solid; box-sizing: border-box; }
 .evo-key i, .evo-author i {
   display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px;
 }
