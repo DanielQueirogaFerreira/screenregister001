@@ -1,0 +1,84 @@
+name: Show the stamp on a stored frame
+
+# Reads the stamp off a real frame, out of R2, as pixels.
+#
+# The stamp is drawn by the browser at capture time, so what is deployed and what is
+# actually burned into a frame can disagree — a tab opened before a deploy keeps drawing
+# the old one until it reloads. Nothing in the database can settle that: the row stores the
+# SR1 handle, but the time lines exist only in the image. So this fetches the image.
+#
+# Read-only. It downloads one object, crops the bottom-left corner, and prints it as
+# base64 so it can be looked at without leaving a file anywhere.
+
+on:
+  workflow_dispatch:
+    inputs:
+      key:
+        description: 'R2 key of a frame. Leave empty for the most recently captured one.'
+        required: false
+        type: string
+
+jobs:
+  show:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Find the frame
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          KEY: ${{ inputs.key }}
+        run: |
+          if [ -n "$KEY" ]; then
+            echo "$KEY" > /tmp/key.txt
+          else
+            npx --yes wrangler@4 d1 execute screenregister001 --remote --json --command \
+              "SELECT storage_key, captured_at, width, height, bytes FROM frames
+                 ORDER BY captured_at DESC LIMIT 1" > /tmp/newest.json
+            python3 - <<'PY'
+            import json
+            d = json.load(open('/tmp/newest.json'))
+            rows = d[0]['results'] if isinstance(d, list) else d['result'][0]['results']
+            if not rows:
+                raise SystemExit('no frames stored')
+            r = rows[0]
+            print(f"newest frame: captured {r['captured_at']}  {r['width']}x{r['height']}  {r['bytes']} bytes")
+            open('/tmp/key.txt', 'w').write(r['storage_key'])
+            PY
+          fi
+          echo "key: $(cat /tmp/key.txt)"
+          npx --yes wrangler@4 r2 object get "screenregister-frames/$(cat /tmp/key.txt)" \
+            --remote --file /tmp/frame.webp
+          ls -l /tmp/frame.webp
+
+      - name: Crop the stamp corner and print it
+        run: |
+          npm install --no-save sharp@0.34 >/dev/null 2>&1
+          node --input-type=module <<'JS'
+          import sharp from 'sharp';
+          const img = sharp('/tmp/frame.webp');
+          const { width, height } = await img.metadata();
+
+          // The stamp sits bottom-left. Take a generous strip so the crop does not depend
+          // on how many lines the build draws — the line count is itself the evidence for
+          // which build produced this frame.
+          const cropH = Math.min(height, 80);
+          const cropW = Math.min(width, 430);
+          const buf = await sharp('/tmp/frame.webp')
+            .extract({ left: 0, top: height - cropH, width: cropW, height: cropH })
+            .resize({ width: cropW * 2, kernel: 'nearest' })
+            .png({ compressionLevel: 9, palette: true })
+            .toBuffer();
+
+          console.log(`frame ${width}x${height}, stamp crop ${cropW}x${cropH}, png ${buf.length} bytes`);
+          console.log('---BEGIN STAMP PNG BASE64---');
+          const b64 = buf.toString('base64');
+          for (let i = 0; i < b64.length; i += 200) console.log(b64.slice(i, i + 200));
+          console.log('---END STAMP PNG BASE64---');
+          JS
