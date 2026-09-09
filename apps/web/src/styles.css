@@ -395,3 +395,28 @@ tbody tr:has(input[type="checkbox"]:checked) { background: var(--panel-2); }
 /* A removed account: kept so its recordings still have a name behind them. */
 .row-removed { opacity: .55; }
 .row-removed td:first-child { text-decoration: line-through; }
+
+/* --- Exclusion zones ------------------------------------------------------
+   A 16:9 stand-in for the screen. The aspect ratio is fixed rather than taken
+   from the snapshot: zones are fractions of the frame, so a box that matched
+   the snapshot's shape would imply a precision the stored value does not have. */
+.zones {
+  position: relative; aspect-ratio: 16 / 9; width: 100%;
+  background: var(--panel-2) center / 100% 100% no-repeat;
+  border: 1px solid var(--line); border-radius: var(--radius);
+  overflow: hidden; cursor: crosshair; touch-action: none; user-select: none;
+}
+.zones-empty {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  padding: 0 18%; text-align: center; color: var(--dim); font-size: 12px; pointer-events: none;
+}
+/* Solid black, because that is literally what the frame will contain. Showing a
+   translucent tint here would misrepresent the result. */
+.zone { position: absolute; background: #000; border: 1px solid var(--accent); }
+.zone.draft { background: rgba(0,0,0,.72); border-style: dashed; }
+.zone-x {
+  position: absolute; top: 2px; right: 2px; padding: 0; width: 20px; height: 20px;
+  line-height: 1; font-size: 14px; border-radius: 50%; background: rgba(0,0,0,.6);
+}
+.zone-list { display: grid; gap: 8px; margin-top: 10px; }
+.zone-list input[type="text"] { flex: 1 1 auto; min-width: 0; }

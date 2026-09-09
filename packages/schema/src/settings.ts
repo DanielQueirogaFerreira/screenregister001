@@ -7,6 +7,16 @@ export const TILE_COUNT = GRID_COLS * GRID_ROWS; // 144
 export const THUMB_W = 160;
 export const THUMB_H = 90;
 
+/** A never-captured rectangle, in fractions of the frame. See @sr/core zones.ts. */
+export interface Zone {
+  id: string;
+  label: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 export interface CaptureSettings {
   /** Frames sampled per second, 1..30. Start at 1; ramp toward 30. */
   captureFps: number;
@@ -90,6 +100,18 @@ export interface CaptureSettings {
    * showing bullets and not a secret typed in the clear.
    */
   privacyMask: 'off' | 'flag' | 'mask';
+  /**
+   * Areas of the screen that are never captured, as fractions of the frame.
+   *
+   * The only privacy control here that promises rather than estimates. The detectors scan
+   * for something and can miss it; a zone is painted over at ingest, before the diff runs
+   * and before anything is encoded, so nothing downstream can leak what was inside it.
+   * It costs one rectangle fill per sampled frame.
+   *
+   * The trade is that it is manual and static: it protects the corner where a password
+   * manager opens or the panel a terminal always occupies, not a window that moves.
+   */
+  excludedZones: Zone[];
 
   // --- Encoding ---
   maxWidth: number;
@@ -159,6 +181,7 @@ export const DEFAULT_SETTINGS: CaptureSettings = {
   burnInStamp: true,
   keepOriginal: false,
   privacyMask: 'mask',
+  excludedZones: [],
   maxWidth: 1920,
   quality: 0.5,
   thumbWidth: 320,

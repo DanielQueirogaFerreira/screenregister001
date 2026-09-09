@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 import {
-  TimelineProcessor, findMaskedFields, scaleRegions, stampLayout, toLuma, type Region,
+  TimelineProcessor, findMaskedFields, scaleRegions, stampLayout, toLuma, usableZones, zoneRect,
+  type Region, type Zone,
 } from '@sr/core';
 import {
   STAMP_VERSION, THUMB_W, THUMB_H, stampTimeLine, ulid, type CaptureSettings,
@@ -191,6 +192,51 @@ function paintMasks(ctx: OffscreenCanvasRenderingContext2D, regions: Region[]): 
 }
 
 /**
+ * The canvas the excluded zones are painted on.
+ *
+ * One canvas, resized when the capture resolution changes, rather than one per frame: this
+ * runs on every sampled frame, and allocating a full-resolution canvas 30 times a second
+ * would make the guarantee cost more than the thing it is guarding.
+ */
+const zoneCanvas = new OffscreenCanvas(1, 1);
+const zoneCtx = zoneCanvas.getContext('2d')!;
+
+/**
+ * Black out the excluded zones, and destroy the frame that still had them.
+ *
+ * This is the earliest point in the system that touches pixels, and it is deliberately
+ * ahead of everything: ahead of the luma thumbnail, so a change inside a zone cannot even
+ * trigger a store; ahead of the privacy scan; ahead of any encode. The bitmap handed in is
+ * closed here, so after this call the unpainted pixels do not exist anywhere in the
+ * process. There is no unredacted copy to delete later, and deletion is the step that
+ * fails.
+ *
+ * The cost is one full-resolution draw plus a fill per zone, per sampled frame, and only
+ * when at least one zone is configured — with none the original bitmap is passed straight
+ * through untouched.
+ */
+function applyZones(bitmap: ImageBitmap, zones: Zone[]): ImageBitmap {
+  if (zones.length === 0) return bitmap;
+  const rects = zones
+    .map((z) => zoneRect(z, bitmap.width, bitmap.height))
+    .filter((r) => r.w > 0 && r.h > 0);
+  if (rects.length === 0) return bitmap;
+
+  if (zoneCanvas.width !== bitmap.width || zoneCanvas.height !== bitmap.height) {
+    zoneCanvas.width = bitmap.width;
+    zoneCanvas.height = bitmap.height;
+  }
+  zoneCtx.drawImage(bitmap, 0, 0);
+  zoneCtx.fillStyle = '#000';
+  for (const r of rects) zoneCtx.fillRect(r.x, r.y, r.w, r.h);
+  // transferToImageBitmap hands over the pixels and leaves the canvas blank, so nothing is
+  // copied and no stale frame is left sitting in a canvas between samples.
+  const painted = zoneCanvas.transferToImageBitmap();
+  bitmap.close();
+  return painted;
+}
+
+/**
  * The stamp, drawn into the bottom-left corner.
  *
  * Bottom-left because interfaces put their content top-left and their own status bars
@@ -235,6 +281,12 @@ function drawStamp(
 let settings: CaptureSettings | null = null;
 let identity: CaptureIdentity | null = null;
 let proc: TimelineProcessor<Payload> | null = null;
+/**
+ * Normalised once per settings change rather than per frame. Also the guard against a
+ * settings object from an older build or a hand-edited localStorage entry: anything that
+ * is not an array of usable rectangles becomes no zones, never a crash in the hot path.
+ */
+let zones: Zone[] = [];
 let live: Payload[] = [];
 let backlog = 0;
 
@@ -245,6 +297,7 @@ self.onmessage = async (e: MessageEvent<ToWorker>) => {
       case 'start':
         settings = msg.settings;
         identity = msg.identity;
+        zones = readZones(msg.settings);
         live = [];
         backlog = 0;
         proc = new TimelineProcessor<Payload>(settings, (f) => f.payload.release());
@@ -252,6 +305,7 @@ self.onmessage = async (e: MessageEvent<ToWorker>) => {
 
       case 'settings':
         settings = msg.settings;
+        zones = readZones(msg.settings);
         proc?.updateSettings(msg.settings);
         break;
 
@@ -270,11 +324,18 @@ self.onmessage = async (e: MessageEvent<ToWorker>) => {
   }
 };
 
-async function onFrame(bitmap: ImageBitmap, seq: number, tMs: number): Promise<void> {
+function readZones(s: CaptureSettings): Zone[] {
+  return Array.isArray(s.excludedZones) ? usableZones(s.excludedZones) : [];
+}
+
+async function onFrame(raw: ImageBitmap, seq: number, tMs: number): Promise<void> {
   if (!proc || !settings || !identity) {
-    bitmap.close();
+    raw.close();
     return;
   }
+
+  // Before anything else looks at the pixels. See applyZones.
+  const bitmap = applyZones(raw, zones);
 
   // Luma thumbnail for the diff. Grayscale at 160x90 — the diff never sees full res.
   thumbCtx.drawImage(bitmap, 0, 0, THUMB_W, THUMB_H);

@@ -6,6 +6,7 @@ import {
 import type { CloudStore, UploadStatus, UsageInfo } from '@sr/storage';
 import { bytes, day } from '../lib/format.js';
 import { CloudStatusPanel } from './CloudStatusPanel.js';
+import { ZoneEditor } from './ZoneEditor.js';
 import { AccountPanel } from './AccountPanel.js';
 import type { Account } from '../lib/auth.js';
 
@@ -195,6 +196,28 @@ export function SettingsView({
               </>
             )}
           </div>
+        </div>
+
+        <div className="field">
+          <label>Never capture these areas</label>
+          <div className="hint" style={{ marginTop: 0, marginBottom: 10 }}>
+            The only control on this page that promises rather than estimates. A zone is
+            painted black in the worker <b>before the change detector runs and before
+            anything is encoded</b>, so no image, thumbnail, or untouched second copy of
+            what was inside it is ever created — there is nothing to delete and no deletion
+            that can fail. It costs one rectangle fill per sampled frame.
+            <br /><br />
+            The trade is that it is manual and static. It protects the corner where a
+            password manager opens, the panel a terminal always occupies, the half of a
+            second monitor you never want recorded — places you can name in advance. It
+            cannot follow a window that moves, and it does not know what is inside it.
+            Zones are stored as fractions of the frame, so they land on the same part of
+            the screen if your resolution changes.
+          </div>
+          <ZoneEditor
+            zones={settings.excludedZones}
+            onChange={(excludedZones) => set({ excludedZones })}
+          />
         </div>
 
         <h3>Encoding &amp; playback</h3>
