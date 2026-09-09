@@ -291,8 +291,9 @@ jobs:
           print('  usage:', {k: u.get(k) for k in
                 ('frames', 'bytes', 'stored_bytes', 'original_bytes', 'unmeasured')})
           # The clean frame was uploaded with an original, so R2 holds two objects for it.
-          # `bytes` reported only the first until this was fixed — a storage figure that
-          # understated by about half, which is the worst way for one to be wrong.
+          # The bytes field reported only the first until this was fixed — a storage figure
+          # that understated by about half, which is the worst way for one to be wrong.
+          # (No backticks: this heredoc is unquoted, so the shell would run what is in them.)
           assert u['original_bytes'] > 0, 'the second copy is not being counted'
           assert u['bytes'] == u['stored_bytes'] + u['original_bytes'], u
           PY
@@ -411,10 +412,16 @@ jobs:
 
           echo
           echo "--- user management is closed to an ordinary account"
+          # The Origin header is not decoration here. requireAuth runs the CSRF check before
+          # adminOnly ever sees the request, and it refuses a cookie-authenticated POST that
+          # carries no Origin — so without this these three asserted 404 while actually
+          # receiving 403 from a guard that runs earlier. That is the dangerous direction for
+          # a test to be wrong in: had adminOnly been broken and returned 200, CSRF would
+          # still have produced a 403 and this loop would have reported success.
           for m in "GET /v1/admin/users" "POST /v1/admin/users" "POST /v1/admin/transfer-master"; do
             verb=${m%% *}; path=${m##* }
             code=$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR" -X "$verb" \
-              -H 'Content-Type: application/json' -d '{}' "$BASE$path")
+              -H "Origin: $BASE" -H 'Content-Type: application/json' -d '{}' "$BASE$path")
             [ "$code" = "404" ] || fail "$verb $path returned HTTP $code to a non-admin, expected 404"
             echo "  $verb $path -> 404"
           done
