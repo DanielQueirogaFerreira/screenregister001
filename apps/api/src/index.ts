@@ -54,6 +54,25 @@ app.onError((err, c) => {
   if (err instanceof AuthNotConfiguredError) {
     return c.json({ error: 'server_not_configured', detail: err.message }, 503);
   }
+
+  /**
+   * D1 refusing every query because the account is over its daily allowance is not an
+   * internal error, and reporting it as one cost hours.
+   *
+   * Signing in surfaced "Request failed (500)", which says the server is broken. It was
+   * not: the database was declining to answer, intermittently, so the same request
+   * returned a correct 401 one moment and a 500 the next. That is a dependency being
+   * unavailable — 503 — and the message is a platform-capability fact rather than
+   * anything internal. It names no table, no query and no data.
+   */
+  const text = err instanceof Error ? err.message : String(err);
+  if (/daily row (read|write) limit|code: 7500|exceeded .* limit/i.test(text)) {
+    return c.json({
+      error: 'database_over_quota',
+      detail: 'The database has exceeded its daily limit, so it is refusing queries. '
+        + 'This clears at midnight UTC, or immediately on a paid D1 plan.',
+    }, 503);
+  }
   // A body that will not parse is the caller's mistake, not the server's. Hono raises a
   // SyntaxError out of c.req.json(); left unhandled it becomes a 500 and looks like an
   // outage in the logs.

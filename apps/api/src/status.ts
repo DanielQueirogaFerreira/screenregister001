@@ -55,9 +55,8 @@ async function probeD1(env: Env): Promise<ProbeResult> {
    * But LIMIT 1, not COUNT(*). Counting reads every row in the table to answer a question
    * the probe never asked: it wants to know the table is there and answering, and one row
    * proves that exactly as well as twelve thousand do. Running every five minutes against
-   * a growing table, the count was reading about 3.6 million rows a day and charging the
-   * account for all of them, which is most of D1's free daily allowance spent on a health
-   * check. It is what took the deploy down.
+   * a growing table, the count was reading about 3.6 million rows a day — most of D1's
+   * free daily allowance, spent on a health check, and it is what took logins down.
    */
   const { ms, error } = await timed(() =>
     env.DB.prepare('SELECT frame_id FROM frames LIMIT 1').first<{ frame_id: string }>(),

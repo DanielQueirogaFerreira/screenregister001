@@ -36,6 +36,10 @@ export class AuthError extends Error {
 }
 
 const HUMAN: Record<string, string> = {
+  database_over_quota:
+    'The database is over its daily limit and is refusing queries, so signing in cannot '
+    + 'complete. This is not your account — it clears at midnight UTC, or immediately on a '
+    + 'paid D1 plan.',
   invalid_credentials: 'That email and password do not match an account.',
   account_locked: 'Too many failed attempts. Wait a few minutes, or reset your password.',
   rate_limited: 'Too many attempts. Please wait before trying again.',
