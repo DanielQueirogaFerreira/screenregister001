@@ -125,27 +125,34 @@ jobs:
           const pad = Math.round(fontSize * 0.6);
           const expect = (lines) => lineHeight * lines + pad;
 
-          // A column of pixels up the left edge, inside the scrim's horizontal span.
-          const strip = 40;
-          const probeH = Math.min(height, expect(4) + 30);
+          // Judge a row by HOW MUCH of it is dark, not by its average.
+          //
+          // The average fails, and the run that proved it printed the reason: the scrim is
+          // rgba(0,0,0,0.72), which over white lands near 71, while the text on it is
+          // rgba(255,255,255,0.94), near 240. A row carrying glyphs therefore averages
+          // BRIGHT — one such row read 110 — so walking up "while dark" stopped at the
+          // first line of text and measured an 8px box.
+          //
+          // Glyphs are thin, so even a text row is mostly background. The share of dark
+          // pixels stays high across the whole scrim and collapses the moment the picture
+          // above it starts.
+          const from = 9, to = 220;          // inside the scrim, past its left padding
+          const stripW = to - from;
+          const probeH = Math.min(height, expect(4) + 40);
           const raw = await sharp('/tmp/frame.webp')
-            .extract({ left: 0, top: height - probeH, width: strip, height: probeH })
+            .extract({ left: from, top: height - probeH, width: stripW, height: probeH })
             .greyscale().raw().toBuffer();
 
-          const rowMean = [];
+          const darkFrac = [];
           for (let y = 0; y < probeH; y++) {
-            let sum = 0;
-            for (let x = 0; x < strip; x++) sum += raw[y * strip + x];
-            rowMean.push(sum / strip);
+            let dark = 0;
+            for (let x = 0; x < stripW; x++) if (raw[y * stripW + x] < 100) dark++;
+            darkFrac.push(dark / stripW);
           }
 
-          // The scrim is 72% black over whatever was underneath, so it is markedly darker
-          // than the picture above it. Walk up from the bottom padding to find where that
-          // darkness starts.
           const bottomPad = pad;
-          const dark = rowMean.map((m) => m < 90);
           let top = probeH - bottomPad - 1;
-          while (top > 0 && dark[top]) top--;
+          while (top > 0 && darkFrac[top] > 0.7) top--;
           const boxH = (probeH - bottomPad) - top - 1;
 
           const guess = [1, 2, 3, 4].find((n) => Math.abs(expect(n) - boxH) <= 4);
@@ -156,8 +163,9 @@ jobs:
           console.log(guess === 2
             ? 'MATCHES the current build: handle + UTC instant, no offset, no local time'
             : guess === 3
-              ? 'OLD BUILD (three lines: handle + local clock + UTC). This tab needs a reload.'
-              : 'UNRECOGNISED — the scrim was not found where the layout puts it');
-          console.log('row means, bottom 40 rows:',
-            rowMean.slice(-40).map((m) => Math.round(m)).join(' '));
+              ? 'OLD BUILD (three lines). That tab was loaded before the deploy and needs a reload.'
+              : 'UNRECOGNISED — no scrim of a known height in the bottom-left corner');
+          console.log('dark-pixel fraction, bottom 45 rows:',
+            darkFrac.slice(-45).map((f) => Math.round(f * 9)).join(''));
+
           JS
