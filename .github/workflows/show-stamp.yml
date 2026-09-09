@@ -107,23 +107,57 @@ jobs:
           // The stamp sits bottom-left. Take a generous strip so the crop does not depend
           // on how many lines the build draws — the line count is itself the evidence for
           // which build produced this frame.
-          const cropH = Math.min(height, 78);
-          const cropW = Math.min(width, 420);
+          // Measure the stamp instead of shipping a picture of it.
+          //
+          // Earlier versions base64'd the crop into the log, and the log API caps what it
+          // returns, so the payload arrived without its own start marker every time. The
+          // question does not need a picture: the stamp is white text on a dark scrim of a
+          // known geometry, and its HEIGHT is a direct count of the lines in it.
+          //
+          //   stampLayout: fontSize = clamp(width/110, 9, 15)
+          //                lineHeight = round(fontSize * 1.35), pad = round(fontSize * 0.6)
+          //                boxH = lineHeight * lines + pad
+          //
+          // So on a 1920-wide frame: 2 lines is 49px and 3 lines is 69px. Nothing else in
+          // the corner produces a hard-edged dark band of exactly those heights.
+          const fontSize = Math.max(9, Math.min(15, Math.round(width / 110)));
+          const lineHeight = Math.round(fontSize * 1.35);
+          const pad = Math.round(fontSize * 0.6);
+          const expect = (lines) => lineHeight * lines + pad;
 
-          // Grayscale, no magnification, aggressive palette. The stamp is white monospace
-          // on a black scrim, so colour carries nothing, and the font is already 15px on a
-          // frame this wide — enlarging it only makes the payload bigger. This has to come
-          // back through a log, so every byte saved is one that survives the trip.
-          const buf = await sharp('/tmp/frame.webp')
-            .extract({ left: 0, top: height - cropH, width: cropW, height: cropH })
-            .greyscale()
-            .png({ compressionLevel: 9, palette: true, colours: 16 })
-            .toBuffer();
+          // A column of pixels up the left edge, inside the scrim's horizontal span.
+          const strip = 40;
+          const probeH = Math.min(height, expect(4) + 30);
+          const raw = await sharp('/tmp/frame.webp')
+            .extract({ left: 0, top: height - probeH, width: strip, height: probeH })
+            .greyscale().raw().toBuffer();
 
-          const b64 = buf.toString('base64');
-          console.log(`frame ${width}x${height}, stamp crop ${cropW}x${cropH}, `
-            + `png ${buf.length} bytes, base64 ${b64.length} chars`);
-          console.log('---BEGIN STAMP PNG BASE64---');
-          for (let i = 0; i < b64.length; i += 400) console.log(b64.slice(i, i + 400));
-          console.log('---END STAMP PNG BASE64---');
+          const rowMean = [];
+          for (let y = 0; y < probeH; y++) {
+            let sum = 0;
+            for (let x = 0; x < strip; x++) sum += raw[y * strip + x];
+            rowMean.push(sum / strip);
+          }
+
+          // The scrim is 72% black over whatever was underneath, so it is markedly darker
+          // than the picture above it. Walk up from the bottom padding to find where that
+          // darkness starts.
+          const bottomPad = pad;
+          const dark = rowMean.map((m) => m < 90);
+          let top = probeH - bottomPad - 1;
+          while (top > 0 && dark[top]) top--;
+          const boxH = (probeH - bottomPad) - top - 1;
+
+          const guess = [1, 2, 3, 4].find((n) => Math.abs(expect(n) - boxH) <= 4);
+          console.log(`frame ${width}x${height}  fontSize ${fontSize}  lineHeight ${lineHeight}  pad ${pad}`);
+          console.log(`expected box height: 2 lines = ${expect(2)}px, 3 lines = ${expect(3)}px`);
+          console.log(`measured scrim height: ${boxH}px`);
+          console.log(`=> the stamp on this frame has ${guess ?? '?'} line(s)`);
+          console.log(guess === 2
+            ? 'MATCHES the current build: handle + UTC instant, no offset, no local time'
+            : guess === 3
+              ? 'OLD BUILD (three lines: handle + local clock + UTC). This tab needs a reload.'
+              : 'UNRECOGNISED — the scrim was not found where the layout puts it');
+          console.log('row means, bottom 40 rows:',
+            rowMean.slice(-40).map((m) => Math.round(m)).join(' '));
           JS
