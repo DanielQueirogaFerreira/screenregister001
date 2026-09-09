@@ -425,9 +425,11 @@ jobs:
             [ "$code" = "404" ] || fail "$verb $path returned HTTP $code to a non-admin, expected 404"
             echo "  $verb $path -> 404"
           done
-          # And it cannot delete or edit an account by guessing an id.
+          # And it cannot delete or edit an account by guessing an id. Origin for the same
+          # reason as above: without it this asserted 404 while receiving 403 from the CSRF
+          # guard, so it never reached the authorization it exists to check.
           code=$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR" -X DELETE \
-            "$BASE/v1/admin/users/$USER_ID?recordings=delete")
+            -H "Origin: $BASE" "$BASE/v1/admin/users/$USER_ID?recordings=delete")
           [ "$code" = "404" ] || fail "a non-admin reached the user delete (HTTP $code)"
           curl -fsS -b "$JAR" "$BASE/v1/auth/me" -o /tmp/me3.json || fail "/v1/auth/me failed"
           grep -q '"role":"user"' /tmp/me3.json || fail "an ordinary account is not reported as a user"
