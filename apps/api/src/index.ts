@@ -1232,8 +1232,16 @@ async function prune(env: Env, maxBatches = Number.POSITIVE_INFINITY): Promise<n
    * unreachable. It is also the backstop for any future path that removes a user and
    * forgets the recordings, which is exactly the mistake being fixed here.
    *
-   * Normally a no-op: it costs one indexed scan against a table that is almost always
-   * empty of orphans.
+   * It runs here, on the nightly sweep, and must not be moved to the five-minute cron.
+   * `user_id NOT IN (SELECT user_id FROM users)` walks idx_frames_user_time, so it reads
+   * in proportion to the whole frames table however few orphans it finds — and D1 charges
+   * for rows read. A full-table read on a five-minute timer is precisely what exhausted
+   * the daily allowance and took logins down; once a day the same query is nothing.
+   *
+   * The cost of that placement is honest and worth stating: a deleted account's leftover
+   * images can persist until the next 03:00, not merely until the next tick. Only an
+   * account too large to clear inside its own delete request has any, which is why the
+   * in-request bound is set high enough that a normal account never reaches this at all.
    */
   // Sharing the caller's budget rather than ignoring it. `maxBatches` exists to keep one
   // invocation inside the platform's limits, and a second unbounded pass behind a bounded
