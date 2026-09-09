@@ -39,7 +39,12 @@ jobs:
     timeout-minutes: 15
 
     steps:
+      # Full history, not the default single commit. The codebase-evolution log is built
+      # from `git log` over the last 30 days, and a shallow checkout has nothing to read —
+      # it would produce an empty animation and no error.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: pnpm/action-setup@v4
 
@@ -58,6 +63,14 @@ jobs:
       # serves via [assets]. The deploy preflight refuses to run without it.
       - name: Test and build
         run: pnpm run build
+
+      # Written into the built assets rather than committed. A generated file in the
+      # repository would change on every deploy and be the loudest node on its own graph;
+      # regenerating it here means it can never be older than the code it describes, and
+      # nothing accumulates in git history. It must run after the build, which empties
+      # apps/web/dist.
+      - name: Build the codebase-evolution log
+        run: pnpm run evolution
 
       - name: Resolve account id
         env:

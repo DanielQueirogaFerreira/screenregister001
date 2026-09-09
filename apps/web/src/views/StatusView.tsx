@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { bytes, perFrame } from '../lib/format.js';
+import { EvolutionCard } from './EvolutionView.js';
 
 type ServiceStatus = 'up' | 'degraded' | 'down';
 
@@ -424,6 +425,7 @@ export function StatusView() {
           {isAdmin && (
             <a href="/admin" className="button-link">Operator view</a>
           )}
+          <a href="/evolution" className="button-link">Codebase evolution</a>
           {/* Styled as a button rather than a link: this is the way back, and on a phone
               a text link tucked in the header is easy to miss entirely. */}
           <a href="/" className="button-link">&larr; Back to the recorder</a>
@@ -526,6 +528,8 @@ export function StatusView() {
       </div>
 
       <Health health={data.health} />
+
+      <EvolutionCard />
 
       <Roadmap roadmap={data.roadmap} progress={data.progress} />
     </div>

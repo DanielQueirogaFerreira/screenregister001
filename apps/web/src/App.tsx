@@ -16,6 +16,7 @@ import { InspectView } from './views/InspectView.js';
 import { SettingsView } from './views/SettingsView.js';
 import { VersionBadge } from './views/VersionBadge.js';
 import { StatusView } from './views/StatusView.js';
+import { EvolutionView } from './views/EvolutionView.js';
 
 type Tab = 'record' | 'library' | 'inspect' | 'settings' | 'admin';
 
@@ -23,7 +24,14 @@ export function App() {
   // The status page is deliberately outside the auth gate, and checked before any of it
   // runs. The moment it is most needed is when authentication is the thing that is broken,
   // and a status page you have to sign in to read cannot report that you cannot sign in.
-  if (typeof location !== 'undefined' && location.pathname.replace(/\/+$/, '') === '/status') {
+  const path = typeof location !== 'undefined' ? location.pathname.replace(/\/+$/, '') : '';
+
+  // Outside the auth gate for the same reason /status is: it shows the public history of a
+  // public repository and contains nothing belonging to any account. Putting it behind a
+  // sign-in would protect nothing and hide it from the people it is for.
+  if (path === '/evolution') return <EvolutionView />;
+
+  if (path === '/status') {
     // StatusView draws its own badge on the refusal screen, where it renders the whole
     // page itself; here it renders only the dashboard body.
     return (

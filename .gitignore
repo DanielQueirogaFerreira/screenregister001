@@ -7,3 +7,7 @@ coverage/
 
 # Local secrets for wrangler dev — never commit
 .dev.vars
+
+# Generated at deploy time by scripts/evolution-log.mjs. Never committed: it would change
+# on every deploy and appear as the busiest file on its own graph.
+apps/web/public/evolution.json
