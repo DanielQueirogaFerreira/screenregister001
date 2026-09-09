@@ -352,6 +352,52 @@ has no reason to accept browser calls from any of them.
 objects on its own schedule and leave catalogue rows pointing at nothing. The nightly
 `scheduled` handler removes both together, then drops sessions left with no frames.
 
+Every deletion goes through one `deleteFramesWhere`, in batches of 90. **D1 refuses a query
+carrying more than 100 bound parameters**, and the row delete binds one per frame, so a
+larger batch throws — after the R2 objects for it have already gone. That is not a
+hypothetical: the sweep, `DELETE /v1/data` and operator account removal each carried their
+own copy of the loop at 500, and each would have destroyed 500 images and left 500 rows
+pointing at nothing, per attempt. The objects are deleted before the rows because a row
+deleted first orphans its object with nothing left to name it, while an object deleted
+first leaves a row a retry clears; there is no transaction spanning R2 and D1, so small
+batches make that window cheap rather than closing it.
+
+**What a recording actually costs, measured.** A real session: 12,525 frames over about
+three and a half hours, 103 KB each, 1.295 GB. That is roughly **370 MB per hour of active
+use**, and the reason is not the size of a frame but how many there are — one per second
+for as long as the screen keeps moving.
+
+Compression cannot fix that. Six real frames re-encoded every way the browser could
+plausibly encode them:
+
+| encoding | size vs today | PSNR | usable client-side |
+| --- | --- | --- | --- |
+| WebP q70 (what ships) | 100% | 42.0 dB | — |
+| WebP q70, effort 6 | 96% | 41.9 dB | needs a WASM encoder |
+| WebP q60 | 89% | 38.9 dB | yes |
+| WebP q50 | 80% | 36.8 dB | yes |
+| WebP q40 | 70% | 35.0 dB | yes |
+| AVIF q50 | 83% | 38.4 dB | 3.7 s/frame |
+| AVIF q40 | 60% | 35.4 dB | 3.4 s/frame |
+
+Re-encoding at the same quality by the best available method saves 4%; the frames are
+already near the frontier. Everything below that is fidelity sold for bytes, and text
+degrades first, which is what both the reader and the OCR need. AVIF is genuinely denser at
+the low end but costs seconds per frame and cannot come out of a canvas at all, so it would
+mean shipping a WASM encoder that cannot keep up with capture.
+
+So the knob that matters is `minStoreGapMs`, the shortest gap between two stored frames
+while the screen keeps changing. `maxFramesPerSec` cannot do it — the processor clamps it
+to `captureFps`, so at 1 FPS a cap of 4 is pure slack. At the default three seconds the
+same hour costs about 123 MB, at five about 74 MB, and none of it is paid in image quality.
+The gap deliberately does not advance the diff reference, so change accumulated inside the
+window is still measured against the last frame actually stored and the first frame after
+the gap carries it: a page scrolled a line at a time still lands in the record.
+
+Reproduce any of this with `.github/workflows/bench-encoding.yml`, which pulls real objects
+out of R2 and prints the table. It has to run in Actions — the Worker cannot decode an
+image and the development sandbox cannot reach R2.
+
 ## Verified
 
 Against `wrangler dev --local` (real D1 and R2 emulation):
@@ -361,7 +407,9 @@ Against `wrangler dev --local` (real D1 and R2 emulation):
   sessions returns empty and their images 404.
 - Uploaded and downloaded blobs are byte-identical (SHA-256) for both variants.
 - The retention sweep deletes a 10-day-old frame's row **and** its R2 objects, drops the
-  emptied session, and leaves in-window frames untouched.
+  emptied session, and leaves in-window frames untouched. Note what this did not catch:
+  one frame is one bound parameter, so the batch limit that broke the sweep on real
+  volumes was invisible to it. `apps/api/src/prune.test.ts` covers the batching.
 - Full round trip from the browser client: record → sync → D1 + R2 → fetched back as
   valid WebP showing the recorded screen.
 - Network cut mid-session: capture continued, frames queued locally, and the whole
