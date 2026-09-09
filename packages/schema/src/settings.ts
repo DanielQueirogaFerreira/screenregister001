@@ -93,6 +93,25 @@ export interface CaptureSettings {
 
   // --- Encoding ---
   maxWidth: number;
+  /**
+   * WebP quality, 0..1. Measured rather than chosen — see scripts/bench.
+   *
+   * 0.5 costs 24% fewer bytes than the 0.7 this used to be, with no measurable loss of
+   * readable text: OCR accuracy on a realistic screen is identical at both, region by
+   * region, and magnified 3x the two are indistinguishable.
+   *
+   * The floor is not set by small type, which was the assumption. Dark text on a light
+   * ground survives to 0.30 with no visible change at all, dense 11px numerals included.
+   * Light text on dark backgrounds does not: the background mottles around glyphs at 0.30
+   * and edges break up at 0.20. Dark-mode editors, terminals and title bars decide this
+   * number, so judge any change to it on one of those and not on a document.
+   *
+   * OCR alone would argue for 0.20 — accuracy barely moves until 0.30, and the spread
+   * between adjacent qualities is no bigger than the scatter between the reference and
+   * 0.90. That reading is wrong. Frames start looking degraded well before they stop
+   * being machine-readable, and a record someone is meant to trust should not look
+   * degraded.
+   */
   quality: number;
   thumbWidth: number;
 
@@ -141,7 +160,7 @@ export const DEFAULT_SETTINGS: CaptureSettings = {
   keepOriginal: false,
   privacyMask: 'mask',
   maxWidth: 1920,
-  quality: 0.7,
+  quality: 0.5,
   thumbWidth: 320,
   skipStillsOverMs: 5000,
 };

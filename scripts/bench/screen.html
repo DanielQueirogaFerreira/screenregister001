@@ -1,0 +1,56 @@
+<!doctype html><meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  body { width: 1366px; height: 768px; overflow: hidden;
+         font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+         background: #1e2129; color: #e6e9ef; display: grid;
+         grid-template-rows: 28px 1fr 150px; }
+  /* 11px chrome: tabs, menus, status bars. The smallest text a screen recorder must keep. */
+  #chrome { background: #14161c; border-bottom: 1px solid #2a2f3a; font-size: 11px;
+            display: flex; align-items: center; gap: 18px; padding: 0 12px; color: #aab3c2; }
+  #split { display: grid; grid-template-columns: 1fr 1fr; min-height: 0; }
+  /* 13px monospace: the code pane. */
+  #code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 13px;
+          line-height: 1.55; padding: 10px 14px; background: #1e2129; white-space: pre;
+          color: #cdd6e4; overflow: hidden; }
+  /* 15px prose on light ground: a document, the common reading case. */
+  #doc { background: #fbfbfd; color: #1b1f27; padding: 14px 18px; font-size: 15px;
+         line-height: 1.5; overflow: hidden; }
+  #doc h2 { font-size: 20px; margin-bottom: 8px; }
+  /* 12px terminal on black: worst case for chroma subsampling. */
+  #term { background: #0b0d11; color: #b7f7c6; font-family: ui-monospace, Menlo, monospace;
+          font-size: 12px; line-height: 1.5; padding: 10px 14px; white-space: pre;
+          border-top: 1px solid #2a2f3a; overflow: hidden; }
+  .k { color: #79b8ff; } .s { color: #a5d6a7; } .c { color: #7d8799; }
+</style>
+<div id="chrome">File Edit View Navigate Refactor Build Run Tools Window Help &nbsp;|&nbsp; recorder.ts &nbsp;|&nbsp; main* &nbsp;|&nbsp; Ln 148, Col 32 &nbsp;|&nbsp; UTF-8 &nbsp;|&nbsp; TypeScript 5.6.3</div>
+<div id="split">
+  <div id="code"><span class="c">// Encode once, whether triggered by memory pressure or the decision to store.</span>
+<span class="k">async</span> encode(settings: CaptureSettings): Promise&lt;Encoded&gt; {
+  <span class="k">const</span> scale = Math.min(1, settings.maxWidth / this.width);
+  <span class="k">const</span> width = Math.round(this.width * scale);
+  <span class="k">const</span> height = Math.round(this.height * scale);
+
+  <span class="k">let</span> regions: Region[] = [];
+  <span class="k">if</span> (settings.privacyMask !== <span class="s">'off'</span>) {
+    <span class="k">const</span> scan = grayscale(bitmap);
+    regions = scaleRegions(findMaskedFields(scan.gray), scale);
+  }
+  <span class="k">const</span> redacted = regions.length &gt; 0;
+  <span class="k">return</span> ctx.canvas.convertToBlob({ quality: 0.7 });
+}</div>
+  <div id="doc">
+    <h2>Storage economics of a screen recorder</h2>
+    <p>A stored frame costs about 103 kilobytes at WebP quality 0.7, and the recorder keeps
+    roughly one frame per second while the screen is changing. That works out at 370 megabytes
+    for every hour of active use, which no free tier will absorb over seven days.</p>
+    <p style="margin-top:8px">The frames are already close to the efficiency frontier, so the
+    saving has to come from how many are stored rather than how large each one is. Text is what
+    degrades first when quality falls, and text is what both the reader and the OCR need.</p>
+  </div>
+</div>
+<div id="term">$ npx wrangler d1 execute screenregister001 --remote --command "SELECT COUNT(*) FROM frames"
+  <span class="c">rows_read: 12525  duration: 8.4ms  size_after: 15290368</span>
+$ curl -s https://screenregister001.workers.dev/v1/health | jq -r '.schema, .auth_configured'
+  ready
+  true</div>

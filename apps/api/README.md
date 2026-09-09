@@ -367,8 +367,9 @@ three and a half hours, 103 KB each, 1.295 GB. That is roughly **370 MB per hour
 use**, and the reason is not the size of a frame but how many there are — one per second
 for as long as the screen keeps moving.
 
-Compression cannot fix that. Six real frames re-encoded every way the browser could
-plausibly encode them:
+Compression helps less than it looks, and the first attempt to measure it measured the
+wrong thing. Six real frames re-encoded every way the browser could plausibly encode them,
+scored by PSNR:
 
 | encoding | size vs today | PSNR | usable client-side |
 | --- | --- | --- | --- |
@@ -381,7 +382,15 @@ plausibly encode them:
 | AVIF q40 | 60% | 35.4 dB | 3.4 s/frame |
 
 Re-encoding at the same quality by the best available method saves 4%; the frames are
-already near the frontier. Everything below that is fidelity sold for bytes, and text
+already near the frontier.
+
+PSNR, though, weighs every pixel equally — including a gradient nobody reads — and the
+thing that actually degrades first is text. Measured properly, with OCR on a realistic
+screen and the browser's own encoder (`scripts/bench`), **quality 0.5 costs 24% fewer
+bytes than 0.7 with no measurable loss of readable text**, and that is now the default.
+The floor turns out to be set by light text on dark backgrounds, which mottles at 0.30,
+rather than by small type: dark text on a light ground is indistinguishable from lossless
+down to 0.30, dense 11px numerals included. Everything below that is fidelity sold for bytes, and text
 degrades first, which is what both the reader and the OCR need. AVIF is genuinely denser at
 the low end but costs seconds per frame and cannot come out of a canvas at all, so it would
 mean shipping a WASM encoder that cannot keep up with capture.

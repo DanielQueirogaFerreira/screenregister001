@@ -203,7 +203,7 @@ export function SettingsView({
           onChange={(maxWidth) => set({ maxWidth })} />
 
         <Num label="WebP quality (0–1)" step={0.05} value={settings.quality}
-          hint="Measured against real frames: 0.6 saves 11% of the bytes, 0.5 saves 20%, 0.4 saves 30% — all of it paid for in fidelity, and text is what degrades first, which matters for later OCR. Re-encoding at 0.7 by any other method saves 4%, so there is no free saving hiding here: to store less without touching quality, widen the gap above."
+          hint="0.5 is the default, chosen by measuring OCR accuracy on a realistic screen rather than guessing: it costs 24% fewer bytes than 0.7 with no measurable loss of readable text. 0.4 saves 34% and softens dark-mode interfaces slightly. Below 0.35 frames start to look degraded — light text on dark backgrounds mottles first — before they become unreadable, which is the wrong trade for a record you are meant to trust."
           onChange={(quality) => set({ quality })} />
 
         <Num label="Skip stills longer than (ms)" step={1000} value={settings.skipStillsOverMs}
