@@ -1305,6 +1305,21 @@ export default {
       console.log(`retention sweep removed ${n} frames; auth and status tables pruned`);
       return;
     }
+    // RETENTION_DAYS=0 is not a retention policy, it is an order to keep nothing, and an
+    // operator who has just given that order should not have to wait until 03:00 to see it
+    // carried out. So purge mode runs the same sweep on the five-minute schedule, using
+    // the same code path — the point of reusing `prune` rather than writing a bulk delete
+    // is that it removes the object and its catalogue row together, which is the one
+    // property a purge must not lose. It converges: once nothing is left the sweep is a
+    // no-op, and putting the value back above zero ends it.
+    //
+    // It also means a deployment left at zero deletes new frames within five minutes.
+    // That is the honest reading of "keep nothing", and it is why this is a var that takes
+    // Cloudflare account access to change rather than a setting inside the app.
+    if (Number(env.RETENTION_DAYS || '7') <= 0) {
+      const n = await prune(env);
+      console.log(`purge mode (RETENTION_DAYS=0) removed ${n} frames`);
+    }
     await recordProbes(env, await runProbes(env));
     // Cheap, indexed, and almost always a no-op. Running it beside the probe rather than
     // in the nightly sweep means an abandoned recording reads as finished within minutes

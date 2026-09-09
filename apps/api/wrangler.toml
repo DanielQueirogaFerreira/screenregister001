@@ -32,7 +32,11 @@ not_found_handling = "single-page-application"
 binding = "ASSETS"
 
 [vars]
-RETENTION_DAYS = "7"
+# Temporarily 0, at the account owner's request: an explicit purge of every stored frame.
+# Zero puts the Worker in purge mode, which runs the retention sweep on the five-minute
+# cron instead of only at 03:00 — so it also deletes frames captured while it is set.
+# Put this back to "7" once the sweep has finished.
+RETENTION_DAYS = "0"
 
 # Cross-origin calls from localhost, off in production. The deployed Worker serves its own
 # client, so all real traffic is same-origin; a developer machine runs many unrelated local
