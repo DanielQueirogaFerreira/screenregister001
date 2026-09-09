@@ -66,8 +66,15 @@ jobs:
           ls -l /tmp/frame.webp
 
       - name: Crop the stamp corner and print it
+        # Not in apps/api: that is a pnpm workspace package, and npm installing into it
+        # fights the workspace. A scratch directory owns this tool and nothing else.
+        working-directory: /tmp
         run: |
-          npm install --no-save sharp@0.34 >/dev/null 2>&1
+          # Output NOT swallowed. The first version sent this to /dev/null, so when it
+          # failed the log showed an exit code and nothing else — the one moment the
+          # output was worth having was the one moment it had been thrown away.
+          npm install --no-save --prefix /tmp/imgtools sharp@0.34
+          export NODE_PATH=/tmp/imgtools/node_modules
           node --input-type=module <<'JS'
           import sharp from 'sharp';
           const img = sharp('/tmp/frame.webp');
