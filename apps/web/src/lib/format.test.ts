@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatUtcOffset, perFrame, utcOffset } from './format.js';
+import { buildTimeLine, formatUtcOffset, perFrame, utcOffset } from './format.js';
 
 describe('formatUtcOffset', () => {
   it('reverses the sign getTimezoneOffset uses', () => {
@@ -65,5 +65,28 @@ describe('bytes per frame', () => {
     // appears in the admin list while it is still recording.
     expect(perFrame(0, 0)).toBe('—');
     expect(perFrame(5000, 0)).toBe('—');
+  });
+});
+
+describe('buildTimeLine', () => {
+  it('is UTC to the millisecond, with the Z', () => {
+    expect(buildTimeLine('2026-09-09T12:42:24.331Z')).toBe('2026-09-09T12:42:24.331Z');
+  });
+
+  it('converts an offset build time to UTC rather than printing it as given', () => {
+    // A CI runner is UTC, but a build made on a developer machine is not, and the badge
+    // must not show two different numbers depending on where the build ran.
+    expect(buildTimeLine('2026-09-09T08:42:24.331-04:00')).toBe('2026-09-09T12:42:24.331Z');
+  });
+
+  it('keeps the milliseconds, which is the point of it', () => {
+    // Two deploys inside one minute are ordinary here; truncated to the minute the badge
+    // cannot answer the only question it exists for — which build is being served.
+    expect(buildTimeLine('2026-09-09T12:42:24.000Z')).toMatch(/\.\d{3}Z$/);
+  });
+
+  it('says nothing rather than NaN when the build time is unusable', () => {
+    expect(buildTimeLine('not a date')).toBeNull();
+    expect(buildTimeLine('')).toBeNull();
   });
 });

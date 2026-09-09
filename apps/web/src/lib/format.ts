@@ -1,3 +1,5 @@
+import { stampTimeLine } from '@sr/schema';
+
 export function bytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 ** 2) return `${(n / 1024).toFixed(0)} KB`;
@@ -38,6 +40,29 @@ export function duration(ms: number): string {
  * inversion is exactly the kind of thing that drifts and is wrong by twice the offset.
  */
 export { formatUtcOffset, timeZoneName, utcOffset } from '@sr/schema';
+
+/**
+ * The build time for the version badge: UTC, to the millisecond, with the `Z`.
+ *
+ * Deliberately the same rule as the frame stamp, and it goes through the same function so
+ * it stays the same rule. The badge used to render local time with the offset appended,
+ * on the reasoning that every other clock in the app is local and one UTC number among
+ * them was confusing. That was the wrong fix. `Z` is unambiguous everywhere, forever, to
+ * anyone; an offset invites the reader to do arithmetic and disagree with the answer —
+ * which is exactly what happened when a stamp reading UTC-4 was read as wrong and was not.
+ *
+ * Milliseconds because this is diagnostic furniture. Two deploys in the same minute are
+ * ordinary here, and a build time truncated to the minute cannot tell them apart, which
+ * defeats the one question the badge exists to answer: which build is being served.
+ *
+ * The offset is not lost, only moved off the badge and into the tooltip — the same place
+ * the frame stamp put it, for the same reason: a fact you look up, not one you read off a
+ * screenshot.
+ */
+export function buildTimeLine(iso: string): string | null {
+  const ms = Date.parse(iso);
+  return Number.isNaN(ms) ? null : stampTimeLine(ms);
+}
 
 export const clock = (iso: string): string =>
   new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
