@@ -350,6 +350,7 @@ export class Recorder {
       // device a client can name is a device a client can lie about.
       device_id: this.session.device_id,
       captured_at: new Date(Date.parse(this.startedIso) + msg.tMs).toISOString(),
+      tz_offset_minutes: msg.tzOffsetMinutes,
       offset_ms: Math.round(msg.tMs),
       seq: msg.seq,
       hold_ms: null,

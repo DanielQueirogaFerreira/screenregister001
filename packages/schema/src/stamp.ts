@@ -177,3 +177,69 @@ export async function stampMatches(
   ]);
   return { device: parts.device === device, account: parts.account === account };
 }
+
+/**
+ * A UTC offset written the way people write one: UTC-4, UTC+5:30, plain UTC at zero.
+ *
+ * Takes exactly what `Date.prototype.getTimezoneOffset` returns, which is minutes *behind*
+ * UTC — the reverse of the conventional sign. A machine in UTC-3 reports +180. Inverting
+ * that is the whole subtlety, and getting it backwards produces a label that is wrong by
+ * twice the offset while looking entirely plausible.
+ *
+ * Not every zone is a whole number of hours: India is +5:30, Nepal +5:45, Newfoundland
+ * -3:30. Truncating to hours would mislabel them.
+ *
+ * It lives beside the stamp because the stamp is now what carries it. The frame's ISO
+ * timestamp already says the instant in UTC to the millisecond; the offset says where the
+ * person was standing when it happened, and that is the part no amount of arithmetic can
+ * recover from the image later.
+ */
+export function formatUtcOffset(minutesBehindUtc: number): string {
+  const minutes = -minutesBehindUtc;
+  if (minutes === 0) return 'UTC';
+  const sign = minutes < 0 ? '-' : '+';
+  const abs = Math.abs(minutes);
+  const h = Math.floor(abs / 60);
+  const m = abs % 60;
+  return m === 0 ? `UTC${sign}${h}` : `UTC${sign}${h}:${String(m).padStart(2, '0')}`;
+}
+
+/**
+ * The offset in force at a given moment, not the one in force now.
+ *
+ * Daylight saving means a frame captured in July and one captured in December do not share
+ * an offset, so the label has to be computed against the instant it describes rather than
+ * against the clock at the time of asking.
+ */
+export const utcOffset = (at: Date = new Date()): string =>
+  formatUtcOffset(at.getTimezoneOffset());
+
+/**
+ * The second line burned into a stored frame: the exact instant, in UTC, to the
+ * millisecond, followed by the offset the recording device was on.
+ *
+ * Both halves are needed and neither substitutes for the other. UTC alone is unambiguous
+ * but says nothing about whether this was the middle of someone's working day or three in
+ * the morning. A local time alone is readable but meaningless once the image has left the
+ * machine that made it. Together they are a complete statement that survives export.
+ */
+export function stampTimeLine(capturedMs: number, minutesBehindUtc: number): string {
+  return `${new Date(capturedMs).toISOString()} ${formatUtcOffset(minutesBehindUtc)}`;
+}
+
+/**
+ * The wall-clock time a frame was captured, as the clock on that machine read it.
+ *
+ * `getTimezoneOffset` counts minutes *behind* UTC, so local = UTC − offset: a machine on
+ * UTC-4 reports +240, and 05:12Z was 01:12 there. Getting that subtraction backwards
+ * produces a time wrong by twice the offset that still looks like a plausible time of day,
+ * which is why this is a named function with a test rather than arithmetic inline in a
+ * view.
+ *
+ * Rendered without a zone suffix because it is deliberately not an instant — the caller
+ * pairs it with `formatUtcOffset` to say which clock it was read from.
+ */
+export function localWallClock(capturedIso: string, minutesBehindUtc: number): string {
+  const local = Date.parse(capturedIso) - minutesBehindUtc * 60_000;
+  return new Date(local).toISOString().replace('T', ' ').replace('Z', '');
+}

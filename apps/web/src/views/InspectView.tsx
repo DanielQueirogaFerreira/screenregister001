@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
-import { StampError, decodeStamp, stampMatches, type StampParts } from '@sr/schema';
+import {
+  StampError, decodeStamp, formatUtcOffset, localWallClock, stampMatches, type StampParts,
+} from '@sr/schema';
 import type { CloudStore } from '@sr/storage';
 import { deviceId } from '../lib/device.js';
 import { bytes, clock, day, duration } from '../lib/format.js';
@@ -18,6 +20,7 @@ interface ResolvedFrame {
     has_original: boolean;
     captured_at: string; offset_ms: number; seq: number; hold_ms: number | null;
     change_score: number; changed_tiles: number[]; reason: string;
+    tz_offset_minutes: number | null;
     width: number; height: number; bytes: number; format: string; sha256: string;
     ocr_text: string | null; caption: string | null; enrich_status: string;
   };
@@ -274,7 +277,32 @@ export function InspectView({ store, accountId, initialStamp, onConsumed }: Insp
             )}
             <div className="health-list" style={{ marginTop: 12 }}>
               <Row label="Frame id" value={result.frame.frame_id} mono />
-              <Row label="Captured at" value={result.frame.captured_at} />
+              {/*
+                The exact instant, to the millisecond, in UTC — and the offset the
+                recording machine was on, which is the half no arithmetic can recover
+                afterwards. 05:12Z is the middle of a working day in one place and three in
+                the morning in another, and "what was I doing yesterday afternoon" is the
+                question this record exists to answer.
+
+                Milliseconds are not decoration either: frames are ULID-ordered by
+                millisecond, so a timestamp truncated to the second cannot tell two frames
+                of the same second apart.
+              */}
+              <Row
+                label="Captured at (UTC)"
+                value={result.frame.captured_at}
+                mono
+              />
+              <Row
+                label="Local time where recorded"
+                value={result.frame.tz_offset_minutes === null
+                  // Every frame stored before the column existed genuinely has no answer.
+                  // Guessing UTC would turn a missing value into a false claim.
+                  ? 'not recorded — this frame predates the offset being stored'
+                  : `${localWallClock(result.frame.captured_at, result.frame.tz_offset_minutes)} `
+                    + formatUtcOffset(result.frame.tz_offset_minutes)}
+                mono
+              />
               <Row label="Kept because" value={<span className={`tag ${result.frame.reason}`}>{result.frame.reason}</span>} />
               <Row
                 label="Redaction"

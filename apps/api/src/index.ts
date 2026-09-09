@@ -931,8 +931,8 @@ app.post('/v1/frames', async (c) => {
     `INSERT INTO frames (frame_id, session_id, user_id, device_id, captured_at, offset_ms, seq,
        hold_ms, change_score, changed_tiles, reason, width, height, bytes, format, sha256,
        storage_key, stamp, redacted, redacted_regions, original_key, original_bytes,
-       ocr_text, caption, enrich_status)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,'pending')
+       tz_offset_minutes, ocr_text, caption, enrich_status)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,'pending')
      ON CONFLICT(frame_id) DO UPDATE SET hold_ms = COALESCE(excluded.hold_ms, frames.hold_ms)`,
   ).bind(
     frameId, sessionId, me.userId, owner.device_id,
@@ -948,6 +948,13 @@ app.post('/v1/frames', async (c) => {
     // so it can weigh them, and a storage figure built from what the client claimed would
     // be worth nothing.
     redacted || !original ? 0 : original.size,
+    // Taken from the client, unlike the device: an offset is a property of the machine
+    // that did the capturing and the server has no way to observe it. A client that lies
+    // about it mislabels only its own frames. Null rather than 0 when absent — 0 would
+    // assert the recorder was on UTC, which is a claim, not a missing value.
+    m.tz_offset_minutes === null || m.tz_offset_minutes === undefined
+      ? null
+      : Number(m.tz_offset_minutes),
   ).run();
 
   return c.json({

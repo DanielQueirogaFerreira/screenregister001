@@ -227,7 +227,7 @@ jobs:
 
           printf 'not-a-real-image' > /tmp/frame.webp
           curl -fsS -b "$JAR" -X POST "$BASE/v1/frames" -H "Origin: $BASE" \
-            -F "meta={\"frame_id\":\"$FRAME_ID\",\"session_id\":\"$SESSION_ID\",\"stamp\":\"$STAMP\",\"captured_at\":\"$CAPTURED_AT\",\"offset_ms\":0,\"seq\":0,\"change_score\":0.5,\"changed_tiles\":[1,2],\"reason\":\"first\",\"width\":1920,\"height\":1080,\"bytes\":16,\"format\":\"image/webp\",\"sha256\":\"deadbeef\"}" \
+            -F "meta={\"frame_id\":\"$FRAME_ID\",\"session_id\":\"$SESSION_ID\",\"stamp\":\"$STAMP\",\"captured_at\":\"$CAPTURED_AT\",\"offset_ms\":0,\"seq\":0,\"change_score\":0.5,\"changed_tiles\":[1,2],\"reason\":\"first\",\"width\":1920,\"height\":1080,\"bytes\":16,\"format\":\"image/webp\",\"sha256\":\"deadbeef\",\"tz_offset_minutes\":240}" \
             -F "full=@/tmp/frame.webp" -F "thumb=@/tmp/frame.webp" \
             -F "original=@/tmp/frame.webp" \
             -o /tmp/upload.json || fail "frame upload failed"
@@ -240,6 +240,14 @@ jobs:
           d = json.load(open('/tmp/stamp.json'))
           f = d['frame']
           print('  resolved:', f['frame_id'], '| device:', f['device_id'], '| reason:', f['reason'])
+          # The offset the recording machine was on. Stored as getTimezoneOffset reports it
+          # — minutes BEHIND UTC, so 240 is UTC-4 — and the whole point of the column is
+          # that a frame can say what local time it was after the image has left the
+          # machine. A round trip through a real INSERT is the only thing that proves the
+          # column exists and the migration ran.
+          assert f.get('tz_offset_minutes') == 240, \
+              f"tz offset did not round-trip: {f.get('tz_offset_minutes')!r}"
+          print('  captured', f['captured_at'], 'at UTC-4 on the recording machine')
           assert f['frame_id'] == '$FRAME_ID', f"resolved the wrong frame: {f['frame_id']}"
           # The device is written by the server from the session row, not from the upload.
           assert f['device_id'] == '$DEVICE_ID', f"device not stamped onto the frame: {f['device_id']!r}"

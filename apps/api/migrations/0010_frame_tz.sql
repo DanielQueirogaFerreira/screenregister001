@@ -1,0 +1,15 @@
+-- The UTC offset the recording machine was on when the frame was captured.
+--
+-- captured_at already fixes the instant, in UTC, to the millisecond. What it cannot say is
+-- what time it was for the person at the screen: 05:12Z is the middle of a working day in
+-- one place and three in the morning in another, and "what was I doing at four yesterday
+-- afternoon" is the question this record exists to answer.
+--
+-- Minutes rather than hours, and signed as getTimezoneOffset reports them (minutes BEHIND
+-- UTC, so UTC-4 is +240). Minutes because India is +5:30 and Nepal +5:45; raw because the
+-- row should hold the fact and every view should render it through one formatter.
+--
+-- Nullable on purpose. Every frame stored before this migration genuinely has no answer,
+-- and a default of 0 would assert those were all recorded in UTC — inventing data is worse
+-- than admitting its absence.
+ALTER TABLE frames ADD COLUMN tz_offset_minutes INTEGER;

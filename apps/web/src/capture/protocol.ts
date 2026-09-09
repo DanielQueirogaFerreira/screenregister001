@@ -31,6 +31,13 @@ export type FromWorker =
       /** Minted here, so the stamp drawn into the image and the row agree by construction. */
       frameId: string;
       stamp: string;
+      /**
+       * Minutes behind UTC on the recording machine at the captured instant, as
+       * getTimezoneOffset reports them — UTC-4 is +240. Computed against that instant and
+       * not against "now", so a session running across a daylight saving boundary records
+       * the offset each frame was actually taken under.
+       */
+      tzOffsetMinutes: number;
       seq: number;
       tMs: number;
       reason: StoreReason;

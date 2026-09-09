@@ -2,7 +2,9 @@
 import {
   TimelineProcessor, findMaskedFields, scaleRegions, stampLayout, toLuma, type Region,
 } from '@sr/core';
-import { STAMP_VERSION, THUMB_W, THUMB_H, ulid, type CaptureSettings } from '@sr/schema';
+import {
+  STAMP_VERSION, THUMB_W, THUMB_H, stampTimeLine, ulid, type CaptureSettings,
+} from '@sr/schema';
 import type { CaptureIdentity, ToWorker, FromWorker } from './protocol.js';
 
 /**
@@ -66,6 +68,12 @@ class Payload {
     readonly frameId: string,
     readonly stamp: string,
     readonly capturedIso: string,
+    /**
+     * Minutes behind UTC on the recording machine, as getTimezoneOffset reports them.
+     * Kept raw rather than pre-formatted: the row should store the fact, and every place
+     * that shows it can render it the same way through formatUtcOffset.
+     */
+    readonly tzOffsetMinutes: number,
   ) {}
 
   get isLive(): boolean {
@@ -272,12 +280,18 @@ async function onFrame(bitmap: ImageBitmap, seq: number, tMs: number): Promise<v
   // and the row written to the database cannot disagree.
   const capturedMs = identity.startedAtMs + tMs;
   const frameId = ulid(capturedMs);
+  /**
+   * Computed against the captured instant rather than against "now". Across a daylight
+   * saving boundary — or a session left running through one — those differ by an hour, and
+   * the whole value of burning this in is that it describes the moment in the picture.
+   */
+  const tzOffsetMinutes = new Date(capturedMs).getTimezoneOffset();
   const stamp =
     `${STAMP_VERSION}-${frameId}-${identity.deviceFingerprint}${identity.accountFingerprint}`;
 
   const payload = new Payload(
     bitmap, bitmap.width, bitmap.height,
-    frameId, stamp, new Date(capturedMs).toISOString(),
+    frameId, stamp, stampTimeLine(capturedMs, tzOffsetMinutes), tzOffsetMinutes,
   );
   live.push(payload);
   proc.push({ seq, tMs, luma, payload });
@@ -314,6 +328,7 @@ async function emit(decisions: ReturnType<TimelineProcessor<Payload>['drain']>):
         type: 'stored',
         frameId: d.frame.payload.frameId,
         stamp: d.frame.payload.stamp,
+        tzOffsetMinutes: d.frame.payload.tzOffsetMinutes,
         seq: d.frame.seq,
         tMs: d.frame.tMs,
         reason: d.reason,

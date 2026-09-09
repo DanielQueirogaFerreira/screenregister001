@@ -20,7 +20,13 @@ export interface FrameRecord {
    * The server writes it from the session's own record; a client-supplied value is ignored.
    */
   device_id: string;
-  captured_at: string;   // ISO-8601 UTC
+  captured_at: string;   // ISO-8601 UTC, to the millisecond
+  /**
+   * Minutes behind UTC on the recording machine at the captured instant, exactly as
+   * getTimezoneOffset reports them — UTC-4 is +240. Null for frames stored before the
+   * column existed, which genuinely have no answer.
+   */
+  tz_offset_minutes: number | null;
   offset_ms: number;     // monotonic offset from session start; immune to wall-clock jumps
   seq: number;
   /**
