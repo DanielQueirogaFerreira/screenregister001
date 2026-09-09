@@ -1264,14 +1264,21 @@ async function deleteObjects(env: Env, keys: string[]): Promise<void> {
  * two never drift apart — an R2 lifecycle rule would expire objects on its own schedule
  * and leave rows pointing at nothing.
  */
-async function prune(env: Env): Promise<number> {
+async function prune(env: Env, maxBatches = Number.POSITIVE_INFINITY): Promise<number> {
   const days = Number(env.RETENTION_DAYS || '7');
   const cutoff = new Date(Date.now() - days * 86_400_000).toISOString();
   let total = 0;
 
-  for (;;) {
+  // Small enough that a batch is cheap to lose. Whatever kills the invocation — the
+  // platform's limit, a transient R2 error — costs at most the batch in flight, and the
+  // objects for it have already gone, so the retry re-deletes keys that are no longer
+  // there, which R2 treats as a no-op. Bigger batches make each failure more expensive
+  // without making the sweep meaningfully faster.
+  const BATCH = 200;
+
+  for (let i = 0; i < maxBatches; i++) {
     const { results } = await env.DB.prepare(
-      `SELECT frame_id, storage_key FROM frames WHERE captured_at < ? LIMIT 500`,
+      `SELECT frame_id, storage_key FROM frames WHERE captured_at < ? LIMIT ${BATCH}`,
     ).bind(cutoff).all<{ frame_id: string; storage_key: string }>();
     if (results.length === 0) break;
 
@@ -1305,26 +1312,36 @@ export default {
       console.log(`retention sweep removed ${n} frames; auth and status tables pruned`);
       return;
     }
-    // RETENTION_DAYS=0 is not a retention policy, it is an order to keep nothing, and an
-    // operator who has just given that order should not have to wait until 03:00 to see it
-    // carried out. So purge mode runs the same sweep on the five-minute schedule, using
-    // the same code path — the point of reusing `prune` rather than writing a bulk delete
-    // is that it removes the object and its catalogue row together, which is the one
-    // property a purge must not lose. It converges: once nothing is left the sweep is a
-    // no-op, and putting the value back above zero ends it.
-    //
-    // It also means a deployment left at zero deletes new frames within five minutes.
-    // That is the honest reading of "keep nothing", and it is why this is a var that takes
-    // Cloudflare account access to change rather than a setting inside the app.
-    if (Number(env.RETENTION_DAYS || '7') <= 0) {
-      const n = await prune(env);
-      console.log(`purge mode (RETENTION_DAYS=0) removed ${n} frames`);
-    }
     await recordProbes(env, await runProbes(env));
     // Cheap, indexed, and almost always a no-op. Running it beside the probe rather than
     // in the nightly sweep means an abandoned recording reads as finished within minutes
     // instead of the next morning.
     await closeAbandoned(env).catch((err) => console.error('abandoned sweep failed', err));
+
+    // RETENTION_DAYS=0 is not a retention policy, it is an order to keep nothing, and an
+    // operator who has just given that order should not have to wait until 03:00 to see it
+    // carried out. So purge mode runs the same sweep on the five-minute schedule, reusing
+    // `prune` because it removes the object and its catalogue row together — the one
+    // property a purge must not lose.
+    //
+    // Last, and caught. Everything above it is the status page's only source of evidence,
+    // and putting a bulk delete of tens of thousands of objects in front of the probe
+    // means that if the delete throws or runs out of time, the probe never runs either and
+    // the operator watching a purge sees a status page that has simply stopped — which is
+    // exactly what happened the first time this shipped.
+    //
+    // Bounded per invocation for the same reason: it takes as many batches as it can
+    // afford and leaves the rest to the next tick five minutes later. It converges, and
+    // putting RETENTION_DAYS back above zero ends it.
+    //
+    // A deployment left at zero also deletes frames captured while it is set, within five
+    // minutes. That is the honest reading of "keep nothing", and it is why the switch is a
+    // var that takes Cloudflare account access to change rather than a setting in the app.
+    if (Number(env.RETENTION_DAYS || '7') <= 0) {
+      await prune(env, 20)
+        .then((n) => console.log(`purge mode (RETENTION_DAYS=0) removed ${n} frames`))
+        .catch((err) => console.error('purge sweep failed', err));
+    }
   },
 };
 
