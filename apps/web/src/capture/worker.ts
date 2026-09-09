@@ -3,7 +3,7 @@ import {
   TimelineProcessor, findMaskedFields, scaleRegions, stampLayout, toLuma, type Region,
 } from '@sr/core';
 import {
-  STAMP_VERSION, THUMB_W, THUMB_H, stampTimeLines, ulid, type CaptureSettings,
+  STAMP_VERSION, THUMB_W, THUMB_H, stampTimeLine, ulid, type CaptureSettings,
 } from '@sr/schema';
 import type { CaptureIdentity, ToWorker, FromWorker } from './protocol.js';
 
@@ -67,8 +67,8 @@ class Payload {
      */
     readonly frameId: string,
     readonly stamp: string,
-    /** Local wall clock with its offset, then the absolute UTC instant. */
-    readonly timeLines: string[],
+    /** The captured instant in UTC, to the millisecond. */
+    readonly capturedIso: string,
     /**
      * Minutes behind UTC on the recording machine, as getTimezoneOffset reports them.
      * Kept raw rather than pre-formatted: the row should store the fact, and every place
@@ -114,7 +114,7 @@ class Payload {
         // The image that gets stored. Masks first so the stamp is never painted over.
         const ctx = stage(bmp, w, h);
         if (redacted) paintMasks(ctx, regions);
-        if (s.burnInStamp) drawStamp(ctx, w, h, [this.stamp, ...this.timeLines]);
+        if (s.burnInStamp) drawStamp(ctx, w, h, [this.stamp, this.capturedIso]);
         const full = await ctx.canvas.convertToBlob({ type: 'image/webp', quality: s.quality });
 
         // The capture as it was — only when it was asked for, nothing was masked, and the
@@ -199,13 +199,11 @@ function paintMasks(ctx: OffscreenCanvasRenderingContext2D, regions: Region[]): 
  *
  * It is drawn over a scrim rather than straight onto the pixels, because white text on a
  * white document is unreadable and a stamp nobody can read is not provenance. The scrim is
- * sized to the text, so on a 1080p frame this covers about one percent of the image.
+ * sized to the text, so on a 1080p frame this covers well under one percent of the image.
  *
- * Three lines now, not two: the handle, the local wall clock with its offset, and the
- * absolute UTC instant. The local line was added because the previous stamp showed only
- * UTC and an offset, and reading what time that actually was required subtracting in your
- * head — which someone promptly got wrong and reported as a bug against a correct
- * timestamp. The third line is worth the extra fraction of a percent.
+ * Two lines: the handle and the captured instant in UTC. Deliberately no offset and no
+ * local time — see stampTimeLine in @sr/schema for why both were tried and removed. The
+ * offset is still recorded, on the row rather than on the picture.
  */
 function drawStamp(
   ctx: OffscreenCanvasRenderingContext2D, w: number, h: number, lines: string[],
@@ -297,7 +295,7 @@ async function onFrame(bitmap: ImageBitmap, seq: number, tMs: number): Promise<v
 
   const payload = new Payload(
     bitmap, bitmap.width, bitmap.height,
-    frameId, stamp, stampTimeLines(capturedMs, tzOffsetMinutes), tzOffsetMinutes,
+    frameId, stamp, stampTimeLine(capturedMs), tzOffsetMinutes,
   );
   live.push(payload);
   proc.push({ seq, tMs, luma, payload });

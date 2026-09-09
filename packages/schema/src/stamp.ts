@@ -232,33 +232,25 @@ export function localWallClock(capturedIso: string, minutesBehindUtc: number): s
 }
 
 /**
- * The time lines burned into a stored frame: local wall clock first, absolute instant
- * second.
+ * The time line burned into a stored frame: the exact instant, in UTC, to the millisecond.
  *
- * The order is the whole point, and the first version had it wrong. It printed only
- * `2026-09-09T06:26:34.762Z UTC-4`, which is complete and correct and still left the
- * person looking at it to subtract four hours in their head to find out what time it
- * actually was — and the first thing that happened is that someone read 06:26 against a
- * clock saying 02:29, concluded the offset was wrong, and reported a bug against a
- * correct timestamp. A provenance mark that needs arithmetic before it can be checked is
- * not doing its job.
+ * UTC only, and nothing else on the image. Two earlier versions carried more — an offset
+ * appended to this line, then a whole second line rendering the local wall clock — and
+ * both made the stamp harder to trust rather than easier. An offset invites the reader to
+ * do arithmetic and disagree with the result; a local time is one more thing that can be
+ * misread, and it means nothing once the image has been exported and opened somewhere
+ * else. `Z` is unambiguous everywhere, forever, to anyone.
  *
- * So the readable form leads: `2026-09-09 02:26:34.762 UTC-4` is what a human compares
- * against their own clock and their own memory of the afternoon. The Z line stays
- * underneath because it is the durable half — the one that still means something after
- * the image has been exported, pasted into a document, and read on a machine in another
- * country — and because two frames from two timezones can only be ordered by it.
+ * The offset has not been discarded, only moved off the picture. It is on the frame row
+ * and the session row, and Inspect renders the recording machine's wall clock and its
+ * zone from there — which is the right place for a fact you look up rather than one you
+ * read off a screenshot.
  *
- * Neither substitutes for the other, which is why both are drawn rather than one.
+ * Milliseconds are not decoration: frames are ULID-ordered by millisecond, so a timestamp
+ * truncated to the second cannot tell two frames of one second apart.
  */
-export function stampTimeLines(
-  capturedMs: number, minutesBehindUtc: number,
-): [local: string, utc: string] {
-  const iso = new Date(capturedMs).toISOString();
-  return [
-    `${localWallClock(iso, minutesBehindUtc)} ${formatUtcOffset(minutesBehindUtc)}`,
-    iso,
-  ];
+export function stampTimeLine(capturedMs: number): string {
+  return new Date(capturedMs).toISOString();
 }
 
 

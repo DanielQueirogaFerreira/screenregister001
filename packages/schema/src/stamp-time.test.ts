@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatUtcOffset, localWallClock, stampTimeLines, utcOffset } from './stamp.js';
+import { formatUtcOffset, localWallClock, stampTimeLine, utcOffset } from './stamp.js';
 
 describe('the offset burned into a frame', () => {
   it('inverts the sign getTimezoneOffset uses', () => {
@@ -18,37 +18,25 @@ describe('the offset burned into a frame', () => {
     expect(formatUtcOffset(210)).toBe('UTC-3:30');    // Newfoundland
   });
 
-  it('leads with the clock a person can check, and keeps the absolute instant under it', () => {
-    // The bug this ordering exists to prevent: a stamp reading only 06:26Z UTC-4 was read
-    // against a wall clock saying 02:29 and reported as a wrong offset. It was correct —
-    // 06:26Z IS 02:26 in UTC-4 — but nothing on the image said so without arithmetic.
+  it('carries the instant in UTC and nothing else', () => {
+    // UTC only, on purpose. An offset appended here invited the reader to do arithmetic
+    // and disagree with the answer; a local-time line meant nothing once the image left
+    // the machine. Z is unambiguous everywhere. The offset is still recorded on the row.
     const ms = Date.UTC(2026, 8, 9, 6, 26, 34, 762);
-    expect(stampTimeLines(ms, 240)).toEqual([
-      '2026-09-09 02:26:34.762 UTC-4',
-      '2026-09-09T06:26:34.762Z',
-    ]);
+    expect(stampTimeLine(ms)).toBe('2026-09-09T06:26:34.762Z');
+    expect(stampTimeLine(ms)).not.toMatch(/UTC[+-]/);
   });
 
-  it('keeps the milliseconds on both lines', () => {
-    // Not decoration: frames are ULID-ordered by millisecond, so a timestamp truncated to
-    // the second cannot tell two frames of the same second apart.
-    const ms = Date.UTC(2026, 8, 9, 5, 12, 44, 123);
-    for (const line of stampTimeLines(ms, 240)) expect(line).toContain('.123');
+  it('keeps the milliseconds, which is what tells two frames of one second apart', () => {
+    // Frames are ULID-ordered by millisecond; truncating to the second loses the ordering.
+    expect(stampTimeLine(Date.UTC(2026, 8, 9, 5, 12, 44, 123))).toContain('.123');
   });
 
-  it('agrees with itself: the local line is the Z line shifted by the stated offset', () => {
-    // The property that makes the two lines trustworthy together. Checked across offsets
-    // that cross midnight in both directions and one that is not a whole hour.
-    for (const off of [240, 360, 480, -60, 0, -330, 210]) {
-      const ms = Date.UTC(2026, 8, 9, 6, 26, 34, 762);
-      const [local, iso] = stampTimeLines(ms, off);
-      const [wall, label] = [local.slice(0, 23), local.slice(24)];
-      expect(wall).toBe(localWallClock(iso, off));
-      expect(label).toBe(formatUtcOffset(off));
-      expect(Date.parse(iso)).toBe(ms);
+  it('round-trips to the instant it was given', () => {
+    for (const ms of [0, Date.UTC(2026, 8, 9, 6, 26, 34, 762), Date.UTC(1999, 11, 31, 23, 59, 59, 999)]) {
+      expect(Date.parse(stampTimeLine(ms))).toBe(ms);
     }
   });
-
   it('takes the offset in force at the captured instant, not at the time of asking', () => {
     // Daylight saving means "now" is the wrong question for a frame captured in another
     // season. utcOffset accepts the instant so the caller cannot accidentally ask it.
@@ -74,7 +62,7 @@ describe('the clock on the recording machine', () => {
     expect(localWallClock('2026-09-09T05:12:44.123Z', 480)).toMatch(/^2026-09-08 /);
   });
 
-  it('keeps the milliseconds, which is what tells two frames of one second apart', () => {
+  it('keeps the milliseconds when shifting into local time', () => {
     expect(localWallClock('2026-09-09T05:12:44.123Z', 240)).toContain('.123');
   });
 });
