@@ -1,0 +1,91 @@
+name: Sweep orphaned frames
+
+# Run the orphan cleanup now instead of waiting for 03:00.
+#
+# The Worker's nightly `prune` is the authority on this and does the same work; it is
+# deliberately not on the five-minute cron, because finding orphans reads in proportion to
+# the whole frames table and D1 bills rows read — that is what exhausted the daily
+# allowance once already. This exists for the case where waiting until 03:00 is not
+# acceptable, which is an operator's call to make and so lives behind a manual trigger.
+#
+# Objects are deleted before rows, and all three variants are derived from the stored key
+# exactly as `variantKeys` does in apps/api/src/frames.ts. That order is not cosmetic: a
+# row deleted before its object leaves an object nothing can name, and therefore nothing
+# will ever delete. If these two ever disagree, frames.ts is right.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "delete" to actually delete. Anything else lists and stops.'
+        required: true
+        default: 'dry-run'
+        type: string
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Find frames whose account no longer exists
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          npx --yes wrangler@4 d1 execute screenregister001 --remote --json --command \
+            "SELECT frame_id, storage_key FROM frames WHERE user_id NOT IN (SELECT user_id FROM users)" \
+            > /tmp/orphans.json
+          python3 - <<'PY'
+          import json
+          d = json.load(open('/tmp/orphans.json'))
+          rows = d[0]['results'] if isinstance(d, list) else d['result'][0]['results']
+          open('/tmp/keys.txt', 'w').write('\n'.join(r['storage_key'] for r in rows))
+          open('/tmp/ids.txt', 'w').write('\n'.join(r['frame_id'] for r in rows))
+          print(f'{len(rows)} orphaned frame(s):')
+          for r in rows:
+              print(' ', r['frame_id'], r['storage_key'])
+          PY
+
+      - name: Delete the objects, then the rows
+        if: ${{ inputs.confirm == 'delete' }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          [ -s /tmp/keys.txt ] || { echo "nothing to do"; exit 0; }
+
+          # All three variants, same derivation as variantKeys(). Deleting a key that is
+          # not there is a no-op, so asking for all three unconditionally is both correct
+          # and cheaper than checking which exist.
+          while read -r key; do
+            [ -z "$key" ] && continue
+            for k in "$key" "${key/#f\//t/}" "${key/#f\//o/}"; do
+              echo "  rm $k"
+              npx --yes wrangler@4 r2 object delete "screenregister-frames/$k" --remote || true
+            done
+          done < /tmp/keys.txt
+
+          # Rows only after every object for them is gone.
+          ids=$(paste -sd, /tmp/ids.txt | sed "s/[^,]*/'&'/g")
+          npx --yes wrangler@4 d1 execute screenregister001 --remote --command \
+            "DELETE FROM frames WHERE frame_id IN ($ids)"
+
+          # And any session those frames were the last of. Only ended ones: an empty
+          # session that is still open is a recording in progress, not a leftover.
+          npx --yes wrangler@4 d1 execute screenregister001 --remote --command \
+            "DELETE FROM sessions WHERE ended_at IS NOT NULL
+               AND session_id NOT IN (SELECT DISTINCT session_id FROM frames)"
+
+      - name: Confirm nothing is left
+        if: ${{ inputs.confirm == 'delete' }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          npx --yes wrangler@4 d1 execute screenregister001 --remote --command \
+            "SELECT COUNT(*) AS orphans_remaining FROM frames
+              WHERE user_id NOT IN (SELECT user_id FROM users)"
