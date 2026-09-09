@@ -91,17 +91,23 @@ jobs:
           // The stamp sits bottom-left. Take a generous strip so the crop does not depend
           // on how many lines the build draws — the line count is itself the evidence for
           // which build produced this frame.
-          const cropH = Math.min(height, 80);
-          const cropW = Math.min(width, 430);
+          const cropH = Math.min(height, 78);
+          const cropW = Math.min(width, 420);
+
+          // Grayscale, no magnification, aggressive palette. The stamp is white monospace
+          // on a black scrim, so colour carries nothing, and the font is already 15px on a
+          // frame this wide — enlarging it only makes the payload bigger. This has to come
+          // back through a log, so every byte saved is one that survives the trip.
           const buf = await sharp('/tmp/frame.webp')
             .extract({ left: 0, top: height - cropH, width: cropW, height: cropH })
-            .resize({ width: cropW * 2, kernel: 'nearest' })
-            .png({ compressionLevel: 9, palette: true })
+            .greyscale()
+            .png({ compressionLevel: 9, palette: true, colours: 16 })
             .toBuffer();
 
-          console.log(`frame ${width}x${height}, stamp crop ${cropW}x${cropH}, png ${buf.length} bytes`);
-          console.log('---BEGIN STAMP PNG BASE64---');
           const b64 = buf.toString('base64');
-          for (let i = 0; i < b64.length; i += 200) console.log(b64.slice(i, i + 200));
+          console.log(`frame ${width}x${height}, stamp crop ${cropW}x${cropH}, `
+            + `png ${buf.length} bytes, base64 ${b64.length} chars`);
+          console.log('---BEGIN STAMP PNG BASE64---');
+          for (let i = 0; i < b64.length; i += 400) console.log(b64.slice(i, i + 400));
           console.log('---END STAMP PNG BASE64---');
           JS
