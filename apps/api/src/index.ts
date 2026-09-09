@@ -433,17 +433,7 @@ app.delete('/v1/admin/users/:id', adminOnly(async (c, admin) => {
 
   let removed = 0;
   if (dropRecordings) {
-    for (;;) {
-      const { results } = await c.env.DB.prepare(
-        `SELECT frame_id, storage_key FROM frames WHERE user_id = ? LIMIT 500`,
-      ).bind(id).all<{ frame_id: string; storage_key: string }>();
-      if (results.length === 0) break;
-      await deleteObjects(c.env, results.map((r) => r.storage_key));
-      await c.env.DB.prepare(
-        `DELETE FROM frames WHERE frame_id IN (${results.map(() => '?').join(',')})`,
-      ).bind(...results.map((r) => r.frame_id)).run();
-      removed += results.length;
-    }
+    removed = await deleteFramesWhere(c.env, 'user_id = ?', [id]);
     await c.env.DB.prepare(`DELETE FROM sessions WHERE user_id = ?`).bind(id).run();
   }
 
@@ -872,20 +862,7 @@ app.delete('/v1/sessions/:id', async (c) => {
  */
 app.delete('/v1/data', async (c) => {
   const userId = c.get('me').userId;
-  let frames = 0;
-
-  for (;;) {
-    const { results } = await c.env.DB.prepare(
-      `SELECT frame_id, storage_key FROM frames WHERE user_id = ? LIMIT 500`,
-    ).bind(userId).all<{ frame_id: string; storage_key: string }>();
-    if (results.length === 0) break;
-
-    await deleteObjects(c.env, results.map((r) => r.storage_key));
-    await c.env.DB.prepare(
-      `DELETE FROM frames WHERE frame_id IN (${results.map(() => '?').join(',')})`,
-    ).bind(...results.map((r) => r.frame_id)).run();
-    frames += results.length;
-  }
+  const frames = await deleteFramesWhere(c.env, 'user_id = ?', [userId]);
 
   const { meta } = await c.env.DB.prepare(`DELETE FROM sessions WHERE user_id = ?`)
     .bind(userId).run();
@@ -1264,28 +1241,40 @@ async function deleteObjects(env: Env, keys: string[]): Promise<void> {
  * two never drift apart — an R2 lifecycle rule would expire objects on its own schedule
  * and leave rows pointing at nothing.
  */
-async function prune(env: Env, maxBatches = Number.POSITIVE_INFINITY): Promise<number> {
-  const days = Number(env.RETENTION_DAYS || '7');
-  const cutoff = new Date(Date.now() - days * 86_400_000).toISOString();
-  let total = 0;
-
-  // D1 refuses a query with more than 100 bound parameters — "too many SQL variables" —
-  // and the row delete below binds one per frame. At 500 this threw every time, and it
-  // threw AFTER the objects for the batch had been deleted, so each attempt destroyed 500
-  // frames' images and left their rows behind pointing at nothing. Nothing surfaced it:
-  // the sweep only ever had zero expired frames to delete until a purge asked it to
-  // delete all of them at once.
-  //
-  // 90 leaves room under the limit. It also keeps the failure cheap in the order these
-  // two deletes have to happen: objects first, because a row deleted before its object
-  // orphans that object with nothing left to name it, while an object deleted before its
-  // row leaves a row a retry will clear.
+/**
+ * Delete every frame matching one predicate — the blobs and the catalogue rows together.
+ *
+ * The single place frames are deleted, because there are three reasons to delete them
+ * (retention, an account erasing its own history, an operator removing an account) and
+ * they were three copies of the same loop carrying the same bug.
+ *
+ * D1 refuses a query with more than 100 bound parameters — "too many SQL variables" — and
+ * the row delete binds one per frame. All three copies selected 500 and bound 500, so the
+ * delete threw every time, AFTER the objects for the batch had been deleted: 500 images
+ * destroyed and 500 rows left pointing at nothing, per attempt. In the sweep nothing
+ * surfaced it, because retention had never yet found an expired frame to delete. On
+ * `DELETE /v1/data` it would have surfaced as "deleting your history failed" to a caller
+ * whose history was already half gone.
+ *
+ * 90 leaves room under the limit and keeps a failure cheap in the order these two deletes
+ * have to happen: objects first, because a row deleted before its object orphans that
+ * object with nothing left to name it, while an object deleted before its row leaves a row
+ * a retry will clear. There is no transaction spanning R2 and D1, so a small window is the
+ * best available trade rather than something that can be closed.
+ *
+ * `where` is interpolated, so it must stay a literal written here. Every value that comes
+ * from a request travels in `binds`.
+ */
+async function deleteFramesWhere(
+  env: Env, where: string, binds: unknown[], maxBatches = Number.POSITIVE_INFINITY,
+): Promise<number> {
   const BATCH = 90;
+  let total = 0;
 
   for (let i = 0; i < maxBatches; i++) {
     const { results } = await env.DB.prepare(
-      `SELECT frame_id, storage_key FROM frames WHERE captured_at < ? LIMIT ${BATCH}`,
-    ).bind(cutoff).all<{ frame_id: string; storage_key: string }>();
+      `SELECT frame_id, storage_key FROM frames WHERE ${where} LIMIT ${BATCH}`,
+    ).bind(...binds).all<{ frame_id: string; storage_key: string }>();
     if (results.length === 0) break;
 
     await deleteObjects(env, results.map((r) => r.storage_key));
@@ -1294,6 +1283,13 @@ async function prune(env: Env, maxBatches = Number.POSITIVE_INFINITY): Promise<n
     ).bind(...results.map((r) => r.frame_id)).run();
     total += results.length;
   }
+  return total;
+}
+
+async function prune(env: Env, maxBatches = Number.POSITIVE_INFINITY): Promise<number> {
+  const days = Number(env.RETENTION_DAYS || '7');
+  const cutoff = new Date(Date.now() - days * 86_400_000).toISOString();
+  const total = await deleteFramesWhere(env, 'captured_at < ?', [cutoff], maxBatches);
 
   await env.DB.prepare(
     `DELETE FROM sessions WHERE session_id NOT IN (SELECT DISTINCT session_id FROM frames)`,
