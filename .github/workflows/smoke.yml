@@ -152,7 +152,7 @@ jobs:
           [ "$code" = "401" ] || fail "anonymous /v1/status returned HTTP $code, expected 401"
           code=$(curl -s -o /tmp/st.json -w '%{http_code}' -b "$JAR" "$BASE/v1/status")
           [ "$code" = "404" ] || fail "an ordinary account got HTTP $code from /v1/status, expected 404"
-          grep -q 'deploys\|services\|roadmap' /tmp/st.json \
+          grep -q 'deploys\|services\|roadmap\|storage' /tmp/st.json \
             && fail "the refusal leaked the status payload"
           echo "  anonymous -> 401, ordinary account -> 404"
 

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { bytes, perFrame } from '../lib/format.js';
 
 type ServiceStatus = 'up' | 'degraded' | 'down';
 
@@ -56,6 +57,7 @@ interface StatusPayload {
   services: ServiceRow[];
   history: HistoryRow[];
   deploys: DeployRow[];
+  storage: { sessions: number; frames: number; bytes: number };
   roadmap: Phase[];
   progress: { done: number; total: number; phase: Phase | null };
 }
@@ -457,6 +459,29 @@ export function StatusView() {
         {data.services.map((row) => (
           <ServiceCard key={row.service} row={row} history={data.history} />
         ))}
+      </div>
+
+      {/*
+        Storage, with the ratio beside the totals. An operator looking at this page during
+        an incident wants to know whether frames have become expensive, and a total alone
+        cannot answer that — 100 frames in 100 MB and 10,000 frames in 100 MB are the same
+        total and completely different problems.
+      */}
+      <div className="panel" style={{ marginTop: 14 }}>
+        <div className="row" style={{ marginBottom: 10 }}>
+          <b>Storage</b>
+          <span style={{ marginLeft: 'auto', color: 'var(--dim)' }}>
+            counted from session rows, not by scanning frames
+          </span>
+        </div>
+        <div className="stats">
+          <div className="stat"><b>{data.storage.sessions}</b><span>recordings</span></div>
+          <div className="stat"><b>{data.storage.frames.toLocaleString()}</b><span>frames</span></div>
+          <div className="stat"><b>{bytes(data.storage.bytes)}</b><span>in R2</span></div>
+          <div className="stat">
+            <b>{perFrame(data.storage.bytes, data.storage.frames)}</b><span>average</span>
+          </div>
+        </div>
       </div>
 
       <div className="panel" style={{ marginTop: 14 }}>

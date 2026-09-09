@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { PasswordField } from '../components/PasswordField.js';
-import { bytes, clock, day, duration } from '../lib/format.js';
+import { bytes, clock, day, duration, perFrame } from '../lib/format.js';
 
 /**
  * Operator view: what the whole system is doing, across every account.
@@ -188,6 +188,14 @@ export function AdminView() {
           <div className="stat"><b>{totals.sessions}</b><span>sessions</span></div>
           <div className="stat"><b>{totals.frames}</b><span>frames</span></div>
           <div className="stat"><b>{bytes(totals.bytes)}</b><span>in R2</span></div>
+          {/*
+            The ratio, not just the total. A total says how much is stored; only bytes per
+            frame says whether a frame is expensive, and that is the number any decision
+            about capture quality or store rate turns on. Derived here from figures the
+            response already carries — computing it server-side would mean another scan of
+            a table D1 bills by the row.
+          */}
+          <div className="stat"><b>{perFrame(totals.bytes, totals.frames)}</b><span>average</span></div>
           <div className="stat"><b>{live.length}</b><span>recording now</span></div>
         </div>
       </div>
@@ -209,7 +217,7 @@ export function AdminView() {
               <thead>
                 <tr>
                   <th>Account</th><th>Device</th><th>Running</th><th>Frames</th>
-                  <th>Size</th><th>Screen</th><th>Last beat</th><th></th>
+                  <th>Size</th><th>Per frame</th><th>Screen</th><th>Last beat</th><th></th>
                 </tr>
               </thead>
               <tbody>
@@ -220,6 +228,7 @@ export function AdminView() {
                     <td>{duration(Date.now() - Date.parse(r.started_at))}</td>
                     <td>{r.frames_stored}</td>
                     <td>{bytes(r.bytes_stored)}</td>
+                    <td>{perFrame(r.bytes_stored, r.frames_stored)}</td>
                     <td style={{ color: 'var(--dim)' }}>{r.screen_w}×{r.screen_h}</td>
                     <td style={{ color: 'var(--dim)' }}>
                       {Math.round((Date.now() - Date.parse(r.last_seen_at)) / 1000)}s ago
@@ -296,7 +305,7 @@ export function AdminView() {
             <thead>
               <tr>
                 <th>Email</th><th>Role</th><th>Joined</th><th>Sessions</th><th>Frames</th>
-                <th>Size</th><th>State</th><th></th>
+                <th>Size</th><th>Per frame</th><th>State</th><th></th>
               </tr>
             </thead>
             <tbody>
@@ -324,6 +333,7 @@ export function AdminView() {
                     <td>{u.sessions}</td>
                     <td>{u.frames}</td>
                     <td>{bytes(u.bytes)}</td>
+                    <td>{perFrame(u.bytes, u.frames)}</td>
                     <td>
                       {u.deleted_at ? <span className="tag warn-tag">removed</span>
                         : u.disabled_at ? <span className="tag warn-tag">disabled</span>
@@ -491,7 +501,7 @@ export function AdminView() {
             <thead>
               <tr>
                 <th>Account</th><th>Started</th><th>Length</th><th>Frames</th>
-                <th>Size</th><th></th>
+                <th>Size</th><th>Per frame</th><th></th>
               </tr>
             </thead>
             <tbody>
@@ -515,6 +525,7 @@ export function AdminView() {
                   </td>
                   <td>{r.frames_stored}</td>
                   <td>{bytes(r.bytes_stored)}</td>
+                  <td>{perFrame(r.bytes_stored, r.frames_stored)}</td>
                   <td>
                     <div className="row" style={{ gap: 6, flexWrap: 'nowrap' }}>
                       {/* Reachable from here as well as from the live table above: this is

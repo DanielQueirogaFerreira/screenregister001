@@ -3,7 +3,7 @@ import type { SessionRecord } from '@sr/schema';
 import type { CloudStore } from '@sr/storage';
 import type { CaptureSessions } from '../capture/sessions.js';
 import { LiveStrip } from './LiveStrip.js';
-import { bytes, day, clock, duration } from '../lib/format.js';
+import { bytes, clock, day, duration, perFrame } from '../lib/format.js';
 
 interface Props {
   store: CloudStore;
@@ -158,7 +158,11 @@ export function LibraryView({ store, sessions, accountId, onOpen, onInspect, onC
           <b>{picked.size} selected</b>
           <span style={{ color: 'var(--dim)' }}>
             {chosen.reduce((n, r) => n + r.frames_stored, 0)} frames ·{' '}
-            {bytes(chosen.reduce((n, r) => n + r.bytes_stored, 0))}
+            {bytes(chosen.reduce((n, r) => n + r.bytes_stored, 0))} ·{' '}
+            {perFrame(
+              chosen.reduce((n, r) => n + r.bytes_stored, 0),
+              chosen.reduce((n, r) => n + r.frames_stored, 0),
+            )}
           </span>
           <div className="row" style={{ marginLeft: 'auto' }}>
             <button className="primary" onClick={() => onOpen(chosen)}>
@@ -188,7 +192,7 @@ export function LibraryView({ store, sessions, accountId, onOpen, onInspect, onC
               />
             </th>
             <th>Started</th><th>Length</th><th>Frames</th><th>Size</th>
-            <th>Rate</th><th>Screen</th><th>Device</th><th></th>
+            <th>Per frame</th><th>Rate</th><th>Screen</th><th>Device</th><th></th>
           </tr>
         </thead>
         <tbody>
@@ -220,6 +224,10 @@ export function LibraryView({ store, sessions, accountId, onOpen, onInspect, onC
                 </td>
                 <td>{s.frames_stored}</td>
                 <td>{bytes(s.bytes_stored)}</td>
+                {/* Per recording, because this is where the settings that decide it are
+                    shown too — the column beside it is the FPS and sensitivity that
+                    produced this number. */}
+                <td>{perFrame(s.bytes_stored, s.frames_stored)}</td>
                 <td>{s.capture_fps} FPS · sens {s.sensitivity}</td>
                 <td style={{ color: 'var(--dim)' }}>{s.screen_w}×{s.screen_h}</td>
                 <td style={{ color: 'var(--dim)' }} title={s.device_id}>

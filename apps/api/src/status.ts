@@ -212,6 +212,14 @@ export interface StatusPayload {
     uptime_24h: number | null;
     uptime_7d: number | null;
   }[];
+  /**
+   * What is stored, and what one frame costs.
+   *
+   * The ratio is the point. A total says how much is in R2; only bytes per frame says
+   * whether that is a lot of cheap frames or a few expensive ones, and every decision
+   * about capture quality or store rate turns on the second question.
+   */
+  storage: { sessions: number; frames: number; bytes: number };
   /** One entry per service per hour, worst status seen. Aggregated in SQL, not shipped raw. */
   history: { hour: string; service: string; status: ServiceStatus }[];
   deploys: {
@@ -249,7 +257,7 @@ export async function buildStatus(env: Env): Promise<StatusPayload> {
   const dayAgo = new Date(Date.now() - 86_400_000).toISOString();
   const weekAgo = new Date(Date.now() - 7 * 86_400_000).toISOString();
 
-  const [latest, uptime, history, deploys, health] = await Promise.all([
+  const [latest, uptime, history, deploys, health, storage] = await Promise.all([
     // The newest row per service. The (service, at DESC) index makes the correlated
     // MAX(at) a lookup rather than a scan.
     env.DB.prepare(
@@ -290,6 +298,21 @@ export async function buildStatus(env: Env): Promise<StatusPayload> {
 
     // Cheap: one indexed D1 read plus two string checks. No key derivation.
     healthFacts(env),
+
+    /**
+     * From `sessions`, never from `frames`. Each session row already carries its own
+     * frame count and byte total, and there are a handful of them against tens of
+     * thousands of frames. Summing the frames table instead would be the same mistake
+     * that put this deployment over D1's daily row-read allowance and took logins down —
+     * on a page that refreshes itself.
+     */
+    env.DB.prepare(
+      `SELECT COUNT(*) AS sessions,
+              COALESCE(SUM(frames_stored), 0) AS frames,
+              COALESCE(SUM(bytes_stored), 0) AS bytes
+         FROM sessions`,
+    ).first<{ sessions: number; frames: number; bytes: number }>()
+      .catch(() => ({ sessions: 0, frames: 0, bytes: 0 })),
   ]);
 
   const uptimeBy = new Map(uptime.results.map((r) => [r.service, r]));
@@ -314,6 +337,7 @@ export async function buildStatus(env: Env): Promise<StatusPayload> {
     .sort((a, b) => SERVICE_ORDER.indexOf(a.service) - SERVICE_ORDER.indexOf(b.service));
 
   return {
+    storage: storage ?? { sessions: 0, frames: 0, bytes: 0 },
     generated_at: new Date().toISOString(),
     // Stale rows describe the past, and reporting the past as the present is the one thing
     // a status page must never do. If the prober has stopped, that is itself the outage.

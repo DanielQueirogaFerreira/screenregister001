@@ -67,7 +67,16 @@ export function InspectView({ store, accountId, initialStamp, onConsumed }: Insp
   const [result, setResult] = useState<ResolvedFrame | null>(null);
   const [lookupError, setLookupError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [image, setImage] = useState<string | null>(null);
+  /**
+   * Both encodings of the same capture, when both exist. A frame carries the stamp burned
+   * into its corner; the original is the pixels as they were. Held together rather than
+   * fetched on toggle so that flipping between them is instant and comparing a detail is
+   * actually possible — swapping images over a network round trip is not comparison.
+   */
+  const [images, setImages] = useState<{ full: string | null; original: string | null }>(
+    { full: null, original: null },
+  );
+  const [variant, setVariant] = useState<'full' | 'original'>('full');
   /**
    * A stamp arriving from elsewhere is a request to look it up, not just to fill the box.
    * It is cleared once resolved, so the field stays editable and returning to this tab
@@ -92,7 +101,10 @@ export function InspectView({ store, accountId, initialStamp, onConsumed }: Insp
     }
   }, [code, accountId]);
 
-  useEffect(() => () => { if (image) URL.revokeObjectURL(image); }, [image]);
+  useEffect(() => () => {
+    if (images.full) URL.revokeObjectURL(images.full);
+    if (images.original) URL.revokeObjectURL(images.original);
+  }, [images]);
 
   useEffect(() => {
     if (initialStamp && initialStamp !== code) {
@@ -116,10 +128,23 @@ export function InspectView({ store, accountId, initialStamp, onConsumed }: Insp
       const body = await res.json() as ResolvedFrame & { error?: string; detail?: string };
       if (!res.ok) throw new Error(body.detail ?? body.error ?? `HTTP ${res.status}`);
       setResult(body);
-      const blob = await store.getFullBlob(body.frame.frame_id).catch(() => null);
-      setImage((prev) => {
-        if (prev) URL.revokeObjectURL(prev);
-        return blob ? URL.createObjectURL(blob) : null;
+
+      // The original is only requested when the row says one exists. Asking anyway would
+      // 404 on every redacted frame — where the absence is the point, not a failure.
+      const [full, original] = await Promise.all([
+        store.getImageBlob(body.frame.frame_id, 'full').catch(() => null),
+        body.frame.has_original
+          ? store.getImageBlob(body.frame.frame_id, 'original').catch(() => null)
+          : Promise.resolve(null),
+      ]);
+      setVariant('full');
+      setImages((prev) => {
+        if (prev.full) URL.revokeObjectURL(prev.full);
+        if (prev.original) URL.revokeObjectURL(prev.original);
+        return {
+          full: full ? URL.createObjectURL(full) : null,
+          original: original ? URL.createObjectURL(original) : null,
+        };
       });
     } catch (err) {
       setLookupError(err instanceof Error ? err.message : String(err));
@@ -136,6 +161,16 @@ export function InspectView({ store, accountId, initialStamp, onConsumed }: Insp
       void resolve();
     }
   }, [pending, parts, code, resolve]);
+
+  // Falls back to the stamped image rather than showing nothing: `original` is null on
+  // every redacted frame and on every frame stored while keepOriginal was off.
+  //
+  // `showingOriginal` is derived from what is actually on screen, not from what was asked
+  // for. Naming the download from `variant` alone would hand someone a file called
+  // "-original" containing the stamped image whenever the fallback fired — a filename that
+  // misdescribes its contents is worse than no download button.
+  const showingOriginal = variant === 'original' && images.original !== null;
+  const shown = showingOriginal ? images.original : images.full;
 
   const drift = parts ? Date.now() - parts.capturedAtMs : 0;
   const capturedIso = parts ? new Date(parts.capturedAtMs).toISOString() : '';
@@ -199,7 +234,44 @@ export function InspectView({ store, accountId, initialStamp, onConsumed }: Insp
         {result && (
           <>
             <h3>The frame</h3>
-            {image && <img className="shot" src={image} alt="the frame this stamp names" />}
+            {shown && (
+              <>
+                <img
+                  className="shot"
+                  src={shown}
+                  alt={showingOriginal
+                    ? 'the capture as it was, without the stamp'
+                    : 'the frame this stamp names, with its stamp burned in'}
+                />
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8, flexWrap: 'wrap' }}>
+                  {/*
+                    Only offered when there is genuinely something to switch between. A
+                    toggle with one state is a lie about what is stored, and on a redacted
+                    frame the missing original is the evidence that masking happened before
+                    anything was encoded — not a button that should appear broken.
+                  */}
+                  {images.original && (
+                    <button onClick={() => setVariant((v) => (v === 'full' ? 'original' : 'full'))}>
+                      {variant === 'full' ? 'Show the untouched capture' : 'Show the stamped image'}
+                    </button>
+                  )}
+                  <a
+                    className="button-link"
+                    href={shown}
+                    download={`${result.frame.frame_id}${showingOriginal ? '-original' : ''}.webp`}
+                  >
+                    Download {showingOriginal ? 'the original' : 'this image'}
+                  </a>
+                  <span className="hint" style={{ marginLeft: 'auto' }}>
+                    {showingOriginal
+                      ? 'the capture as it was'
+                      : result.frame.redacted
+                        ? 'stamped, with masked fields painted over'
+                        : 'stamped'}
+                  </span>
+                </div>
+              </>
+            )}
             <div className="health-list" style={{ marginTop: 12 }}>
               <Row label="Frame id" value={result.frame.frame_id} mono />
               <Row label="Captured at" value={result.frame.captured_at} />
