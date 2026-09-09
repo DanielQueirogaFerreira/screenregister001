@@ -15,12 +15,23 @@ import { prune } from './index.js';
  * the deployment was younger than that, so every nightly sweep had zero rows to delete.
  * The first time it was asked to do real work was a purge.
  */
-function fakeDb(frames: { frame_id: string; storage_key: string }[]) {
+function fakeDb(
+  frames: { frame_id: string; storage_key: string }[],
+  /** Frames whose owning account is gone — what the orphan pass is supposed to find. */
+  orphans: { frame_id: string; storage_key: string }[] = [],
+) {
   const deleteBinds: unknown[][] = [];
+  const sqlSeen: string[] = [];
   return {
     deleteBinds,
+    sqlSeen,
     remaining: () => frames.length,
+    remainingOrphans: () => orphans.length,
     prepare(sql: string) {
+      // The two selects differ only in their WHERE clause, and a fake that ignored it
+      // reported the orphan pass deleting the retention pass's leftovers. Telling them
+      // apart is the whole point of having both.
+      const isOrphan = sql.includes('NOT IN (SELECT user_id FROM users)');
       const self = {
         _binds: [] as unknown[],
         bind(...binds: unknown[]) {
@@ -32,14 +43,18 @@ function fakeDb(frames: { frame_id: string; storage_key: string }[]) {
           return self;
         },
         async all() {
+          sqlSeen.push(sql);
           const m = /LIMIT (\d+)/.exec(sql);
-          return { results: frames.slice(0, Number(m?.[1] ?? 0)) };
+          const from = isOrphan ? orphans : frames;
+          return { results: from.slice(0, Number(m?.[1] ?? 0)) };
         },
         async run() {
+          sqlSeen.push(sql);
           if (/DELETE FROM frames/.test(sql)) {
             deleteBinds.push(self._binds);
             const gone = new Set(self._binds.map(String));
             frames = frames.filter((f) => !gone.has(f.frame_id));
+            orphans = orphans.filter((f) => !gone.has(f.frame_id));
           }
           return { meta: { changes: 1 } };
         },
@@ -116,5 +131,48 @@ describe('retention sweep', () => {
     await prune({ DB: db, FRAMES, RETENTION_DAYS: '0' } as never);
 
     expect(order.indexOf('object')).toBeLessThan(order.indexOf('row'));
+  });
+});
+
+describe('frames left behind by a deleted account', () => {
+  it('are swept, so deleting an account means the images are gone and not just hidden', () => {
+    // DELETE /v1/account clears what it can inside the request and then removes the
+    // account regardless, because ending access is the urgent half. This pass is what
+    // turns that into a promise about the images rather than only about access.
+    const orphans = many(120).map((f) => ({
+      frame_id: `orphan-${f.frame_id}`,
+      storage_key: `f/gone/s/orphan-${f.frame_id}.webp`,
+    }));
+    const db = fakeDb([], orphans);
+    const FRAMES = fakeBucket();
+
+    return prune({ DB: db, FRAMES, RETENTION_DAYS: '7' } as never).then((removed) => {
+      expect(removed).toBe(120);
+      expect(db.remainingOrphans()).toBe(0);
+      // Objects too, not only rows — an unreachable image is still a stored image.
+      expect(FRAMES.deleted).toContain('f/gone/s/orphan-f0.webp');
+    });
+  });
+
+  it('share the batch budget rather than running past it', async () => {
+    // A second unbounded pass behind a bounded one would undo the bound entirely.
+    const db = fakeDb(many(180), many(900).map((f) => ({
+      frame_id: `o-${f.frame_id}`,
+      storage_key: `f/gone/s/o-${f.frame_id}.webp`,
+    })));
+    const removed = await prune({ DB: db, FRAMES: fakeBucket(), RETENTION_DAYS: '0' } as never, 4);
+
+    expect(removed).toBe(4 * 90);
+  });
+
+  it('only removes an emptied session once it has actually ended', async () => {
+    // A recording that started seconds ago has no frames yet. Judging it by that would
+    // delete the session out from under a live recorder, whose next upload would 404.
+    const db = fakeDb([]);
+    await prune({ DB: db, FRAMES: fakeBucket(), RETENTION_DAYS: '7' } as never);
+
+    const sessionDelete = db.sqlSeen.find((q) => /DELETE FROM sessions/.test(q));
+    expect(sessionDelete).toBeDefined();
+    expect(sessionDelete).toMatch(/ended_at IS NOT NULL/);
   });
 });

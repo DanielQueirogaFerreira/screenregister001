@@ -475,10 +475,22 @@ jobs:
           [ "$code" = "404" ] || fail "an unknown frame returned HTTP $code, expected 404"
 
           echo
-          echo "--- clean up: delete the throwaway account"
+          echo "--- clean up: delete the throwaway account, and its recordings with it"
+          # Deliberately does NOT call DELETE /v1/data first. Deleting the account used to
+          # remove only the users row, on the strength of a cascade that covers auth_sessions
+          # and not the recordings, so every frame this run uploaded stayed in R2 owned by
+          # nobody. The client happened to erase data first, which is why nothing noticed.
           curl -fsS -b "$JAR" -X DELETE "$BASE/v1/account" -H "Origin: $BASE" -o /tmp/del.json \
             || fail "account deletion failed"
           cat /tmp/del.json; echo
+          python3 - <<'PY' || exit 1
+          import json
+          d = json.load(open('/tmp/del.json'))
+          # Two frames were uploaded above: one clean, one redacted.
+          assert d.get('frames') == 2, f"account deletion removed {d.get('frames')} frames, expected 2"
+          assert d.get('sessions') == 1, f"account deletion removed {d.get('sessions')} sessions, expected 1"
+          print('  removed with the account:', d['frames'], 'frames,', d['sessions'], 'session')
+          PY
           code=$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR" "$BASE/v1/auth/me")
           [ "$code" = "401" ] || fail "the deleted account still authenticates (HTTP $code)"
 

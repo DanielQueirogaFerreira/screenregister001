@@ -9,6 +9,7 @@ import {
   revokeAllSessions, revokeSession, sessionCookie, useEmailToken, type UserRow,
 } from './accounts.js';
 import { hashPassword, validatePassword, verifyPassword } from './password.js';
+import { deleteFramesWhere } from './frames.js';
 import { isOperator, resolvePrincipal } from './roles.js';
 import { mailConfigured, mailerFor, resetPasswordMessage, verifyEmailMessage } from './mailer.js';
 
@@ -520,14 +521,40 @@ app.post('/v1/account/claim', requireAuth, async (c) => {
   return c.json({ ok: true, ...moved });
 });
 
-/** Erase the account itself. Frames and objects are removed by the caller first. */
+/**
+ * Erase the account, and the recordings with it.
+ *
+ * This used to delete only the `users` row, on the strength of a comment claiming
+ * "ON DELETE CASCADE clears sessions, tokens and links with it". That is true, and it is
+ * about the wrong sessions. `auth_sessions`, `auth_tokens` and `api_tokens` do reference
+ * `users` and do cascade. The `sessions` table — the recordings — references nothing at
+ * all, and `frames` cascades from `sessions`, not from `users`. One word meaning two
+ * things in one schema is how a screen recorder came to leave a week of screen images in
+ * R2 after the account that made them was gone.
+ *
+ * Order matters. Recordings go first and the account row last, so an interruption leaves
+ * an account that still owns its remaining data and can be asked again — rather than a
+ * deleted account whose images nothing is left to name.
+ *
+ * The in-request deletion is bounded. An account with a week of recording holds tens of
+ * thousands of frames and clearing them all is not a thing one HTTP request can promise,
+ * so this takes what it can and the account is deleted regardless: access ends now, which
+ * is the part a person asking to be deleted actually cares about. Anything left over is
+ * an orphan by definition, and `prune` sweeps orphans on the same pass that enforces
+ * retention — so the guarantee is completion, not completion within this request.
+ */
 app.delete('/v1/account', requireAuth, async (c) => {
   const userId = c.get('me').userId;
   await audit(c.env, c.req.raw, 'account_deleted', { userId });
-  // ON DELETE CASCADE clears sessions, tokens and links with it.
+
+  const frames = await deleteFramesWhere(c.env, 'user_id = ?', [userId], 200);
+  const { meta } = await c.env.DB.prepare(`DELETE FROM sessions WHERE user_id = ?`)
+    .bind(userId).run();
+  await c.env.DB.prepare(`DELETE FROM devices WHERE user_id = ?`).bind(userId).run();
   await c.env.DB.prepare(`DELETE FROM users WHERE user_id = ?`).bind(userId).run();
+
   c.header('Set-Cookie', clearedCookie(isSecure(c)));
-  return c.json({ ok: true });
+  return c.json({ ok: true, frames, sessions: meta?.changes ?? 0 });
 });
 
 export const authRoutes = app;
