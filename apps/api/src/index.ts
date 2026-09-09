@@ -1269,12 +1269,18 @@ async function prune(env: Env, maxBatches = Number.POSITIVE_INFINITY): Promise<n
   const cutoff = new Date(Date.now() - days * 86_400_000).toISOString();
   let total = 0;
 
-  // Small enough that a batch is cheap to lose. Whatever kills the invocation — the
-  // platform's limit, a transient R2 error — costs at most the batch in flight, and the
-  // objects for it have already gone, so the retry re-deletes keys that are no longer
-  // there, which R2 treats as a no-op. Bigger batches make each failure more expensive
-  // without making the sweep meaningfully faster.
-  const BATCH = 200;
+  // D1 refuses a query with more than 100 bound parameters — "too many SQL variables" —
+  // and the row delete below binds one per frame. At 500 this threw every time, and it
+  // threw AFTER the objects for the batch had been deleted, so each attempt destroyed 500
+  // frames' images and left their rows behind pointing at nothing. Nothing surfaced it:
+  // the sweep only ever had zero expired frames to delete until a purge asked it to
+  // delete all of them at once.
+  //
+  // 90 leaves room under the limit. It also keeps the failure cheap in the order these
+  // two deletes have to happen: objects first, because a row deleted before its object
+  // orphans that object with nothing left to name it, while an object deleted before its
+  // row leaves a row a retry will clear.
+  const BATCH = 90;
 
   for (let i = 0; i < maxBatches; i++) {
     const { results } = await env.DB.prepare(
@@ -1338,7 +1344,7 @@ export default {
     // minutes. That is the honest reading of "keep nothing", and it is why the switch is a
     // var that takes Cloudflare account access to change rather than a setting in the app.
     if (Number(env.RETENTION_DAYS || '7') <= 0) {
-      await prune(env, 20)
+      await prune(env, 40)
         .then((n) => console.log(`purge mode (RETENTION_DAYS=0) removed ${n} frames`))
         .catch((err) => console.error('purge sweep failed', err));
     }
