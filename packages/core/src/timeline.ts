@@ -24,6 +24,8 @@ export interface ProcessorStats {
   skippedNoChange: number;
   skippedTransient: number;
   skippedBurstCap: number;
+  /** Suppressed by `minStoreGapMs` — a real change, deferred to the next frame after the gap. */
+  skippedMinGap: number;
 }
 
 export interface ActivityPoint {
@@ -73,6 +75,7 @@ export class TimelineProcessor<P = unknown> {
     skippedNoChange: 0,
     skippedTransient: 0,
     skippedBurstCap: 0,
+    skippedMinGap: 0,
   };
 
   constructor(
@@ -171,6 +174,27 @@ export class TimelineProcessor<P = unknown> {
         this.consumeThrough(revertIdx);
         return null;
       }
+    }
+
+    // --- Minimum gap between stored frames ---
+    // The real storage governor. `maxFramesPerSec` below is clamped to the capture rate,
+    // so at 1 FPS it never binds and the recorder stores a frame every second for as long
+    // as the screen keeps moving — which is where 370 MB an hour comes from.
+    //
+    // Crucially this does NOT advance the reference. The burst cap below does, because it
+    // is protecting against a video playing where every frame differs from the last and
+    // measuring against a frozen picture would keep the branch hot forever. Here the
+    // opposite is wanted: the reference must stay on the last frame actually stored, so
+    // that whatever accumulates during the gap is still visible as change when the gap
+    // ends. Advancing it would let a slow drift — a page scrolled a line at a time —
+    // pass through unrecorded, one sub-threshold step at a time.
+    if (
+      this.settings.minStoreGapMs > 0 &&
+      f.tMs - this.lastStoredTMs < this.settings.minStoreGapMs
+    ) {
+      this.stats.skippedMinGap++;
+      this.consumeThrough(0);
+      return null;
     }
 
     // --- Rate cap during sustained motion ---

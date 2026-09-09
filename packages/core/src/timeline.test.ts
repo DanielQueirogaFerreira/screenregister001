@@ -108,10 +108,13 @@ describe('settle selection', () => {
 });
 
 describe('rate limiting under motion', () => {
+  // These two isolate the burst cap, so they turn the minimum gap off. With the default
+  // three-second gap in force it, not the cap, is what bounds the rate — which is the whole
+  // point of adding it, and is covered by its own describe block below.
   it('bounds the store rate during 10s of unbroken scrolling', () => {
     const base = desktop();
     const lumas = Array.from({ length: 300 }, (_, i) => scrolled(base, i * 3));
-    const settings = at(30, { maxFramesPerSec: 4 });
+    const settings = at(30, { maxFramesPerSec: 4, minStoreGapMs: 0 });
     const decisions = run(lumas, settings);
 
     // Motion that never settles is sampled once per maxSettleMs rather than flooding.
@@ -124,7 +127,7 @@ describe('rate limiting under motion', () => {
     // Each one settles instantly, so only the hard cap can hold the rate down.
     const lumas: Uint8Array[] = [];
     for (let i = 0; i < 300; i++) lumas.push(desktop(Math.floor(i / 4)));
-    const settings = at(30, { maxFramesPerSec: 4 });
+    const settings = at(30, { maxFramesPerSec: 4, minStoreGapMs: 0 });
     const decisions = run(lumas, settings);
 
     const seconds = 10;
@@ -174,5 +177,65 @@ describe('session close', () => {
     const last = decisions[decisions.length - 1]!;
     expect(last.frame.seq).toBeGreaterThanOrEqual(40);
     expect(['settled', 'scene_change', 'burst', 'final']).toContain(last.reason);
+  });
+});
+
+describe('minimum gap between stored frames', () => {
+  /** A screen that genuinely differs every single second — scrolling, or a video. */
+  const alwaysChanging = (n: number): Uint8Array[] =>
+    Array.from({ length: n }, (_, i) => desktop(i));
+
+  it('is what actually limits storage at 1 FPS, where maxFramesPerSec cannot', () => {
+    // The cap is clamped to the capture rate, so at 1 FPS a cap of 4 is slack and the
+    // recorder stores every second. This is the measured production behaviour that put
+    // 1.295 GB into R2, so the test states it rather than assuming it is impossible.
+    const uncapped = run(alwaysChanging(60), at(1, { minStoreGapMs: 0, maxFramesPerSec: 4 }));
+    expect(uncapped.length).toBeGreaterThan(40);
+
+    const gapped = run(alwaysChanging(60), at(1, { minStoreGapMs: 3000, maxFramesPerSec: 4 }));
+    expect(gapped.length).toBeLessThanOrEqual(uncapped.length / 2.5);
+  });
+
+  it('leaves at least the gap between consecutive stored frames', () => {
+    const decisions = run(alwaysChanging(60), at(1, { minStoreGapMs: 5000 }));
+    const times = decisions.map((d) => d.frame.tMs);
+    for (let i = 1; i < times.length - 1; i++) {
+      expect(times[i]! - times[i - 1]!).toBeGreaterThanOrEqual(5000);
+    }
+  });
+
+  it('still measures change against the last STORED frame, so a slow drift is not lost', () => {
+    // A page scrolled one line at a time. Each step is small enough to sit under the
+    // threshold on its own; only the accumulation across the gap is visible. If the gap
+    // advanced the diff reference the way the burst cap does, this would store nothing
+    // after the first frame and a minute of scrolling would vanish from the record.
+    const base = desktop();
+    const lumas = Array.from({ length: 60 }, (_, i) => scrolled(base, i));
+    const decisions = run(lumas, at(1, { minStoreGapMs: 5000 }));
+
+    expect(decisions.length).toBeGreaterThan(2);
+    expect(decisions.some((d) => d.frame.seq > 10)).toBe(true);
+  });
+
+  it('does not delay the frame that closes a session', () => {
+    const lumas = [...Array.from({ length: 8 }, () => desktop()), desktop(99)];
+    const decisions = run(lumas, at(1, { minStoreGapMs: 30_000 }));
+    expect(decisions[decisions.length - 1]!.frame.seq).toBe(lumas.length - 1);
+  });
+
+  it('does nothing to a still screen, which is already free', () => {
+    const base = desktop();
+    const lumas = Array.from({ length: 601 }, () => base);
+    const withGap = run(lumas, at(1, { minStoreGapMs: 3000 }));
+    const without = run(lumas, at(1, { minStoreGapMs: 0 }));
+    expect(withGap.length).toBe(without.length);
+  });
+
+  it('rejects a gap that would outlast the heartbeat', () => {
+    expect(validateSettings({ ...DEFAULT_SETTINGS, minStoreGapMs: -1 }))
+      .toContainEqual(expect.stringContaining('minStoreGapMs'));
+    expect(validateSettings({ ...DEFAULT_SETTINGS, minStoreGapMs: 400_000 }))
+      .toContainEqual(expect.stringContaining('heartbeatMs'));
+    expect(validateSettings(DEFAULT_SETTINGS)).toEqual([]);
   });
 });

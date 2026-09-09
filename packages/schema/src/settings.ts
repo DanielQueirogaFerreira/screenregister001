@@ -32,6 +32,26 @@ export interface CaptureSettings {
   settleThreshold: number;
   /** Hard cap on stored frames per second during sustained motion. */
   maxFramesPerSec: number;
+  /**
+   * Shortest gap between two stored frames while the screen keeps changing. 0 disables it.
+   *
+   * `maxFramesPerSec` cannot do this job. It is clamped to `captureFps`, so at the default
+   * 1 FPS a cap of 4 is pure slack and the real limit is one stored frame every second —
+   * which is exactly what a measured session did: 12,525 frames over about three and a
+   * half hours, 103 KB each, 1.295 GB. That is roughly 370 MB for every hour of active
+   * use, and seven days of it fits in no free tier.
+   *
+   * This is the knob that changes that number, and it costs recall resolution rather than
+   * image quality: at three seconds the same hour costs about 123 MB, at five about 74 MB.
+   * A still screen is unaffected either way — stillness is already free, carried by
+   * `hold_ms` on the frame before it.
+   *
+   * Nothing is lost, only delayed. The gap never advances the diff reference, so a change
+   * that happens inside the window is still measured against the last frame actually
+   * stored, and the first frame after the window carries it. Switching apps mid-gap
+   * therefore costs up to this many milliseconds of latency, not the event.
+   */
+  minStoreGapMs: number;
   /** Store a frame this often even with zero change, to assert "still showing this". */
   heartbeatMs: number;
 
@@ -115,6 +135,7 @@ export const DEFAULT_SETTINGS: CaptureSettings = {
   maxSettleMs: 1200,
   settleThreshold: 0.01,
   maxFramesPerSec: 4,
+  minStoreGapMs: 3000,
   heartbeatMs: 300_000,
   burnInStamp: true,
   keepOriginal: false,
@@ -205,5 +226,14 @@ export function validateSettings(s: CaptureSettings): string[] {
   if (s.maxFramesPerSec < 1) errs.push('maxFramesPerSec must be >= 1');
   // maxFramesPerSec above captureFps is not an error — it is simply slack. The
   // processor clamps it to the capture rate, so a cap of 4 at 1 FPS just never binds.
+  // Which is why minStoreGapMs exists, and why it is the one that must be checked here.
+  if (s.minStoreGapMs < 0) errs.push('minStoreGapMs must be >= 0');
+  if (s.minStoreGapMs >= s.heartbeatMs) {
+    errs.push(
+      `minStoreGapMs (${s.minStoreGapMs}) must be below heartbeatMs (${s.heartbeatMs}); ` +
+        'a gap that outlasts the heartbeat would suppress the frames that prove the ' +
+        'screen was still showing something',
+    );
+  }
   return errs;
 }

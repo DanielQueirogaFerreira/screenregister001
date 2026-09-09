@@ -46,7 +46,7 @@ export interface LiveSession {
 }
 
 const EMPTY_STATS: ProcessorStats = {
-  sampled: 0, stored: 0, skippedNoChange: 0, skippedTransient: 0, skippedBurstCap: 0,
+  sampled: 0, stored: 0, skippedNoChange: 0, skippedTransient: 0, skippedBurstCap: 0, skippedMinGap: 0,
 };
 
 interface Entry extends LiveSession {

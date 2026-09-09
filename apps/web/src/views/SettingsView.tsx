@@ -107,8 +107,13 @@ export function SettingsView({
           onChange={(maxSettleMs) => set({ maxSettleMs })} />
 
         <Num label="Max frames per second" min={1} value={settings.maxFramesPerSec}
-          hint="Hard ceiling during sustained motion, so a playing video cannot flood storage."
+          hint="Hard ceiling during sustained motion, so a playing video cannot flood storage. Clamped to the capture rate, so at 1 FPS this never binds — use the minimum gap below."
           onChange={(maxFramesPerSec) => set({ maxFramesPerSec })} />
+
+        <Num label="Minimum gap between stored frames (s)" min={0} step={1}
+          value={Math.round(settings.minStoreGapMs / 1000)}
+          hint="The knob that decides how much a busy hour costs. Measured on real recordings at ~103 KB a frame: 0 stores every second (~370 MB/h), 3 s costs ~123 MB/h, 5 s ~74 MB/h. It changes how often the screen is sampled into the record, never the quality of a frame, and a still screen is free either way."
+          onChange={(sec) => set({ minStoreGapMs: sec * 1000 })} />
 
         <Num label="Heartbeat (seconds)" min={10} value={Math.round(settings.heartbeatMs / 1000)}
           hint="Keep one frame this often even with no change, so stillness is recorded as fact."
@@ -198,7 +203,7 @@ export function SettingsView({
           onChange={(maxWidth) => set({ maxWidth })} />
 
         <Num label="WebP quality (0–1)" step={0.05} value={settings.quality}
-          hint="0.7 is a good balance; below 0.5 text becomes hard to read, which matters for later OCR."
+          hint="Measured against real frames: 0.6 saves 11% of the bytes, 0.5 saves 20%, 0.4 saves 30% — all of it paid for in fidelity, and text is what degrades first, which matters for later OCR. Re-encoding at 0.7 by any other method saves 4%, so there is no free saving hiding here: to store less without touching quality, widen the gap above."
           onChange={(quality) => set({ quality })} />
 
         <Num label="Skip stills longer than (ms)" step={1000} value={settings.skipStillsOverMs}
