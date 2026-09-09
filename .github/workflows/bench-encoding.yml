@@ -1,0 +1,116 @@
+name: Bench frame encoding
+
+# Answers "how much smaller can a stored frame be, and what does it cost in quality"
+# with the account's own frames instead of a guess. The sandbox this repository is
+# developed in cannot reach R2, and a Worker cannot decode an image, so the measurement
+# has to happen somewhere that has both the bucket and an image library: here.
+#
+# Read-only. It downloads objects, re-encodes them in a temp directory, and prints a
+# table. Nothing is written back to R2 or D1.
+
+on:
+  workflow_dispatch:
+    inputs:
+      keys:
+        description: 'R2 object keys to measure, comma-separated (f/<user>/<session>/<frame>.webp)'
+        required: true
+        type: string
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Fetch the sample frames
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          KEYS: ${{ inputs.keys }}
+        run: |
+          mkdir -p samples
+          i=0
+          IFS=',' read -ra ARR <<< "$KEYS"
+          for k in "${ARR[@]}"; do
+            k="$(echo "$k" | xargs)"
+            [ -z "$k" ] && continue
+            i=$((i+1))
+            npx --yes wrangler@4 r2 object get "screenregister-frames/$k" \
+              --remote --file "samples/$(printf '%02d' $i).webp"
+          done
+          ls -l samples
+
+      - name: Re-encode at each candidate setting and measure
+        run: |
+          npm install --no-save sharp@0.34
+          node --input-type=module <<'JS'
+          import sharp from 'sharp';
+          import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+
+          // Every candidate the capture worker could plausibly switch to. `canvas` marks
+          // the ones OffscreenCanvas.convertToBlob can produce on its own; the rest need
+          // a WASM encoder shipped with the client, which is a real cost and should only
+          // be paid if the numbers here justify it.
+          const candidates = [
+            { name: 'webp q70 e4  (today, canvas)', canvas: true,  enc: (s) => s.webp({ quality: 70, effort: 4 }) },
+            { name: 'webp q70 e6',                  canvas: false, enc: (s) => s.webp({ quality: 70, effort: 6 }) },
+            { name: 'webp q60 e6',                  canvas: false, enc: (s) => s.webp({ quality: 60, effort: 6 }) },
+            { name: 'webp q50 e6',                  canvas: false, enc: (s) => s.webp({ quality: 50, effort: 6 }) },
+            { name: 'webp q40 e6',                  canvas: false, enc: (s) => s.webp({ quality: 40, effort: 6 }) },
+            { name: 'avif q50 e4',                  canvas: false, enc: (s) => s.avif({ quality: 50, effort: 4 }) },
+            { name: 'avif q40 e4',                  canvas: false, enc: (s) => s.avif({ quality: 40, effort: 4 }) },
+            { name: 'avif q30 e4',                  canvas: false, enc: (s) => s.avif({ quality: 30, effort: 4 }) },
+          ];
+
+          // Peak signal-to-noise against the frame as it is stored today. The reference is
+          // itself lossy, so these are NOT absolute fidelity numbers — they say how much a
+          // re-encode moves the picture away from what the account already has, which is
+          // the actual question when changing a setting.
+          async function psnr(aBuf, bBuf) {
+            const a = await sharp(aBuf).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+            const b = await sharp(bBuf).removeAlpha().resize(a.info.width, a.info.height).raw().toBuffer();
+            let sum = 0;
+            for (let i = 0; i < a.data.length; i++) { const d = a.data[i] - b[i]; sum += d * d; }
+            const mse = sum / a.data.length;
+            return mse === 0 ? Infinity : 10 * Math.log10((255 * 255) / mse);
+          }
+
+          const files = readdirSync('samples').filter((f) => f.endsWith('.webp')).sort();
+          const totals = candidates.map(() => ({ bytes: 0, psnr: 0, ms: 0 }));
+          let sourceTotal = 0;
+
+          for (const f of files) {
+            const buf = readFileSync(`samples/${f}`);
+            const meta = await sharp(buf).metadata();
+            sourceTotal += buf.length;
+            console.log(`\n${f}  ${meta.width}x${meta.height}  ${(buf.length / 1024).toFixed(1)} KB as stored`);
+            for (let i = 0; i < candidates.length; i++) {
+              const t0 = Date.now();
+              const out = await candidates[i].enc(sharp(buf)).toBuffer();
+              const ms = Date.now() - t0;
+              const p = await psnr(buf, out);
+              totals[i].bytes += out.length; totals[i].psnr += p; totals[i].ms += ms;
+              console.log(
+                `   ${candidates[i].name.padEnd(28)} ${(out.length / 1024).toFixed(1).padStart(7)} KB` +
+                `  ${((out.length / buf.length) * 100).toFixed(0).padStart(4)}%` +
+                `  PSNR ${p === Infinity ? 'exact' : p.toFixed(1) + ' dB'}  ${ms}ms`,
+              );
+            }
+          }
+
+          console.log(`\n=== over ${files.length} frames, ${(sourceTotal / 1024 / 1024).toFixed(1)} MB as stored ===`);
+          console.log('setting                        total KB   of today   mean PSNR   mean ms   canvas-only?');
+          for (let i = 0; i < candidates.length; i++) {
+            const t = totals[i];
+            console.log(
+              `${candidates[i].name.padEnd(30)}` +
+              `${(t.bytes / 1024).toFixed(0).padStart(8)}` +
+              `${((t.bytes / sourceTotal) * 100).toFixed(0).padStart(10)}%` +
+              `${(t.psnr / files.length).toFixed(1).padStart(11)} dB` +
+              `${(t.ms / files.length).toFixed(0).padStart(10)}` +
+              `   ${candidates[i].canvas ? 'yes' : 'needs WASM encoder'}`,
+            );
+          }
+          JS
