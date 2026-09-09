@@ -49,7 +49,13 @@ jobs:
           set -uo pipefail
           EMAIL="smoke_$(date +%s)_${RANDOM}@example.com"
           PASSWORD="correct horse battery staple ${RANDOM}${RANDOM}"
-          JAR="$(mktemp)"; JAR2="$(mktemp)"
+          # Named paths under RUNNER_TEMP rather than mktemp, so the cleanup net at the end
+          # of the job can find this session after a failure kills this step. mktemp names
+          # live only in this shell, which is exactly why thirteen throwaway accounts
+          # accumulated in production: every red run leaked the one it had just created.
+          JAR="$RUNNER_TEMP/smoke.jar"; JAR2="$RUNNER_TEMP/smoke2.jar"
+          echo "SMOKE_JAR=$JAR" >> "$GITHUB_ENV"
+          echo "SMOKE_EMAIL=$EMAIL" >> "$GITHUB_ENV"
           fail() { echo "::error::$1"; exit 1; }
 
           echo "--- health"
@@ -509,3 +515,26 @@ jobs:
           echo " Signup completing at all means this Worker's CPU ceiling is"
           echo " far above the 10ms Workers Free allows."
           echo "=============================================================="
+
+      - name: Delete the throwaway account even if the run failed
+        # always(), because the cleanup inside the step above is the LAST thing it does and
+        # anything that fails earlier skips it. That is not hypothetical: a broken assertion
+        # and a typecheck mistake in one morning left thirteen smoke accounts in production,
+        # each one a real row in the real users table of a live deployment.
+        #
+        # On a green run the account is already gone and the session cookie with it, so this
+        # gets 401 and says nothing. It only speaks when it actually had to clean up, which
+        # makes its output a signal rather than noise.
+        if: always()
+        run: |
+          set -uo pipefail
+          jar="${SMOKE_JAR:-}"
+          [ -n "$jar" ] && [ -f "$jar" ] || { echo "no smoke session to clean up"; exit 0; }
+
+          code=$(curl -s -o /tmp/cleanup.json -w '%{http_code}' -b "$jar" \
+            -X DELETE "$BASE/v1/account" -H "Origin: $BASE" || echo 000)
+          case "$code" in
+            200) echo "::warning::Smoke account ${SMOKE_EMAIL:-?} outlived a failed run and was deleted here: $(cat /tmp/cleanup.json)" ;;
+            401) echo "already deleted by the run itself, as it should be" ;;
+            *)   echo "::warning::Could not delete ${SMOKE_EMAIL:-?} (HTTP $code). Run the sweep-orphans workflow." ;;
+          esac
