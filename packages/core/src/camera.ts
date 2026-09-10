@@ -1,58 +1,102 @@
 /**
- * An orbit camera, and the perspective projection it implies.
+ * A trackball camera, and the perspective projection it implies.
  *
  * Written rather than imported. Three.js would do this and a great deal more, but the
  * "more" is the problem: it is roughly 600 KB against a client that is currently 287 KB
  * whole, to draw a few hundred dots that need no materials, no lighting, no shadows and no
  * scene graph. What is actually needed is one matrix-free projection and a camera that
- * orbits, and that is small enough to write, small enough to read, and — the part a library
+ * turns, and that is small enough to write, small enough to read, and — the part a library
  * cannot give — testable without a GPU or a canvas.
  *
- * The camera looks at `target` from `distance` away, at angles `yaw` and `pitch`. Panning
- * moves the target rather than the eye, which is what makes dragging feel like moving the
- * object instead of walking around it.
+ * **Orientation is a quaternion, not a yaw/pitch pair, and that is the whole point.**
+ * Euler angles have to clamp pitch short of the poles: at exactly ±90° the view direction
+ * is parallel to world up, the cross product that builds the right vector collapses to zero
+ * length, and normalising it yields NaN. Clamping removes the NaN and introduces a worse
+ * problem — dragging up runs into an invisible wall and stops, while dragging sideways
+ * spins forever. A quaternion rotated about its own local axes has no poles, no wall and no
+ * special case: every direction of drag keeps turning as long as you keep dragging.
+ *
+ * The camera looks at `target` from `distance` away. Panning moves the target rather than
+ * the eye, which is what makes dragging feel like moving the object instead of walking
+ * around it.
  */
 
 export interface Vec3 { x: number; y: number; z: number }
+export interface Quat { x: number; y: number; z: number; w: number }
 
 export interface Camera {
-  /** Rotation about the world Y axis, radians. Wraps freely. */
-  yaw: number;
-  /** Elevation, radians. Clamped short of the poles — see PITCH_LIMIT. */
-  pitch: number;
+  /** Orientation. Identity looks down -Z from +Z, with world up on screen up. */
+  orientation: Quat;
   /** Eye-to-target distance in world units. Always positive. */
   distance: number;
-  /** The point the camera looks at. Panning moves this. */
+  /** The point the camera looks at and turns around. Panning and focusing move this. */
   target: Vec3;
   /** Vertical field of view, radians. */
   fov: number;
 }
 
+export const IDENTITY: Quat = { x: 0, y: 0, z: 0, w: 1 };
+
+export function quatFromAxisAngle(axis: Vec3, angle: number): Quat {
+  const len = Math.hypot(axis.x, axis.y, axis.z) || 1;
+  const h = angle / 2;
+  const s = Math.sin(h) / len;
+  return { x: axis.x * s, y: axis.y * s, z: axis.z * s, w: Math.cos(h) };
+}
+
+export function quatMul(a: Quat, b: Quat): Quat {
+  return {
+    w: a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
+    x: a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+    y: a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+    z: a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+  };
+}
+
 /**
- * How close pitch may get to straight up or down.
- *
- * At exactly ±90° the view direction is parallel to world up, the cross product that builds
- * the right vector collapses to zero length, and normalising it yields NaN — which
- * propagates to every projected point and blanks the canvas until reload. Stopping a
- * degree short costs nothing anyone can see and removes the failure entirely.
+ * Renormalise, because a thousand small multiplications drift off the unit sphere and a
+ * non-unit quaternion scales the whole scene a little more with every frame of dragging.
  */
-export const PITCH_LIMIT = Math.PI / 2 - 0.02;
+export function quatNormalize(q: Quat): Quat {
+  const n = Math.hypot(q.x, q.y, q.z, q.w);
+  if (!(n > 1e-12)) return { ...IDENTITY };
+  return { x: q.x / n, y: q.y / n, z: q.z / n, w: q.w / n };
+}
+
+/** Rotate a vector by a quaternion. */
+export function rotate(q: Quat, v: Vec3): Vec3 {
+  // t = 2 * (q.xyz x v); v' = v + q.w * t + q.xyz x t
+  const tx = 2 * (q.y * v.z - q.z * v.y);
+  const ty = 2 * (q.z * v.x - q.x * v.z);
+  const tz = 2 * (q.x * v.y - q.y * v.x);
+  return {
+    x: v.x + q.w * tx + q.y * tz - q.z * ty,
+    y: v.y + q.w * ty + q.z * tx - q.x * tz,
+    z: v.z + q.w * tz + q.x * ty - q.y * tx,
+  };
+}
 
 export const DEFAULT_CAMERA: Camera = {
-  // Not zero. A graph first seen face-on looks flat, and the whole point of this view is
-  // that it is not — a slight three-quarter angle shows the depth immediately.
-  yaw: 0.6,
-  pitch: 0.32,
+  // Not identity. A graph first seen face-on looks flat, and the whole point of this view
+  // is that it is not — a slight three-quarter angle shows the depth immediately.
+  orientation: quatNormalize(quatMul(
+    quatFromAxisAngle({ x: 0, y: 1, z: 0 }, 0.6),
+    quatFromAxisAngle({ x: 1, y: 0, z: 0 }, -0.32),
+  )),
   distance: 900,
   target: { x: 0, y: 0, z: 0 },
   fov: Math.PI / 4,
 };
 
-export const clampPitch = (p: number): number =>
-  Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, p));
+/** The three fixed viewpoints, as orientations. */
+export const VIEWS = {
+  front: IDENTITY,
+  side: quatFromAxisAngle({ x: 0, y: 1, z: 0 }, Math.PI / 2),
+  top: quatFromAxisAngle({ x: 1, y: 0, z: 0 }, -Math.PI / 2),
+} as const;
 
 /** Smallest and largest useful eye distance, so a wheel cannot lose the graph entirely. */
-export const MIN_DISTANCE = 60;
+export const MIN_DISTANCE = 40;
 export const MAX_DISTANCE = 12_000;
 
 export const clampDistance = (d: number): number =>
@@ -60,21 +104,12 @@ export const clampDistance = (d: number): number =>
 
 /** The orthonormal basis the camera sees in: right, up, and the direction it looks. */
 export function basis(cam: Camera): { right: Vec3; up: Vec3; forward: Vec3 } {
-  const cp = Math.cos(cam.pitch);
-  const sp = Math.sin(cam.pitch);
-  const cy = Math.cos(cam.yaw);
-  const sy = Math.sin(cam.yaw);
-  // Points from the eye toward the target.
-  const forward: Vec3 = { x: -cp * sy, y: -sp, z: -cp * cy };
-  // Right is horizontal by construction, so the horizon never tilts — a rolled horizon on
-  // a graph with horizontal text labels reads as a bug, not as a camera move.
-  const right: Vec3 = { x: cy, y: 0, z: -sy };
-  const up: Vec3 = {
-    x: right.y * forward.z - right.z * forward.y,
-    y: right.z * forward.x - right.x * forward.z,
-    z: right.x * forward.y - right.y * forward.x,
+  const q = cam.orientation;
+  return {
+    right: rotate(q, { x: 1, y: 0, z: 0 }),
+    up: rotate(q, { x: 0, y: 1, z: 0 }),
+    forward: rotate(q, { x: 0, y: 0, z: -1 }),
   };
-  return { right, up, forward };
 }
 
 export function eyeOf(cam: Camera): Vec3 {
@@ -118,13 +153,35 @@ export function project(p: Vec3, cam: Camera, w: number, h: number): Projected {
   const sx = vx * right.x + vy * right.y + vz * right.z;
   const sy = vx * up.x + vy * up.y + vz * up.z;
   const scale = (h / 2) / Math.tan(cam.fov / 2) / depth;
-  // Screen y grows downward; world y grows up.
+  // Screen y grows downward; the camera's up axis grows up.
   return { x: w / 2 + sx * scale, y: h / 2 - sy * scale, depth, scale, visible: true };
 }
 
-/** Drag to turn. Pixels in, radians out. */
+/**
+ * Drag to turn, in any direction, without end.
+ *
+ * The rotations are applied about the camera's OWN axes rather than the world's. That is
+ * what makes a drag feel the same whichever way the camera is already pointing, and it is
+ * also what removes the pole: there is no world "up" to become parallel to, so dragging
+ * upward simply carries on over the top and down the far side.
+ */
 export function orbit(cam: Camera, dxPx: number, dyPx: number, speed = 0.005): Camera {
-  return { ...cam, yaw: cam.yaw + dxPx * speed, pitch: clampPitch(cam.pitch + dyPx * speed) };
+  const yaw = quatFromAxisAngle({ x: 0, y: 1, z: 0 }, dxPx * speed);
+  // Negated so that dragging down lifts the camera and tips the top of the graph toward
+  // you, which is the direction this view has always turned.
+  const pitch = quatFromAxisAngle({ x: 1, y: 0, z: 0 }, -dyPx * speed);
+  return {
+    ...cam,
+    orientation: quatNormalize(quatMul(quatMul(cam.orientation, yaw), pitch)),
+  };
+}
+
+/** Spin about the view axis. Available because a trackball can, not because it must. */
+export function roll(cam: Camera, angle: number): Camera {
+  return {
+    ...cam,
+    orientation: quatNormalize(quatMul(cam.orientation, quatFromAxisAngle({ x: 0, y: 0, z: 1 }, angle))),
+  };
 }
 
 /**
@@ -153,6 +210,38 @@ export function pan(cam: Camera, dxPx: number, dyPx: number, h: number): Camera 
 export function zoom(cam: Camera, factor: number): Camera {
   return { ...cam, distance: clampDistance(cam.distance * factor) };
 }
+
+/** Turn around a chosen point, keeping the current angle and distance. */
+export function focusOn(cam: Camera, point: Vec3): Camera {
+  return { ...cam, target: { ...point } };
+}
+
+/**
+ * Keep the orbit centre near the graph.
+ *
+ * The orbit centre is free — that is the point of it — but "free" and "unbounded" are not
+ * the same thing. Panning has no natural end, and a few seconds of it puts the centre far
+ * out in empty space with the graph off screen and no cue for which way to drag back. This
+ * lets the centre go anywhere within reach of the graph and refuses to let it leave, so
+ * being lost is not a state the camera can reach.
+ */
+export function clampTarget(cam: Camera, centre: Vec3, maxDistance: number): Camera {
+  const dx = cam.target.x - centre.x;
+  const dy = cam.target.y - centre.y;
+  const dz = cam.target.z - centre.z;
+  const d = Math.hypot(dx, dy, dz);
+  if (!Number.isFinite(d)) return { ...cam, target: { ...centre } };
+  if (d <= maxDistance) return cam;
+  const k = maxDistance / d;
+  return {
+    ...cam,
+    target: { x: centre.x + dx * k, y: centre.y + dy * k, z: centre.z + dz * k },
+  };
+}
+
+/** How far the orbit centre has strayed — what a "you are here" readout shows. */
+export const strayedBy = (cam: Camera, centre: Vec3): number =>
+  Math.hypot(cam.target.x - centre.x, cam.target.y - centre.y, cam.target.z - centre.z);
 
 /**
  * Put the whole graph on screen: centre on it and back off far enough to contain its

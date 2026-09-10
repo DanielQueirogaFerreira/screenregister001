@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   boundingSphere, boundsOf, buildTree, coveredPaths, DEFAULT_LAYOUT, directoryIndices,
   energy, eventsBetween, heatAt, livePaths, nodeStats, seedLayout, siblingGroups,
-  stepLayout, type EvoLog,
+  spanX, spanY, spanZ, stepLayout, type EvoLog,
 } from './evolution.js';
 
 const PATHS = [
@@ -121,8 +121,7 @@ describe('layout', () => {
       expect(Number.isFinite(l.x[i]!)).toBe(true);
       expect(Number.isFinite(l.y[i]!)).toBe(true);
     }
-    const b = boundsOf(l);
-    expect(b.maxX - b.minX).toBeLessThan(5000);
+    expect(spanX(boundsOf(l))).toBeLessThan(5000);
   });
 
   it('survives every node starting at the same point', () => {
@@ -215,7 +214,7 @@ describe('aspect', () => {
       stepLayout(nodes, l, g, d, { ...DEFAULT_LAYOUT, aspect });
     }
     const b = boundsOf(l);
-    return (b.maxX - b.minX) / Math.max(1, b.maxY - b.minY);
+    return spanX(b) / Math.max(1, spanY(b));
   };
 
   it('settles wider than tall when asked to', () => {
@@ -290,20 +289,10 @@ describe('the third axis', () => {
   it('never stretches depth, whatever the aspect', () => {
     // A shape that is right head-on and wrong from the side is worse than a round one, and
     // this view exists to be turned around.
-    const wide = settle(600, 2.4);
-    const round = settle(600, 1);
-    const zSpread = (l: typeof wide) => {
-      let lo = Infinity, hi = -Infinity;
-      for (let i = 0; i < nodes.length; i++) { lo = Math.min(lo, l.z[i]!); hi = Math.max(hi, l.z[i]!); }
-      return hi - lo;
-    };
-    const xSpread = (l: typeof wide) => {
-      let lo = Infinity, hi = -Infinity;
-      for (let i = 0; i < nodes.length; i++) { lo = Math.min(lo, l.x[i]!); hi = Math.max(hi, l.x[i]!); }
-      return hi - lo;
-    };
-    expect(xSpread(wide)).toBeGreaterThan(xSpread(round));
-    expect(zSpread(wide)).toBeLessThan(zSpread(round) * 1.6);
+    const wide = boundsOf(settle(600, 2.4));
+    const round = boundsOf(settle(600, 1));
+    expect(spanX(wide)).toBeGreaterThan(spanX(round));
+    expect(spanZ(wide)).toBeLessThan(spanZ(round) * 1.6);
   });
 
   it('is deterministic in 3D', () => {

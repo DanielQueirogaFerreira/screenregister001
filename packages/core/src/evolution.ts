@@ -341,19 +341,38 @@ export function boundingSphere(l: Layout): { x: number; y: number; z: number; r:
   return { x: cx, y: cy, z: cz, r: Math.max(1, r) };
 }
 
-export interface Bounds { minX: number; minY: number; maxX: number; maxY: number }
+export interface Bounds {
+  minX: number; minY: number; minZ: number;
+  maxX: number; maxY: number; maxZ: number;
+}
 
+/**
+ * Axis-aligned extents.
+ *
+ * The camera frames with `boundingSphere`, not this — a box fitted from one angle crops
+ * from another. This answers the different question of how far the graph reaches along
+ * each axis, which is what the layout's own assertions are about.
+ */
 export function boundsOf(l: Layout): Bounds {
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  let minX = Infinity, minY = Infinity, minZ = Infinity;
+  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
   for (let i = 0; i < l.x.length; i++) {
     if (l.x[i]! < minX) minX = l.x[i]!;
     if (l.x[i]! > maxX) maxX = l.x[i]!;
     if (l.y[i]! < minY) minY = l.y[i]!;
     if (l.y[i]! > maxY) maxY = l.y[i]!;
+    if (l.z[i]! < minZ) minZ = l.z[i]!;
+    if (l.z[i]! > maxZ) maxZ = l.z[i]!;
   }
-  if (!Number.isFinite(minX)) return { minX: -1, minY: -1, maxX: 1, maxY: 1 };
-  return { minX, minY, maxX, maxY };
+  if (!Number.isFinite(minX)) {
+    return { minX: -1, minY: -1, minZ: -1, maxX: 1, maxY: 1, maxZ: 1 };
+  }
+  return { minX, minY, minZ, maxX, maxY, maxZ };
 }
+
+export const spanX = (b: Bounds): number => b.maxX - b.minX;
+export const spanY = (b: Bounds): number => b.maxY - b.minY;
+export const spanZ = (b: Bounds): number => b.maxZ - b.minZ;
 
 /**
  * How lit up each file is at a given moment: 1 the instant it is touched, fading to 0 over

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  boundingSphere, buildTree, DEFAULT_CAMERA, DEFAULT_LAYOUT, directoryIndices, frameSphere,
-  heatAt, livePaths, nodeStats, orbit, pan, project, seedLayout, siblingGroups, stepLayout,
-  zoom, type Camera, type EvoLog, type EvoNode, type Layout, type NodeStats,
+  boundingSphere, buildTree, clampTarget, DEFAULT_CAMERA, DEFAULT_LAYOUT, directoryIndices,
+  focusOn, frameSphere, heatAt, livePaths, nodeStats, orbit, pan, project, seedLayout,
+  siblingGroups, stepLayout, strayedBy, VIEWS, zoom,
+  type Camera, type EvoLog, type EvoNode, type Layout, type NodeStats, type Quat,
 } from '@sr/core';
 import { VersionBadge } from './VersionBadge.js';
 import { ACTION_COLOUR, ACTION_LABEL, FILE_KINDS, fileColour, fileKind } from '../lib/evolution-palette.js';
@@ -109,6 +110,34 @@ function Evolution({ log }: { log: EvoLog }) {
   const [hover, setHover] = useState<{ label: string; x: number; y: number } | null>(null);
 
   /**
+   * Two ways of using the same scene, sharing everything that matters.
+   *
+   * Navigate is for looking around: the graph is alive, the timeline runs, and a click
+   * picks something out. Inspect is for holding still: it stops the clock, makes the
+   * elements rigid, and turns the camera around whatever is selected. Neither is a
+   * different view — the selection, the camera and the playhead survive the switch, so
+   * moving between them never costs you the thing you were looking at.
+   */
+  const [mode, setMode] = useState<'navigate' | 'inspect'>('navigate');
+  /**
+   * Whether the elements themselves move, kept separate from whether the clock runs.
+   *
+   * These were one switch and should not have been. Freezing to read a commit also froze
+   * the drift, and wanting the drift back meant restarting the timeline. They are coupled
+   * by default — pressing Freeze stops both, which is what "freeze" means — and separable
+   * whenever the answer is not the default.
+   */
+  const [motion, setMotion] = useState<'live' | 'fixed'>('live');
+  /**
+   * The node the camera turns around, or null for a free point in space.
+   *
+   * When it names a node the target follows that node every frame, so a live graph carries
+   * the camera with it instead of drifting out from under it.
+   */
+  const [orbitOn, setOrbitOn] = useState<number | null>(null);
+  const [strayed, setStrayed] = useState(0);
+
+  /**
    * The playhead lives in a ref, not in state.
    *
    * Driving it from state means a re-render on every animation frame — sixty a second, each
@@ -123,6 +152,14 @@ function Evolution({ log }: { log: EvoLog }) {
   const screen = useRef<Hit[]>([]);
   const selectedRef = useRef<number | null>(null);
   selectedRef.current = selected;
+  const orbitRef = useRef<number | null>(null);
+  orbitRef.current = orbitOn;
+  /** The live layout, so buttons outside the loop can read a node's position. */
+  const layoutRef = useRef<Layout | null>(null);
+  /** Centre and radius of the graph, for the anti-lost clamp and the readout. */
+  const sphere = useRef({ x: 0, y: 0, z: 0, r: 1 });
+  /** How far the orbit centre has strayed, in graph radii. Mirrored to state at 8 Hz. */
+  const strayRef = useRef(0);
 
   /**
    * Pause freezes the simulation as well as the clock.
@@ -133,11 +170,14 @@ function Evolution({ log }: { log: EvoLog }) {
    * means frozen — the camera still moves, because turning a still object around is the
    * whole point of stopping it.
    */
-  const live = useRef({ playing, speed, spin });
-  live.current = { playing, speed, spin };
+  const live = useRef({ playing, speed, spin, motion });
+  live.current = { playing, speed, spin, motion };
 
   useEffect(() => {
-    const id = setInterval(() => setAtMs(clock.current), 125);
+    const id = setInterval(() => {
+      setAtMs(clock.current);
+      setStrayed(strayRef.current);
+    }, 125);
     return () => clearInterval(id);
   }, []);
 
@@ -204,8 +244,12 @@ function Evolution({ log }: { log: EvoLog }) {
       return;
     }
     // Shift, or any button but the first, pans. Everything else orbits.
-    if (e.shiftKey || e.ctrlKey || e.buttons > 1) setCam(pan(cam.current, dx, dy, rect.height));
-    else setCam(orbit(cam.current, dx, dy));
+    if (e.shiftKey || e.ctrlKey || e.buttons > 1) {
+      // Sliding the view is how you choose a centre that is not a node. Doing it while
+      // locked to one would fight the lock a frame later, so it releases it.
+      if (orbitRef.current !== null) setOrbitOn(null);
+      setCam(pan(cam.current, dx, dy, rect.height));
+    } else setCam(orbit(cam.current, dx, dy));
   };
 
   const onUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -219,6 +263,9 @@ function Evolution({ log }: { log: EvoLog }) {
     if (dragged.current < 4) {
       const hit = pick(screen.current, e.clientX - rect.left, e.clientY - rect.top);
       setSelected(hit);
+      // In inspect, picking something IS asking to look at it — making that a second
+      // click on a separate button would be ceremony.
+      if (hit !== null && mode === 'inspect') focusNode(hit);
     }
   };
 
@@ -246,15 +293,21 @@ function Evolution({ log }: { log: EvoLog }) {
     else if (k === 'ArrowDown') setCam(orbit(cam.current, 0, step));
     else if (k === '+' || k === '=') setCam(zoom(cam.current, 1 / 1.15));
     else if (k === '-' || k === '_') setCam(zoom(cam.current, 1.15));
-    else if (k === 'Home') { framed.current = false; }   // deliberately re-enables the refit
+    else if (k === 'Home') recentre();   // deliberately re-enables the refit
     else if (k === 'Escape') setSelected(null);
-    else if (k === ' ') { setPlaying((p) => !p); }
+    else if (k === ' ') setRunning(!playing);
+    else if (k === 'f' || k === 'F') { if (selected !== null) focusNode(selected); }
     else return;
     e.preventDefault();
   };
 
-  const view = (yaw: number, pitch: number) => {
-    setCam({ ...cam.current, yaw, pitch });
+  /**
+   * The anchors. Whatever the camera has been dragged into, these put it back onto a named
+   * axis without moving the orbit centre — so they re-orient someone who is lost without
+   * also throwing away the thing they had centred.
+   */
+  const view = (orientation: Quat) => {
+    setCam({ ...cam.current, orientation });
     setSpin(false);
   };
 
@@ -263,6 +316,7 @@ function Evolution({ log }: { log: EvoLog }) {
     const el = canvas.current;
     if (!el) return;
     const l = seedLayout(nodes);
+    layoutRef.current = l;
     framed.current = false;
     let last = performance.now();
     let raf = 0;
@@ -274,30 +328,54 @@ function Evolution({ log }: { log: EvoLog }) {
       // otherwise jump the playhead across days in a single step.
       const dt = Math.min(100, now - last);
       last = now;
-      const { playing: run, speed: rate, spin: turning } = live.current;
+      const { playing: run, speed: rate, spin: turning, motion: move } = live.current;
 
+      // The clock and the elements are now two decisions, so they are two branches.
       if (run) {
         const next = clock.current + (dt / SWEEP_MS) * span * rate;
         clock.current = next > endMs ? startMs : next;
+      }
+      if (move === 'live') {
         stepLayout(nodes, l, groups, dirs, { ...DEFAULT_LAYOUT, aspect: 1.6 });
         stepLayout(nodes, l, groups, dirs, { ...DEFAULT_LAYOUT, aspect: 1.6 });
-        if (turning && !interacting.current) {
-          cam.current = { ...cam.current, yaw: cam.current.yaw + dt * 0.00006 };
-        }
+      }
+      if (turning && !interacting.current) {
+        cam.current = orbit(cam.current, dt * 0.012, 0);
       }
 
       const cssW = el.clientWidth || 800;
       const cssH = el.clientHeight || 460;
+      const b = boundingSphere(l);
+      sphere.current = b;
+
       // Keep refitting until the graph stops growing, then leave the camera alone — it is
       // the viewer's from that moment on, and a camera that kept refitting would undo
       // every pan and zoom. Reset and Home set this back to false to refit on demand.
       if (!framed.current) {
-        const b = boundingSphere(l);
         cam.current = frameSphere(cam.current, b, b.r, cssW, cssH);
         framed.current = hasSettled(l);
+      } else {
+        const lock = orbitRef.current;
+        if (lock !== null && lock < nodes.length) {
+          // Follow the node. On a live graph the thing you centred is still moving, and a
+          // camera that stayed on its old position would let it wander off screen.
+          cam.current = focusOn(cam.current, { x: l.x[lock]!, y: l.y[lock]!, z: l.z[lock]! });
+        } else {
+          // Free centre, but never outside the graph itself.
+          //
+          // The first attempt allowed 2.2 radii of stray, on the theory that a little room
+          // outside was useful. Twenty-five hard pans then put the graph off screen
+          // entirely — measured, not guessed. The pivot is what the camera looks at, so
+          // keeping it inside the bounding sphere is what makes "you cannot get lost" a
+          // guarantee rather than a hope: whatever the angle or the zoom, the thing in the
+          // middle of the screen is part of the graph.
+          cam.current = clampTarget(cam.current, b, b.r);
+        }
       }
+      strayRef.current = strayedBy(cam.current, b) / Math.max(1, b.r);
 
-      render(el, nodes, l, cam.current, heatRef.current, liveRef.current, screen, selectedRef.current);
+      render(el, nodes, l, cam.current, heatRef.current, liveRef.current, screen,
+        selectedRef.current, orbitRef.current);
       raf = requestAnimationFrame(frame);
     };
     raf = requestAnimationFrame(frame);
@@ -319,6 +397,45 @@ function Evolution({ log }: { log: EvoLog }) {
   }, [log]);
 
   const seek = (t: number) => { clock.current = t; setAtMs(t); };
+
+  /** Freeze means freeze: the clock and the elements both. The switches below separate them. */
+  const setRunning = (run: boolean) => { setPlaying(run); setMotion(run ? 'live' : 'fixed'); };
+
+  const focusNode = (i: number | null) => {
+    const l = layoutRef.current;
+    setOrbitOn(i);
+    if (i === null || !l) return;
+    setCam(focusOn(cam.current, { x: l.x[i]!, y: l.y[i]!, z: l.z[i]! }));
+  };
+
+  const recentre = () => {
+    setOrbitOn(null);
+    framed.current = false;   // let the loop refit once, then hand the camera back
+  };
+
+  /**
+   * Inspect stops the world; leaving it puts back what was running before.
+   *
+   * Without the restore, a look at one file silently costs you the animation and you have
+   * to remember to press play — which is the sort of small tax that stops people using a
+   * mode at all.
+   */
+  const before = useRef<{ playing: boolean; motion: 'live' | 'fixed' } | null>(null);
+  const enterMode = (next: 'navigate' | 'inspect') => {
+    if (next === mode) return;
+    if (next === 'inspect') {
+      before.current = { playing, motion };
+      setPlaying(false);
+      setMotion('fixed');
+      setSpin(false);
+      if (selected !== null) focusNode(selected);
+    } else if (before.current) {
+      setPlaying(before.current.playing);
+      setMotion(before.current.motion);
+      before.current = null;
+    }
+    setMode(next);
+  };
 
   return (
     <>
@@ -347,25 +464,66 @@ function Evolution({ log }: { log: EvoLog }) {
               {!playing && <span className="evo-frozen-tag">frozen</span>}
             </div>
             <div className="evo-viewkeys">
-              <button onClick={() => view(0, 0)} title="Look along the z axis">Front</button>
-              <button onClick={() => view(Math.PI / 2, 0)} title="Look along the x axis">Side</button>
-              <button onClick={() => view(0, 1.45)} title="Look down the y axis">Top</button>
-              <button onClick={() => { cam.current = { ...DEFAULT_CAMERA }; framed.current = false; }}>
+              <button onClick={() => view(VIEWS.front)} title="Look along the z axis">Front</button>
+              <button onClick={() => view(VIEWS.side)} title="Look along the x axis">Side</button>
+              <button onClick={() => view(VIEWS.top)} title="Look down the y axis">Top</button>
+              <button
+                onClick={() => { cam.current = { ...DEFAULT_CAMERA }; recentre(); }}
+                title="Back to the opening view, centred on the whole graph"
+              >
                 Reset
               </button>
+            </div>
+
+            {/* Where the camera is turning, and the way back. The crosshair on the canvas
+                marks the pivot; this says what the pivot is and how far it has wandered. */}
+            <div className="evo-orbit-readout">
+              <span className={orbitOn === null ? '' : 'locked'}>
+                {orbitOn === null
+                  ? 'orbiting a free point'
+                  : `orbiting ${nodes[orbitOn]?.name || '/'}`}
+              </span>
+              {strayed > 0.55 && (
+                <button onClick={recentre} title="Bring the whole graph back into view">
+                  Recentre
+                </button>
+              )}
             </div>
           </div>
 
           <Inspector
             stats={stats}
             log={log}
+            mode={mode}
             node={selected === null ? null : nodes[selected] ?? null}
-            onClear={() => setSelected(null)}
+            orbiting={selected !== null && selected === orbitOn}
+            onOrbit={() => focusNode(selected)}
+            onClear={() => { setSelected(null); if (orbitOn !== null) recentre(); }}
           />
         </div>
 
+        {/* Mode first, because it decides what the rest of the row means. */}
+        <div className="evo-modes" role="tablist" aria-label="Interaction mode">
+          <button
+            role="tab" aria-selected={mode === 'navigate'}
+            className={mode === 'navigate' ? 'on' : ''}
+            onClick={() => enterMode('navigate')}
+          >
+            Navigate
+            <em>alive · fly around · click to pick out</em>
+          </button>
+          <button
+            role="tab" aria-selected={mode === 'inspect'}
+            className={mode === 'inspect' ? 'on' : ''}
+            onClick={() => enterMode('inspect')}
+          >
+            Inspect
+            <em>held still · orbits what you select · full detail</em>
+          </button>
+        </div>
+
         <div className="evo-controls">
-          <button onClick={() => setPlaying((p) => !p)} className={playing ? '' : 'primary'}>
+          <button onClick={() => setRunning(!playing)} className={playing ? '' : 'primary'}>
             {playing ? '❚❚ Freeze' : '▶ Play'}
           </button>
           <input
@@ -384,7 +542,17 @@ function Evolution({ log }: { log: EvoLog }) {
             <input type="checkbox" checked={spin} onChange={(e) => setSpin(e.target.checked)} />
             spin
           </label>
-          <button onClick={() => { seek(startMs); setPlaying(true); }}>Restart</button>
+          {/* The elements' own behaviour, separate from the clock. Freeze sets both; this
+              is here for when the answer is not the default. */}
+          <div className="evo-motion" role="group" aria-label="Element motion">
+            <button className={motion === 'live' ? 'on' : ''} onClick={() => setMotion('live')}>
+              live
+            </button>
+            <button className={motion === 'fixed' ? 'on' : ''} onClick={() => setMotion('fixed')}>
+              fixed
+            </button>
+          </div>
+          <button onClick={() => { seek(startMs); setRunning(true); }}>Restart</button>
         </div>
 
         <div className="evo-caption">
@@ -425,10 +593,13 @@ function Evolution({ log }: { log: EvoLog }) {
         </div>
 
         <div className="hint evo-help">
-          <b>Drag</b> to turn · <b>Shift-drag</b> or right-drag to pan · <b>Scroll</b> or pinch
-          to zoom · <b>Click</b> a node to inspect it · <b>Freeze</b> stops the graph dead so
-          it holds still while you look · arrow keys turn, <b>+</b>/<b>−</b> zoom,{' '}
-          <b>Home</b> refits, <b>Esc</b> deselects.
+          <b>Drag</b> to turn — in any direction, without end · <b>Shift-drag</b> or
+          right-drag to move the orbit centre · <b>Scroll</b> or pinch to zoom ·{' '}
+          <b>Click</b> a node to pick it out, then <b>Orbit this</b> to turn around it ·
+          arrow keys turn, <b>+</b>/<b>−</b> zoom, <b>F</b> orbits the selection,{' '}
+          <b>Home</b> recentres, <b>Esc</b> deselects, <b>Space</b> freezes. The crosshair
+          marks what the camera is turning around, and the centre can never leave the
+          graph behind.
         </div>
       </div>
 
@@ -489,14 +660,19 @@ function Evolution({ log }: { log: EvoLog }) {
 
 /** What one selected node is, and what has happened to it. */
 function Inspector({
-  stats, log, node, onClear,
-}: { stats: NodeStats | null; log: EvoLog; node: EvoNode | null; onClear: () => void }) {
+  stats, log, node, mode, orbiting, onOrbit, onClear,
+}: {
+  stats: NodeStats | null; log: EvoLog; node: EvoNode | null;
+  mode: 'navigate' | 'inspect'; orbiting: boolean;
+  onOrbit: () => void; onClear: () => void;
+}) {
   if (!stats || !node) {
     return (
       <aside className="evo-inspect empty-inspect">
         <div className="hint" style={{ margin: 0 }}>
-          Click any node to inspect it. A file reports its own history; a directory reports
-          everything underneath it.
+          {mode === 'inspect'
+            ? 'Click any node and the camera will turn around it. A file reports its own history; a directory reports everything underneath it.'
+            : 'Click any node to pick it out. A file reports its own history; a directory reports everything underneath it.'}
         </div>
       </aside>
     );
@@ -511,6 +687,15 @@ function Inspector({
         <button onClick={onClear} title="Clear selection">×</button>
       </div>
       <div className="evo-path" title={stats.path}>{stats.path || 'the whole repository'}</div>
+
+      {/* The one navigation control that belongs in the selection panel: having chosen a
+          thing, the next thing you want is to look at it from every side. */}
+      <button
+        className={`evo-orbit-btn${orbiting ? ' on' : ''}`}
+        onClick={orbiting ? onClear : onOrbit}
+      >
+        {orbiting ? '● orbiting this — release' : '⟳ Orbit this element'}
+      </button>
 
       <div className="evo-inspect-tags">
         <span className="tag">{node.file ? (kind?.label ?? 'file') : 'directory'}</span>
@@ -611,6 +796,7 @@ function render(
   liveSet: Set<number>,
   screen: React.MutableRefObject<Hit[]>,
   selected: number | null,
+  orbitOn: number | null,
 ): void {
   const dpr = Math.min(2, self.devicePixelRatio || 1);
   const cssW = el.clientWidth || 800;
@@ -719,6 +905,24 @@ function render(
     ctx.globalAlpha = 1;
     screen.current.push({ x, y, r, depth: pd[i]!, index: i });
   }
+
+  // The orbit centre, which always projects to the middle of the canvas.
+  //
+  // A camera that turns around an invisible point is disorienting in a way that is hard to
+  // name while it is happening: the graph swings and nothing explains what it is swinging
+  // about. Drawing the pivot costs four strokes and answers that before it is asked.
+  ctx.globalAlpha = 0.5;
+  ctx.strokeStyle = orbitOn === null ? '#4a5666' : '#4da3ff';
+  ctx.lineWidth = 1;
+  const mx = cssW / 2;
+  const my = cssH / 2;
+  ctx.beginPath();
+  ctx.moveTo(mx - 9, my); ctx.lineTo(mx - 3, my);
+  ctx.moveTo(mx + 3, my); ctx.lineTo(mx + 9, my);
+  ctx.moveTo(mx, my - 9); ctx.lineTo(mx, my - 3);
+  ctx.moveTo(mx, my + 3); ctx.lineTo(mx, my + 9);
+  ctx.stroke();
+  ctx.globalAlpha = 1;
 
   // Text last, so a node drawn afterwards can never land on top of a label.
   ctx.font = '11px ui-sans-serif, system-ui, sans-serif';
