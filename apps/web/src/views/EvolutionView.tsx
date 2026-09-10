@@ -7,6 +7,7 @@ import {
 } from '@sr/core';
 import { stampTimeLine } from '@sr/schema';
 import { VersionBadge } from './VersionBadge.js';
+import { SourceViewer } from './SourceViewer.js';
 import { ACTION_COLOUR, ACTION_LABEL, FILE_KINDS, fileColour, fileKind } from '../lib/evolution-palette.js';
 
 /**
@@ -176,6 +177,42 @@ function Evolution({ log }: { log: EvoLog }) {
   /** Whether the speed chips are showing. Collapsed by default: it is six extra targets. */
   const [speedOpen, setSpeedOpen] = useState(false);
   const [legendOpen, setLegendOpen] = useState(false);
+  /**
+   * Which file's contents are open, or null.
+   *
+   * Mirrored into the query string so a particular file is a link someone can send —
+   * "look at this one" is most of what a team does with a codebase viewer, and it was
+   * otherwise a place you could only reach by clicking the right dot.
+   */
+  const [viewing, setViewing] = useState<string | null>(() => {
+    if (typeof location === 'undefined') return null;
+    return new URLSearchParams(location.search).get('file');
+  });
+  useEffect(() => {
+    if (typeof history === 'undefined') return;
+    const url = new URL(location.href);
+    if (viewing) url.searchParams.set('file', viewing);
+    else url.searchParams.delete('file');
+    // replace, not push: closing a viewer should not need two taps of Back.
+    history.replaceState(null, '', url);
+  }, [viewing]);
+  /**
+   * Path to byte size for everything the build carries.
+   *
+   * Loaded once, lazily, so the inspector can offer "View content" only for files that are
+   * actually there — a button that leads to a 404 is worse than no button. Files above the
+   * bundler's size ceiling, and anything deleted since the window opened, are simply absent
+   * from it.
+   */
+  const [manifest, setManifest] = useState<Record<string, number> | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/source/manifest.json')
+      .then((r) => (r.ok ? (r.json() as Promise<Record<string, number>>) : null))
+      .then((m) => { if (!cancelled && m) setManifest(m); })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
   const [full, setFull] = useState(false);
   const shell = useRef<HTMLDivElement>(null);
 
@@ -547,11 +584,25 @@ function Evolution({ log }: { log: EvoLog }) {
               tick at frame rate, and the element carries no React children for the same
               reason: nothing here for a re-render to overwrite.
             */}
-            <div className="evo-clock">
-              <span className="evo-date" ref={dateRef} />
-              <span className="evo-time" ref={timeRef} />
+            {/*
+              The bottom-left readout, as one stack rather than three absolutes with
+              hand-tuned offsets — which is what it was, and the offsets needed retuning by
+              hand every time a line was added or the clock wrapped.
+
+              It lives inside the stage, so it survives fullscreen. The page's own version
+              badge is outside the fullscreen shell and disappears with it, which is exactly
+              when someone asking "which build am I looking at" cannot see the answer.
+            */}
+            <div className="evo-hud">
+              <span className="evo-build" title={`built ${__BUILD_TIME__}`}>
+                viewer v{__APP_VERSION__} · {__BUILD_COMMIT__}
+              </span>
+              {!playing && <span className="evo-frozen-tag">frozen</span>}
+              <span className="evo-clock">
+                <span className="evo-date" ref={dateRef} />
+                <span className="evo-time" ref={timeRef} />
+              </span>
             </div>
-            {!playing && <span className="evo-frozen-tag">frozen</span>}
             <div className="evo-viewkeys">
               <button onClick={() => view(VIEWS.front)} title="Look along the z axis">Front</button>
               <button onClick={() => view(VIEWS.side)} title="Look along the x axis">Side</button>
@@ -688,12 +739,22 @@ function Evolution({ log }: { log: EvoLog }) {
             </div>
           </div>
 
+          {/*
+            Over the whole layout, not just the canvas.
+            Confined to the stage it never got the width to show two panes — measured at a
+            1400px window, where the stage is 806px because the inspector column takes 268
+            of it, and "side by side when there is room" therefore never happened.
+          */}
+          {viewing && <SourceViewer path={viewing} onClose={() => setViewing(null)} />}
+
           <Inspector
             stats={stats}
             log={log}
             mode={mode}
             node={selected === null ? null : nodes[selected] ?? null}
             orbiting={selected !== null && selected === orbitOn}
+            bytes={selected !== null && manifest ? manifest[nodes[selected]?.id ?? ''] : undefined}
+            onView={() => setViewing(nodes[selected!]?.id ?? null)}
             onOrbit={() => focusNode(selected)}
             onClear={() => { setSelected(null); if (orbitOn !== null) recentre(); }}
           />
@@ -862,11 +923,11 @@ const LegendCard = ({ onClose }: { onClose: () => void }) => (
 
 /** What one selected node is, and what has happened to it. */
 function Inspector({
-  stats, log, node, mode, orbiting, onOrbit, onClear,
+  stats, log, node, mode, orbiting, bytes, onOrbit, onView, onClear,
 }: {
   stats: NodeStats | null; log: EvoLog; node: EvoNode | null;
-  mode: 'navigate' | 'inspect'; orbiting: boolean;
-  onOrbit: () => void; onClear: () => void;
+  mode: 'navigate' | 'inspect'; orbiting: boolean; bytes?: number;
+  onOrbit: () => void; onView: () => void; onClear: () => void;
 }) {
   if (!stats || !node) {
     return (
@@ -890,8 +951,13 @@ function Inspector({
       </div>
       <div className="evo-path" title={stats.path}>{stats.path || 'the whole repository'}</div>
 
-      {/* The one navigation control that belongs in the selection panel: having chosen a
-          thing, the next thing you want is to look at it from every side. */}
+      {/* The two things you want next, having picked something out: to look at it from
+          every side, and to see what is actually in it. */}
+      {node.file && bytes !== undefined && (
+        <button className="evo-orbit-btn src-open" onClick={onView}>
+          ⌗ View content <em>{(bytes / 1024).toFixed(1)} KB</em>
+        </button>
+      )}
       <button
         className={`evo-orbit-btn${orbiting ? ' on' : ''}`}
         onClick={orbiting ? onClear : onOrbit}

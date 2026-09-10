@@ -8,6 +8,7 @@
     "build": "pnpm run test && pnpm --filter @sr/web run build",
     "test": "vitest run",
     "evolution": "node scripts/evolution-log.mjs --days 30 --out apps/web/dist/evolution.json",
+    "source-bundle": "node scripts/source-bundle.mjs --out apps/web/dist/source",
     "typecheck": "tsc -p packages/schema --pretty false && tsc -p packages/core --pretty false && tsc -p packages/storage --pretty false && tsc -p apps/api --pretty false && tsc -p apps/web --pretty false",
     "dev:api": "pnpm --filter @sr/api run dev",
     "deploy:api": "pnpm --filter @sr/api run deploy",

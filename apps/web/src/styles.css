@@ -425,7 +425,7 @@ tbody tr:has(input[type="checkbox"]:checked) { background: var(--panel-2); }
 /* Canvas and inspector side by side on a desktop, stacked on a phone. The inspector keeps
    a fixed column so selecting a node never resizes the canvas — a graph that jumps when
    you click it makes the next click land somewhere else. */
-.evo-layout { display: grid; grid-template-columns: 1fr 268px; gap: 14px; }
+.evo-layout { display: grid; grid-template-columns: 1fr 268px; gap: 14px; position: relative; }
 @media (max-width: 860px) { .evo-layout { grid-template-columns: 1fr; } }
 
 .evo-stage { position: relative; }
@@ -448,28 +448,36 @@ tbody tr:has(input[type="checkbox"]:checked) { background: var(--panel-2); }
   padding: 3px 7px; font: 11px/1.4 ui-monospace, monospace; white-space: nowrap;
   max-width: 90%; overflow: hidden; text-overflow: ellipsis; z-index: 2;
 }
-.evo-clock {
+/* One bottom-left stack: build, state, clock. Reading order is top-down and least to most
+   changeable, so the eye lands on the moving number. */
+.evo-hud {
   position: absolute; left: 6px; bottom: 8px; pointer-events: none;
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+}
+/* Technical provenance, quietest thing on the canvas. Inside the stage on purpose: the
+   page's version badge is outside the fullscreen shell and vanishes with it. */
+.evo-build {
+  color: var(--dim); opacity: .6; font: 9px/1.3 ui-monospace, monospace;
+  letter-spacing: .2px;
+}
+.evo-clock {
   font: 12px/1 ui-monospace, monospace; font-variant-numeric: tabular-nums;
   display: flex; gap: 6px; align-items: baseline;
 }
 /* Context you glance at, so it is small and quiet and tucked to the left. */
 .evo-date { font-size: 10px; color: var(--dim); opacity: .75; }
-/* The part that is actually moving, to the millisecond. A fixed width stops the whole
-   line jittering sideways as the digits change under a proportional fallback font. */
+/* The part that is actually moving, to the millisecond. */
 .evo-time { font-size: 12.5px; color: var(--fg); letter-spacing: .2px; }
 .evo-frozen-tag {
-  position: absolute; left: 6px; bottom: 26px;
   color: var(--warn); border: 1px solid var(--warn); border-radius: 20px;
   padding: 1px 7px; font: 10px/1.5 ui-monospace, monospace;
-  text-transform: uppercase; letter-spacing: .5px; pointer-events: none;
+  text-transform: uppercase; letter-spacing: .5px;
 }
 /* On a narrow canvas the timestamp and the corner controls are together wider than the
    canvas — measured at 390px, where they overlapped. Stacking the date above the time
    halves the clock's width and costs nothing, since the date is the quiet half anyway. */
 @media (max-width: 560px) {
   .evo-clock { flex-direction: column; align-items: flex-start; gap: 1px; }
-  .evo-frozen-tag { bottom: 40px; }
 }
 .evo-viewkeys { position: absolute; right: 8px; top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
 .evo-viewkeys button {
@@ -759,3 +767,101 @@ tbody tr:has(input[type="checkbox"]:checked) { background: var(--panel-2); }
     max-height: none; border-left: 1px solid var(--line);
   }
 }
+
+/* --- the file viewer ------------------------------------------------------ */
+/* An overlay over the scene rather than a page of its own, so the graph, the selection and
+   the camera are all still there when it closes — and so it works in fullscreen, where
+   there is no page underneath to navigate to. */
+.src-viewer {
+  position: absolute; inset: 0; z-index: 20;
+  display: flex; flex-direction: column;
+  background: rgba(11, 14, 19, .985); border: 1px solid var(--line);
+  border-radius: var(--radius); overflow: hidden;
+}
+.src-head {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 8px 10px; border-bottom: 1px solid var(--line); background: var(--panel);
+}
+.src-title { flex: 1 1 160px; min-width: 0; }
+.src-title b { font-size: 13px; }
+.src-title span {
+  display: block; color: var(--dim); font: 10px/1.4 ui-monospace, monospace;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.src-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.src-meta { color: var(--dim); font: 10px/1 ui-monospace, monospace; }
+.src-tabs { display: inline-flex; border: 1px solid var(--line); border-radius: 16px; overflow: hidden; }
+.src-tabs button {
+  border: none; border-radius: 0; background: transparent; color: var(--dim);
+  font-size: 10px; padding: 0 10px; height: 26px;
+}
+.src-tabs button.on { background: var(--accent); color: #04101d; font-weight: 600; }
+.src-tabs button + button { border-left: 1px solid var(--line); }
+.src-raw { padding: 3px 9px; font-size: 10px; }
+.src-close { padding: 0; width: 26px; height: 26px; line-height: 1; flex: none; }
+
+.src-body { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: 1fr; }
+/* Both panes only when the viewer is wide enough to give each a real column. */
+.src-body.split { grid-template-columns: 1fr 1fr; }
+.src-body.split .src-code { border-left: 1px solid var(--line); }
+.src-pane { min-width: 0; min-height: 0; overflow: auto; }
+.src-preview { padding: 0; background: var(--bg); }
+/* White, because a page is a page: previewing a document on a dark ground would show
+   something the file does not say. */
+/* Column so the note keeps its place at the top and the frame takes what is left. */
+.src-doc { display: flex; flex-direction: column; height: 100%; }
+.src-frame { width: 100%; flex: 1 1 auto; min-height: 240px; border: 0; background: #fff; display: block; }
+.src-img { display: block; max-width: 100%; margin: 14px auto; }
+.src-note {
+  color: var(--dim); font-size: 11px; padding: 7px 12px; margin: 0; font-style: italic;
+  background: var(--panel); border-bottom: 1px solid var(--line); flex: none;
+}
+
+/* --- code ----------------------------------------------------------------- */
+.src-lines { padding: 8px 0 20px; font: 11.5px/1.55 ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+.src-line { display: flex; gap: 10px; padding: 0 12px; }
+.src-line:hover { background: rgba(255, 255, 255, .028); }
+.src-ln {
+  flex: none; text-align: right; color: #4a5666; user-select: none;
+  font-variant-numeric: tabular-nums;
+}
+.src-line code { white-space: pre; overflow-wrap: normal; }
+/* Four categories, because those are the four the highlighter can find without parsing.
+   Checked against this panel's background for contrast rather than picked by eye. */
+.t-plain { color: #c8d3e0; }
+.t-comment { color: #6b7b8d; font-style: italic; }
+.t-string { color: #9ad6a8; }
+.t-number { color: #e0a878; }
+.t-keyword { color: #a98bd8; }
+
+/* --- rendered markdown ---------------------------------------------------- */
+.src-md { padding: 14px 18px 26px; max-width: 74ch; font-size: 13px; line-height: 1.65; }
+.src-md h2 { font-size: 19px; margin: 18px 0 8px; }
+.src-md h3 { font-size: 16px; margin: 16px 0 6px; }
+.src-md h4, .src-md h5, .src-md h6 { font-size: 13px; margin: 14px 0 6px; }
+.src-md p { margin: 0 0 11px; }
+.src-md ul, .src-md ol { margin: 0 0 11px; padding-left: 22px; }
+.src-md li { margin-bottom: 4px; }
+.src-md code { background: var(--panel-2); border: 1px solid var(--line); border-radius: 4px;
+  padding: 1px 4px; font-size: 11.5px; }
+.src-md-code {
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 10px 12px; overflow-x: auto; margin: 0 0 12px;
+  font: 11.5px/1.55 ui-monospace, monospace;
+}
+.src-md-code code { background: none; border: 0; padding: 0; }
+.src-md blockquote {
+  margin: 0 0 11px; padding: 2px 0 2px 12px; border-left: 3px solid var(--line);
+  color: var(--dim);
+}
+.src-md hr { border: 0; border-top: 1px solid var(--line); margin: 18px 0; }
+.src-md a { color: var(--accent); }
+
+/* The button that opens it, in the selection panel. */
+.src-open em { font-style: normal; color: var(--dim); font-size: 10px; margin-left: 6px; }
+
+/* Exactly one version readout at a time. The page badge is position:fixed, so in the CSS
+   fallback fullscreen — the path taken where element fullscreen is refused — it would paint
+   over the scene beside the viewer's own build line. */
+body:has(.evo-layout.full) .version-badge,
+body:has(.evo-layout:fullscreen) .version-badge { display: none; }
