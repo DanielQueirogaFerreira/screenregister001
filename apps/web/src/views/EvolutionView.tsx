@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  boundingSphere, buildTree, clampTarget, DEFAULT_CAMERA, DEFAULT_LAYOUT, directoryIndices,
-  focusOn, frameSphere, heatAt, livePaths, nodeStats, orbit, pan, project, seedLayout,
-  siblingGroups, stepLayout, strayedBy, VIEWS, zoom,
+  boundingSphere, buildTree, clampTarget, DEFAULT_CAMERA, DEFAULT_LAYOUT, dirFor,
+  directoryIndices, focusOn, frameSphere, heatAt, livePaths, nodeStats, orbit, pan, project,
+  seedLayout, siblingGroups, stepLayout, strayedBy, VIEWS, zoom,
   type Camera, type EvoLog, type EvoNode, type Layout, type NodeStats, type Quat,
 } from '@sr/core';
 import { stampTimeLine } from '@sr/schema';
 import { VersionBadge } from './VersionBadge.js';
 import { SourceViewer } from './SourceViewer.js';
+import { Explorer } from './Explorer.js';
 import { ACTION_COLOUR, ACTION_LABEL, FILE_KINDS, fileColour, fileKind } from '../lib/evolution-palette.js';
 
 /**
@@ -135,6 +136,12 @@ function Evolution({ log }: { log: EvoLog }) {
   const nodes = useMemo(() => buildTree(log.paths), [log]);
   const groups = useMemo(() => siblingGroups(nodes), [nodes]);
   const dirs = useMemo(() => directoryIndices(nodes), [nodes]);
+  /** Path to node index, so a row in the navigator can find its dot on the graph. */
+  const nodeByPath = useMemo(() => {
+    const m = new Map<string, number>();
+    nodes.forEach((n, i) => { if (n.id) m.set(n.id, i); });
+    return m;
+  }, [nodes]);
 
   const startMs = (log.since ?? 0) * 1000;
   const endMs = (log.until ?? 0) * 1000;
@@ -205,6 +212,16 @@ function Evolution({ log }: { log: EvoLog }) {
    * from it.
    */
   const [manifest, setManifest] = useState<Record<string, number> | null>(null);
+  /** Directory the navigator is listing, or null when it is closed. */
+  const [browsing, setBrowsing] = useState<string | null>(null);
+  /**
+   * Where the navigator was opened from.
+   *
+   * Browsing moves the selection and the camera, so the trip needs a return leg — without
+   * one you would have to remember which dot you came from and find it again on a graph
+   * that has since travelled somewhere else.
+   */
+  const entry = useRef<{ dir: string; label: string; node: number | null; orbit: number | null } | null>(null);
   useEffect(() => {
     let cancelled = false;
     fetch('/source/manifest.json')
@@ -526,6 +543,37 @@ function Evolution({ log }: { log: EvoLog }) {
     setCam(focusOn(cam.current, { x: l.x[i]!, y: l.y[i]!, z: l.z[i]! }));
   };
 
+  /**
+   * Open the navigator on whatever is selected, remembering where we came from.
+   *
+   * A folder lists itself; a file lists the folder it lives in, with the file visible in
+   * it. Opening a file's own path as a directory would list nothing and look broken.
+   */
+  const browseFrom = (i: number) => {
+    const node = nodes[i];
+    if (!node) return;
+    const dir = dirFor(node.id, node.file);
+    entry.current = { dir, label: node.name || 'repo', node: i, orbit: orbitOn };
+    setBrowsing(dir);
+  };
+
+  /** Walk into a folder, and take the camera along when that folder is on the graph. */
+  const navigate = (dir: string) => {
+    setBrowsing(dir);
+    const i = nodeByPath.get(dir);
+    if (i !== undefined) { setSelected(i); focusNode(i); }
+  };
+
+  const returnToEntry = () => {
+    const e = entry.current;
+    if (!e) return;
+    setBrowsing(e.dir);
+    setSelected(e.node);
+    // Put the camera back where it was, including whether it was locked to a node at all.
+    if (e.orbit !== null) focusNode(e.orbit);
+    else setOrbitOn(null);
+  };
+
   const recentre = () => {
     setOrbitOn(null);
     framed.current = false;   // let the loop refit once, then hand the camera back
@@ -745,6 +793,30 @@ function Evolution({ log }: { log: EvoLog }) {
             1400px window, where the stage is 806px because the inspector column takes 268
             of it, and "side by side when there is room" therefore never happened.
           */}
+          {/*
+            The navigator sits under the file viewer, both over the layout. Opening a file
+            from a folder therefore does not leave the folder: the viewer stacks on top and
+            closing it puts you back on the same row, which is what makes browsing feel
+            like browsing rather than a series of round trips.
+          */}
+          {browsing !== null && manifest && (
+            <Explorer
+              manifest={manifest}
+              dir={browsing}
+              entry={entry.current}
+              openFile={viewing}
+              selected={selected === null ? null : nodes[selected]?.id ?? null}
+              onGraph={(path) => nodeByPath.has(path)}
+              onNavigate={navigate}
+              onOpenFile={(path) => {
+                setViewing(path);
+                const i = nodeByPath.get(path);
+                if (i !== undefined) setSelected(i);
+              }}
+              onReturn={returnToEntry}
+              onClose={() => setBrowsing(null)}
+            />
+          )}
           {viewing && <SourceViewer path={viewing} onClose={() => setViewing(null)} />}
 
           <Inspector
@@ -754,7 +826,9 @@ function Evolution({ log }: { log: EvoLog }) {
             node={selected === null ? null : nodes[selected] ?? null}
             orbiting={selected !== null && selected === orbitOn}
             bytes={selected !== null && manifest ? manifest[nodes[selected]?.id ?? ''] : undefined}
+            canBrowse={manifest !== null}
             onView={() => setViewing(nodes[selected!]?.id ?? null)}
+            onBrowse={() => selected !== null && browseFrom(selected)}
             onOrbit={() => focusNode(selected)}
             onClear={() => { setSelected(null); if (orbitOn !== null) recentre(); }}
           />
@@ -923,11 +997,11 @@ const LegendCard = ({ onClose }: { onClose: () => void }) => (
 
 /** What one selected node is, and what has happened to it. */
 function Inspector({
-  stats, log, node, mode, orbiting, bytes, onOrbit, onView, onClear,
+  stats, log, node, mode, orbiting, bytes, canBrowse, onOrbit, onView, onBrowse, onClear,
 }: {
   stats: NodeStats | null; log: EvoLog; node: EvoNode | null;
-  mode: 'navigate' | 'inspect'; orbiting: boolean; bytes?: number;
-  onOrbit: () => void; onView: () => void; onClear: () => void;
+  mode: 'navigate' | 'inspect'; orbiting: boolean; bytes?: number; canBrowse: boolean;
+  onOrbit: () => void; onView: () => void; onBrowse: () => void; onClear: () => void;
 }) {
   if (!stats || !node) {
     return (
@@ -956,6 +1030,16 @@ function Inspector({
       {node.file && bytes !== undefined && (
         <button className="evo-orbit-btn src-open" onClick={onView}>
           ⌗ View content <em>{(bytes / 1024).toFixed(1)} KB</em>
+        </button>
+      )}
+      {/* A folder has no content of its own to read, so what it offers instead is a way
+          in. A file gets the same button pointed at its parent, which is "show me where
+          this lives" — the other question a path raises. */}
+      {canBrowse && (
+        <button className="evo-orbit-btn" onClick={onBrowse}>
+          {node.file
+            ? '▸ Show in folder'
+            : <>▸ Browse contents <em>{stats.files} file{stats.files === 1 ? '' : 's'}</em></>}
         </button>
       )}
       <button
