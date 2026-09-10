@@ -471,18 +471,29 @@ tbody tr:has(input[type="checkbox"]:checked) { background: var(--panel-2); }
 .evo-spin { display: flex; align-items: center; gap: 5px; color: var(--dim); font-size: 12px; }
 .evo-spin input { width: auto; }
 
-/* Two ways of using the same scene, so they read as one control with two states rather
-   than two unrelated buttons. */
-.evo-modes { display: flex; gap: 8px; margin-top: 12px; }
-.evo-modes button {
-  flex: 1 1 0; text-align: left; padding: 8px 12px; line-height: 1.35;
-  border-color: var(--line); background: var(--panel-2);
+/* One line saying what the mode in the corner switch currently means. */
+.evo-modeline {
+  margin-top: 12px; padding: 7px 11px; border-radius: var(--radius);
+  border: 1px solid var(--line); background: var(--panel-2);
+  font-size: 12px; color: var(--dim);
 }
-.evo-modes button.on { border-color: var(--accent); background: #10283a; }
-.evo-modes button em {
-  display: block; font-style: normal; font-size: 11px; color: var(--dim); margin-top: 2px;
+.evo-modeline b { color: var(--fg); }
+.evo-modeline.inspect { border-color: #1c4a6b; background: #10283a; }
+
+/* The switch itself: bottom-right of the scene, small enough to flick without looking
+   away from the graph, which is exactly when a control at the far end of the page fails. */
+.evo-modeswitch {
+  position: absolute; right: 10px; bottom: 10px; display: inline-flex;
+  border: 1px solid var(--line); border-radius: 20px; overflow: hidden;
+  background: rgba(13, 16, 20, .85);
 }
-.evo-modes button.on em { color: #a9d6f5; }
+.evo-modeswitch button {
+  border: none; border-radius: 0; background: transparent; color: var(--dim);
+  font-size: 11px; padding: 4px 12px; letter-spacing: .3px;
+}
+.evo-modeswitch button.on { background: var(--accent); color: #04101d; font-weight: 600; }
+.evo-modeswitch button + button { border-left: 1px solid var(--line); }
+.evo-modeswitch button.on + button { border-left-color: transparent; }
 
 /* A segmented pair, not two buttons: they are one question with two answers. */
 .evo-motion { display: inline-flex; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
@@ -495,7 +506,7 @@ tbody tr:has(input[type="checkbox"]:checked) { background: var(--panel-2); }
 
 /* What the camera is turning around, bottom-right, opposite the clock. */
 .evo-orbit-readout {
-  position: absolute; right: 10px; bottom: 10px; display: flex; align-items: center; gap: 8px;
+  position: absolute; right: 10px; bottom: 42px; display: flex; align-items: center; gap: 8px;
   font: 11px/1 ui-monospace, monospace; color: var(--dim); pointer-events: none;
 }
 .evo-orbit-readout .locked { color: var(--accent); }

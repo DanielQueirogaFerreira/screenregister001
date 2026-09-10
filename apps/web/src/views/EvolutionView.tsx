@@ -31,6 +31,17 @@ const DECAY_MS = 14_000;
 /** How long one pass over the whole window takes at 1x. */
 const SWEEP_MS = 75_000;
 
+/**
+ * How far a node may drift from where the physics put it, in world units, and how fast.
+ *
+ * Seven against a spring rest length of thirty-four and a node radius of four: a visible
+ * sway of a few pixels at the default framing, well short of a node reaching its
+ * neighbour's place. The period works out around four seconds, which is slow enough to
+ * read as breathing rather than as jitter.
+ */
+const WANDER = 7;
+const WANDER_RATE = 0.0016;   // radians per millisecond
+
 const AUTHOR_COLOURS = ['#4da3ff', '#35c98b', '#f0b23c', '#c98bf0', '#f0645c', '#3ccfd0'];
 
 /** World-space radii. Screen size comes from these times the projected scale. */
@@ -160,6 +171,8 @@ function Evolution({ log }: { log: EvoLog }) {
   const sphere = useRef({ x: 0, y: 0, z: 0, r: 1 });
   /** How far the orbit centre has strayed, in graph radii. Mirrored to state at 8 Hz. */
   const strayRef = useRef(0);
+  /** The drift's phase, advanced only while the elements are live. */
+  const phase = useRef(0);
 
   /**
    * Pause freezes the simulation as well as the clock.
@@ -336,8 +349,14 @@ function Evolution({ log }: { log: EvoLog }) {
         clock.current = next > endMs ? startMs : next;
       }
       if (move === 'live') {
-        stepLayout(nodes, l, groups, dirs, { ...DEFAULT_LAYOUT, aspect: 1.6 });
-        stepLayout(nodes, l, groups, dirs, { ...DEFAULT_LAYOUT, aspect: 1.6 });
+        // The drift is what makes "live" mean anything. Without it the three forces
+        // converge and hold, and a converged simulation is indistinguishable from a
+        // switched-off one — measured at a fiftieth of a pixel per step after twenty
+        // seconds. See LayoutOptions.wander.
+        phase.current += dt * WANDER_RATE;
+        const o = { ...DEFAULT_LAYOUT, aspect: 1.6, wander: WANDER, wanderPhase: phase.current };
+        stepLayout(nodes, l, groups, dirs, o);
+        stepLayout(nodes, l, groups, dirs, o);
       }
       if (turning && !interacting.current) {
         cam.current = orbit(cam.current, dt * 0.012, 0);
@@ -475,6 +494,30 @@ function Evolution({ log }: { log: EvoLog }) {
               </button>
             </div>
 
+            {/*
+              The mode switch, in the corner of the scene it changes.
+              Small on purpose: it is a thing you flick without looking away from the graph,
+              which is exactly when a control at the far end of the page is useless.
+            */}
+            <div className="evo-modeswitch" role="group" aria-label="Interaction mode">
+              <button
+                className={mode === 'navigate' ? 'on' : ''}
+                aria-pressed={mode === 'navigate'}
+                title="Navigate — alive, fly around, click to pick out"
+                onClick={() => enterMode('navigate')}
+              >
+                Nav
+              </button>
+              <button
+                className={mode === 'inspect' ? 'on' : ''}
+                aria-pressed={mode === 'inspect'}
+                title="Inspect — held still, orbits what you select, full detail"
+                onClick={() => enterMode('inspect')}
+              >
+                Inspect
+              </button>
+            </div>
+
             {/* Where the camera is turning, and the way back. The crosshair on the canvas
                 marks the pivot; this says what the pivot is and how far it has wandered. */}
             <div className="evo-orbit-readout">
@@ -502,24 +545,14 @@ function Evolution({ log }: { log: EvoLog }) {
           />
         </div>
 
-        {/* Mode first, because it decides what the rest of the row means. */}
-        <div className="evo-modes" role="tablist" aria-label="Interaction mode">
-          <button
-            role="tab" aria-selected={mode === 'navigate'}
-            className={mode === 'navigate' ? 'on' : ''}
-            onClick={() => enterMode('navigate')}
-          >
-            Navigate
-            <em>alive · fly around · click to pick out</em>
-          </button>
-          <button
-            role="tab" aria-selected={mode === 'inspect'}
-            className={mode === 'inspect' ? 'on' : ''}
-            onClick={() => enterMode('inspect')}
-          >
-            Inspect
-            <em>held still · orbits what you select · full detail</em>
-          </button>
+        {/* One line describing whichever mode is on, rather than a second pair of buttons
+            beside the switch in the corner — two controls for one state is worse than a
+            small control and a sentence. */}
+        <div className={`evo-modeline ${mode}`}>
+          <b>{mode === 'navigate' ? 'Navigate' : 'Inspect'}</b>
+          {mode === 'navigate'
+            ? ' — the graph is alive and the clock runs. Fly around it; click anything to pick it out.'
+            : ' — held still, and the camera turns around whatever you select. Click a node to look at it from every side.'}
         </div>
 
         <div className="evo-controls">

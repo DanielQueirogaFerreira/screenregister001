@@ -412,3 +412,108 @@ describe('nodeStats', () => {
     expect(nodeStats(l(), nodes, 999)).toBeNull();
   });
 });
+
+describe('the drift that keeps a settled graph alive', () => {
+  const nodes = buildTree(PATHS);
+  const g = siblingGroups(nodes);
+  const d = directoryIndices(nodes);
+  const base = { ...DEFAULT_LAYOUT, aspect: 1.6 };
+
+  /** Settle hard, then keep stepping with the given drift. */
+  const run = (wander: number, more: number, settleFor = 3000) => {
+    const l = seedLayout(nodes);
+    for (let i = 0; i < settleFor; i++) stepLayout(nodes, l, g, d, base);
+    let lastMove = 0;
+    for (let i = 0; i < more; i++) {
+      const before = Array.from(l.x);
+      stepLayout(nodes, l, g, d, { ...base, wander, wanderPhase: i * 0.03 });
+      for (let k = 0; k < before.length; k++) {
+        lastMove = Math.max(lastMove, Math.abs(l.x[k]! - before[k]!));
+      }
+    }
+    return { l, lastMove };
+  };
+
+  it('without it, a settled graph is motionless — which is the bug', () => {
+    // Measured on this repository before the fix: the largest single-step movement fell
+    // from 9.6 world units to 0.029 after two thousand steps, about a fiftieth of a pixel.
+    // "Live" ran a converging simulation, and a converged simulation is a still one.
+    expect(run(0, 400).lastMove).toBeLessThan(0.05);
+  });
+
+  it('with it, the graph never stops moving', () => {
+    expect(run(5, 400).lastMove).toBeGreaterThan(0.05);
+  });
+
+  it('offsets no node further than the amplitude allows, ever', () => {
+    // Bounded by construction rather than by hoping the springs pull back. The first
+    // version added the drift as a FORCE, and a force is only bounded if something happens
+    // to resist it — nodes strayed 134 world units, four times the spring rest length,
+    // which is a graph reorganising itself rather than breathing.
+    const { l } = run(5, 3000);
+    for (let i = 1; i < nodes.length; i++) {
+      expect(Math.hypot(l.wx[i]!, l.wy[i]!, l.wz[i]!), nodes[i]!.id)
+        .toBeLessThanOrEqual(5 * Math.sqrt(3) + 1e-9);
+    }
+  });
+
+  it('does not push the graph anywhere it would not have gone anyway', () => {
+    // The question that matters, and the one a "distance from where it settled" check
+    // cannot answer: a graph 3000 steps further on has ALSO kept settling, so that check
+    // measures both effects at once and blames the drift for the residue. Two runs from
+    // one seed, stepped in lockstep, isolate it.
+    const drifting = seedLayout(nodes);
+    const still = seedLayout(nodes);
+    for (let i = 0; i < 3000; i++) {
+      stepLayout(nodes, drifting, g, d, base);
+      stepLayout(nodes, still, g, d, base);
+    }
+    for (let i = 0; i < 3000; i++) {
+      stepLayout(nodes, drifting, g, d, { ...base, wander: 5, wanderPhase: i * 0.03 });
+      stepLayout(nodes, still, g, d, base);
+    }
+    let worst = 0;
+    for (let i = 0; i < nodes.length; i++) {
+      worst = Math.max(worst, Math.hypot(
+        (drifting.x[i]! - drifting.wx[i]!) - still.x[i]!,
+        (drifting.y[i]! - drifting.wy[i]!) - still.y[i]!,
+        (drifting.z[i]! - drifting.wz[i]!) - still.z[i]!,
+      ));
+    }
+    // The physics underneath is the same physics, so its answer should barely differ.
+    expect(worst).toBeLessThan(1);
+  });
+
+  it('comes back to rest the moment it is switched off', () => {
+    // What makes the live/fixed switch trustworthy: fixed has to mean stopped, not
+    // stopped-wherever-the-drift-happened-to-leave-things.
+    const { l } = run(5, 800);
+    stepLayout(nodes, l, g, d, { ...base, wander: 0, wanderPhase: 0 });
+    for (let i = 1; i < nodes.length; i++) {
+      expect(Math.hypot(l.wx[i]!, l.wy[i]!, l.wz[i]!)).toBe(0);
+    }
+    const before = Array.from(l.x);
+    for (let i = 0; i < 200; i++) stepLayout(nodes, l, g, d, base);
+    let moved = 0;
+    for (let i = 0; i < before.length; i++) moved = Math.max(moved, Math.abs(l.x[i]! - before[i]!));
+    expect(moved).toBeLessThan(1);
+  });
+
+  it('stays finite at an absurd amplitude rather than flying apart', () => {
+    const { l } = run(60, 2000);
+    for (let i = 0; i < nodes.length; i++) expect(Number.isFinite(l.x[i]!)).toBe(true);
+  });
+
+  it('is deterministic — the same phase gives the same positions', () => {
+    // Motion should be a property of the repository, not of when the page happened to load.
+    expect(Array.from(run(5, 300).l.x)).toEqual(Array.from(run(5, 300).l.x));
+  });
+
+  it('does not move every node in step, which would read as a pulse', () => {
+    const { l } = run(5, 900);
+    const leaning = nodes.filter((_, i) => l.wx[i]! > 0).length;
+    // A shared phase makes every node lean the same way at the same moment.
+    expect(leaning).toBeGreaterThan(nodes.length * 0.2);
+    expect(leaning).toBeLessThan(nodes.length * 0.8);
+  });
+});

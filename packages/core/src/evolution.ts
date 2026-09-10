@@ -118,12 +118,26 @@ export function buildTree(paths: string[]): EvoNode[] {
 }
 
 export interface Layout {
+  /** Where a node is drawn: its physics position plus the current drift offset. */
   x: Float64Array;
   y: Float64Array;
   z: Float64Array;
   vx: Float64Array;
   vy: Float64Array;
   vz: Float64Array;
+  /**
+   * The drift offset currently folded into x/y/z.
+   *
+   * Kept so it can be taken back out before each step. The physics must never see it, or
+   * the two fight: the forces treat the displacement as a real perturbation, push against
+   * it, and the equilibrium walks. Measured on the first attempt, which added the drift as
+   * a force instead — nodes strayed 134 world units from where they settled, about four
+   * times the spring's rest length. That is a graph slowly reorganising itself, not a
+   * graph breathing.
+   */
+  wx: Float64Array;
+  wy: Float64Array;
+  wz: Float64Array;
 }
 
 /**
@@ -142,6 +156,7 @@ export function seedLayout(nodes: EvoNode[]): Layout {
   const l: Layout = {
     x: new Float64Array(n), y: new Float64Array(n), z: new Float64Array(n),
     vx: new Float64Array(n), vy: new Float64Array(n), vz: new Float64Array(n),
+    wx: new Float64Array(n), wy: new Float64Array(n), wz: new Float64Array(n),
   };
   for (let i = 1; i < n; i++) {
     const node = nodes[i]!;
@@ -199,6 +214,30 @@ export interface LayoutOptions {
    * correct head-on and wrong from the side is worse than one that is merely round.
    */
   aspect: number;
+  /**
+   * Amplitude of the drift that keeps a settled graph alive, in world units. 0 turns it off.
+   *
+   * The three forces above form a CONVERGING system: they exist to find an equilibrium and
+   * then hold it. That is right for the shape and wrong for the impression — measured on
+   * this repository, the largest single-step movement falls from 9.6 world units at the
+   * start to 0.029 after two thousand steps, which is about a fiftieth of a pixel. A
+   * simulation that is still running looks exactly like one that has been switched off.
+   *
+   * So this adds the one thing a damped system cannot produce on its own: motion that
+   * never stops changing. It is a bounded DISPLACEMENT rather than a force, and that
+   * distinction is the whole design — a force is only bounded if something happens to pull
+   * back, and the first version of this drifted 134 units because nothing did. A
+   * displacement is bounded by construction: no node is ever further than this many units
+   * (times root three) from where the physics put it, whatever happens.
+   */
+  wander: number;
+  /**
+   * The drift's phase, in radians, advanced by the caller from wall-clock time.
+   *
+   * Passed in rather than read from a clock inside so that the same inputs always give the
+   * same output — a layout step that consults Date.now() cannot be tested for anything.
+   */
+  wanderPhase: number;
 }
 
 export const DEFAULT_LAYOUT: LayoutOptions = {
@@ -208,6 +247,8 @@ export const DEFAULT_LAYOUT: LayoutOptions = {
   damping: 0.86,
   maxStep: 12,
   aspect: 1,
+  wander: 0,
+  wanderPhase: 0,
 };
 
 /** Sibling lists, computed once — recomputing them every frame is most of the cost. */
@@ -242,6 +283,12 @@ export function stepLayout(
   const fy = new Float64Array(n);
   const fz = new Float64Array(n);
 
+  // Take the drift back out before anything looks at a position. From here to the bottom
+  // of this function x/y/z are pure physics; the offset goes back on at the end.
+  for (let i = 1; i < n; i++) {
+    l.x[i]! -= l.wx[i]!; l.y[i]! -= l.wy[i]!; l.z[i]! -= l.wz[i]!;
+  }
+
   // 1. Springs to the parent.
   for (let i = 1; i < n; i++) {
     const p = nodes[i]!.parent;
@@ -265,6 +312,7 @@ export function stepLayout(
   for (const g of groups) pairRepel(g, l, fx, fy, fz, o.repel, o.aspect);
   pairRepel(dirs, l, fx, fy, fz, o.dirRepel, o.aspect);
 
+
   for (let i = 1; i < n; i++) {
     let vx = (l.vx[i]! + fx[i]!) * o.damping;
     let vy = (l.vy[i]! + fy[i]!) * o.damping;
@@ -280,6 +328,23 @@ export function stepLayout(
   }
   l.x[0] = 0; l.y[0] = 0; l.z[0] = 0;
   l.vx[0] = 0; l.vy[0] = 0; l.vz[0] = 0;
+
+  // The drift, back on.
+  //
+  // Each axis runs at its own rate and each node takes its own offset from its id, so the
+  // graph never synchronises into a single pulse — a shared phase makes every node lean the
+  // same way at the same moment, which reads as a glitch rather than as life. Deterministic
+  // throughout, so the motion is a property of the repository and not of when the page
+  // happened to load. With an amplitude of zero this writes zeros, which is what returns a
+  // drifting graph to rest the moment it is switched to fixed.
+  for (let i = 1; i < n; i++) {
+    const h = hash(nodes[i]!.id);
+    const wx = o.wander * Math.sin(o.wanderPhase * 0.83 + (h & 1023) * 0.00614);
+    const wy = o.wander * Math.sin(o.wanderPhase * 1.00 + ((h >>> 10) & 1023) * 0.00614);
+    const wz = o.wander * Math.sin(o.wanderPhase * 1.19 + ((h >>> 20) & 1023) * 0.00614);
+    l.wx[i] = wx; l.wy[i] = wy; l.wz[i] = wz;
+    l.x[i]! += wx; l.y[i]! += wy; l.z[i]! += wz;
+  }
 }
 
 function pairRepel(
