@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   billingGb, CLOUDFLARE_RATES, DEFAULT_SCENARIO, daysUntil, priceMonth, projectToPeriodEnd,
-  projectUsage, type Scenario,
+  projectUsage, usageFromHistory, type Scenario,
 } from './cost.js';
 
 const s = (over: Partial<Scenario> = {}): Scenario => ({ ...DEFAULT_SCENARIO, ...over });
@@ -212,5 +212,96 @@ describe('daysUntil', () => {
 
   it('never reaches a ceiling when nothing is growing', () => {
     expect(daysUntil(0, 0, 100)).toBe(Infinity);
+  });
+});
+
+describe('more than one recorder', () => {
+  const one = projectUsage(s({ users: 1 }));
+
+  it('scales every figure linearly with the number of people', () => {
+    // The difference between one person and a team is the difference between a free tier
+    // and a real bill, and multiplying four separate figures in your head is where
+    // planning goes wrong.
+    const forty = projectUsage(s({ users: 40 }));
+    expect(forty.framesPerDay).toBeCloseTo(one.framesPerDay * 40, 6);
+    expect(forty.steadyStateBytes).toBeCloseTo(one.steadyStateBytes * 40, 6);
+    expect(forty.r2ClassAPerMonth).toBeCloseTo(one.r2ClassAPerMonth * 40, 6);
+    expect(forty.d1RowsWrittenPerMonth).toBeCloseTo(one.d1RowsWrittenPerMonth * 40, 6);
+    expect(forty.workerRequestsPerMonth).toBeCloseTo(one.workerRequestsPerMonth * 40, 6);
+  });
+
+  it('leaves the per-frame size alone, because that is per frame', () => {
+    expect(projectUsage(s({ users: 40 })).bytesPerFrame).toBeCloseTo(one.bytesPerFrame, 6);
+  });
+
+  it('reports zero for nobody rather than dividing by it', () => {
+    const none = projectUsage(s({ users: 0 }));
+    expect(none.framesPerDay).toBe(0);
+    expect(none.steadyStateBytes).toBe(0);
+    expect(none.d1FreeWriteHeadroom).toBe(Infinity);
+  });
+
+  it('costs more with more people', () => {
+    expect(priceMonth(projectUsage(s({ users: 25 })), 'paid').total)
+      .toBeGreaterThan(priceMonth(one, 'paid').total);
+  });
+
+  it('measures the free-plan caps against the whole team, not one person', () => {
+    // Two people at a 5-second gap each fit; together they do not. Checking one recorder
+    // against a per-ACCOUNT cap is how a team plan looks affordable until it stops working.
+    const gentle = s({ minStoreGapMs: 5000, users: 1 });
+    expect(projectUsage(gentle).exceedsFreeDailyWrites).toBe(false);
+    expect(projectUsage({ ...gentle, users: 6 }).exceedsFreeDailyWrites).toBe(true);
+  });
+});
+
+describe('usageFromHistory', () => {
+  const points = [
+    { day: '2026-09-01', frames: 1000, bytes: 100_000_000 },
+    { day: '2026-09-02', frames: 0, bytes: 0 },
+    { day: '2026-09-03', frames: 3000, bytes: 300_000_000 },
+  ];
+
+  it('averages over calendar days, not only the busy ones', () => {
+    // An idle day genuinely costs nothing, so it belongs in the divisor. Dividing by active
+    // days answers "what does it cost while running", which here is 50% larger — quietly
+    // picking one is how a projection overstates.
+    const o = usageFromHistory(points, { days: 3, retentionDays: 7, objectsPerFrame: 2 });
+    expect(o.usage.framesPerDay).toBeCloseTo(4000 / 3, 6);
+    expect(o.framesPerActiveDay).toBe(2000);
+    expect(o.activeDays).toBe(2);
+    expect(o.days).toBe(3);
+  });
+
+  it('measures the frame size instead of assuming one', () => {
+    const o = usageFromHistory(points, { days: 3, retentionDays: 7, objectsPerFrame: 2 });
+    expect(o.avgFrameBytes).toBeCloseTo(400_000_000 / 4000, 6);
+    expect(o.usage.bytesPerFrame).toBeCloseTo(100_000, 6);
+  });
+
+  it('plateaus at the retention window, as the sweep makes it', () => {
+    const o = usageFromHistory(points, { days: 3, retentionDays: 7, objectsPerFrame: 2 });
+    expect(o.usage.steadyStateBytes).toBeCloseTo(o.usage.bytesPerDay * 7, 6);
+  });
+
+  it('counts the delete as a written row here too', () => {
+    const o = usageFromHistory(points, { days: 3, retentionDays: 7, objectsPerFrame: 2 });
+    expect(o.usage.d1RowsWrittenPerMonth).toBeCloseTo(o.usage.framesPerDay * 30 * 2, 6);
+  });
+
+  it('survives an empty range without producing NaN', () => {
+    // A range before the account existed is an ordinary thing to select.
+    const o = usageFromHistory([], { days: 0, retentionDays: 7, objectsPerFrame: 2 });
+    expect(o.usage.framesPerDay).toBe(0);
+    expect(o.avgFrameBytes).toBe(0);
+    expect(o.framesPerActiveDay).toBe(0);
+    expect(Number.isFinite(o.usage.steadyStateGb)).toBe(true);
+  });
+
+  it('prices what it observed', () => {
+    const o = usageFromHistory(points, { days: 3, retentionDays: 7, objectsPerFrame: 2 });
+    const bill = priceMonth(o.usage, 'paid');
+    expect(bill.total).toBeGreaterThanOrEqual(CLOUDFLARE_RATES.workers.subscriptionPerMonth);
+    for (const i of bill.items) expect(i.cost, i.label).toBeGreaterThanOrEqual(0);
   });
 });

@@ -1219,8 +1219,32 @@ app.get('/v1/usage', async (c) => {
  */
 app.get('/v1/usage/history', async (c) => {
   const userId = c.get('me').userId;
-  const days = Math.min(90, Math.max(1, Number(c.req.query('days') ?? 30)));
+  const days = Math.min(365, Math.max(1, Number(c.req.query('days') ?? 30)));
   const since = new Date(Date.now() - days * 86_400_000).toISOString();
+
+  /**
+   * Whose usage this is, said out loud.
+   *
+   * The page showed "0.16 GB in R2" while the operator view showed "453.9 MB", and both
+   * were right: one is this account, the other is every account. Nothing on either said
+   * which, so they read as a contradiction. Scope is now a parameter, it is echoed back in
+   * the response, and the page prints it beside the number.
+   *
+   * Account-wide is operator-only, and refused rather than silently narrowed — a request
+   * for everyone's data that quietly returns your own is a worse answer than an error.
+   */
+  const wantsAll = c.req.query('scope') === 'all';
+  let scope: 'account' | 'all' = 'account';
+  if (wantsAll) {
+    const principal = await resolvePrincipal(c.env, userId);
+    if (!principal || !isOperator(principal)) {
+      return c.json({ error: 'forbidden', detail: 'Account-wide usage is operator-only.' }, 403);
+    }
+    scope = 'all';
+  }
+
+  const where = scope === 'all' ? '1=1' : 'user_id = ?';
+  const args = scope === 'all' ? [] : [userId];
 
   const [totals, series] = await Promise.all([
     c.env.DB.prepare(
@@ -1231,23 +1255,26 @@ app.get('/v1/usage/history', async (c) => {
               COALESCE(MIN(bytes),0) AS min_frame_bytes,
               COALESCE(MAX(bytes),0) AS max_frame_bytes,
               COUNT(DISTINCT session_id) AS sessions,
+              COUNT(DISTINCT user_id) AS accounts,
               MIN(captured_at) AS oldest,
               MAX(captured_at) AS newest
-       FROM frames WHERE user_id = ?`,
-    ).bind(userId).first<Record<string, number | string | null>>(),
+       FROM frames WHERE ${where}`,
+    ).bind(...args).first<Record<string, number | string | null>>(),
     c.env.DB.prepare(
       `SELECT substr(captured_at, 1, 10) AS day,
               COUNT(*) AS frames,
               COALESCE(SUM(bytes),0) AS bytes
        FROM frames
-       WHERE user_id = ? AND captured_at >= ?
+       WHERE ${where} AND captured_at >= ?
        GROUP BY day ORDER BY day`,
-    ).bind(userId, since).all<{ day: string; frames: number; bytes: number }>(),
+    ).bind(...args, since).all<{ day: string; frames: number; bytes: number }>(),
   ]);
 
   return c.json({
     generated_at: new Date().toISOString(),
     retention_days: Number(c.env.RETENTION_DAYS ?? 7),
+    scope,
+    window_days: days,
     totals: {
       ...totals,
       bytes: Number(totals?.stored_bytes ?? 0) + Number(totals?.original_bytes ?? 0),

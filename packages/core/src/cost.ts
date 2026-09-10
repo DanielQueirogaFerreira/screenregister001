@@ -107,6 +107,15 @@ export interface Scenario {
    * this project's frames — a 320px-wide WebP beside a 1920px one.
    */
   thumbRatio: number;
+  /**
+   * How many people are recording like this at once.
+   *
+   * Everything downstream is per-recorder and scales linearly, which is exactly why it is
+   * worth having as a knob rather than left as an exercise: the difference between one
+   * person and a team of forty is the difference between a free tier and a real bill, and
+   * multiplying four separate figures in your head is where planning goes wrong.
+   */
+  users: number;
 }
 
 export const DEFAULT_SCENARIO: Scenario = {
@@ -118,10 +127,13 @@ export const DEFAULT_SCENARIO: Scenario = {
   minStoreGapMs: 0,
   keepOriginal: false,
   thumbRatio: 0.05,
+  users: 1,
 };
 
 export interface Usage {
-  /** Frames actually written per day, after the change rate and the minimum gap. */
+  /** People recording. Every other figure here is the total across them. */
+  users: number;
+  /** Frames actually written per day across every recorder. */
   framesPerDay: number;
   bytesPerFrame: number;
   bytesPerDay: number;
@@ -156,7 +168,9 @@ export function projectUsage(s: Scenario): Usage {
   // The gap caps the rate outright: two frames can never be closer together than this.
   const gapCap = s.minStoreGapMs > 0 ? 1000 / s.minStoreGapMs : Infinity;
   const storedPerSecond = Math.min(sampledPerSecond, gapCap);
-  const framesPerDay = storedPerSecond * 3600 * Math.max(0, Math.min(24, s.hoursPerDay));
+  const users = Math.max(0, s.users);
+  const perUserPerDay = storedPerSecond * 3600 * Math.max(0, Math.min(24, s.hoursPerDay));
+  const framesPerDay = perUserPerDay * users;
 
   const bytesPerFrame = s.avgFrameBytes * (1 + s.thumbRatio) * (s.keepOriginal ? 2 : 1);
   const bytesPerDay = framesPerDay * bytesPerFrame;
@@ -167,6 +181,7 @@ export function projectUsage(s: Scenario): Usage {
 
   const framesPerMonth = framesPerDay * DAYS_PER_MONTH;
   return {
+    users,
     framesPerDay,
     bytesPerFrame,
     bytesPerDay,
@@ -328,6 +343,77 @@ export function projectToPeriodEnd(
 ): number {
   if (!(daysElapsed > 0)) return 0;
   return (usedSoFar / daysElapsed) * daysInPeriod;
+}
+
+export interface HistoryPoint {
+  /** 'YYYY-MM-DD'. */
+  day: string;
+  frames: number;
+  bytes: number;
+}
+
+export interface Observed {
+  usage: Usage;
+  /** Calendar days in the range, including the ones nothing happened on. */
+  days: number;
+  /** Days something was actually recorded. */
+  activeDays: number;
+  totalFrames: number;
+  totalBytes: number;
+  /** Mean bytes per stored frame across the range, or 0 when nothing was stored. */
+  avgFrameBytes: number;
+  /** The rate while recording, as opposed to the rate averaged over idle days too. */
+  framesPerActiveDay: number;
+}
+
+/**
+ * What the account has actually been doing, turned into the same shape a scenario produces.
+ *
+ * Averaged over CALENDAR days in the range rather than over the days something happened.
+ * That is the honest basis for a bill: an idle Sunday genuinely costs nothing, and dividing
+ * by active days only would answer "what does it cost while running", which is a different
+ * and much larger number. Both are reported, because both are worth knowing and quietly
+ * picking one is how a projection ends up overstating by a factor of three.
+ */
+export function usageFromHistory(
+  points: HistoryPoint[],
+  o: { days: number; retentionDays: number; objectsPerFrame: number },
+): Observed {
+  const totalFrames = points.reduce((n, p) => n + p.frames, 0);
+  const totalBytes = points.reduce((n, p) => n + p.bytes, 0);
+  const activeDays = points.filter((p) => p.frames > 0).length;
+  const days = Math.max(1, o.days);
+
+  const framesPerDay = totalFrames / days;
+  const bytesPerDay = totalBytes / days;
+  const steadyStateBytes = bytesPerDay * o.retentionDays;
+  const framesPerMonth = framesPerDay * DAYS_PER_MONTH;
+
+  return {
+    days,
+    activeDays,
+    totalFrames,
+    totalBytes,
+    avgFrameBytes: totalFrames > 0 ? totalBytes / totalFrames : 0,
+    framesPerActiveDay: activeDays > 0 ? totalFrames / activeDays : 0,
+    usage: {
+      users: 1,
+      framesPerDay,
+      bytesPerFrame: totalFrames > 0 ? totalBytes / totalFrames : 0,
+      bytesPerDay,
+      steadyStateBytes,
+      steadyStateGb: steadyStateBytes / 1e9,
+      objectsPerFrame: o.objectsPerFrame,
+      r2ClassAPerMonth: framesPerMonth * o.objectsPerFrame,
+      d1RowsWrittenPerMonth: framesPerMonth * 2,
+      workerRequestsPerMonth: framesPerMonth,
+      d1FreeWriteHeadroom: framesPerDay > 0
+        ? CLOUDFLARE_RATES.d1.freeDailyRowsWritten / (framesPerDay * 2)
+        : Infinity,
+      exceedsFreeDailyWrites: framesPerDay * 2 > CLOUDFLARE_RATES.d1.freeDailyRowsWritten,
+      exceedsFreeDailyRequests: framesPerDay > CLOUDFLARE_RATES.workers.freeDailyRequests,
+    },
+  };
 }
 
 /** Days until a quantity growing at this rate reaches a ceiling, or Infinity. */

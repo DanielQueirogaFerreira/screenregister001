@@ -11,3 +11,4 @@ export * from './camera.js';
 export * from './cost.js';
 export * from './source.js';
 export * from './explorer.js';
+export * from './palette.js';

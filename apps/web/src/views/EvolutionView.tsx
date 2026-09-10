@@ -55,6 +55,15 @@ const WANDER_RATE = 0.0016;   // radians per millisecond
  */
 const SPEEDS = [0.1, 0.25, 0.5, 1, 2, 4] as const;
 
+/**
+ * Which area of the platform this is.
+ *
+ * The same three-digit scheme the database page numbers its sections with, one range per
+ * area, so an identifier read off a screenshot says where it came from without anyone
+ * having to describe the page.
+ */
+const AREA_ID = '401';
+
 const AUTHOR_COLOURS = ['#4da3ff', '#35c98b', '#f0b23c', '#c98bf0', '#f0645c', '#3ccfd0'];
 
 /** World-space radii. Screen size comes from these times the projected scale. */
@@ -184,6 +193,7 @@ function Evolution({ log }: { log: EvoLog }) {
   /** Whether the speed chips are showing. Collapsed by default: it is six extra targets. */
   const [speedOpen, setSpeedOpen] = useState(false);
   const [legendOpen, setLegendOpen] = useState(false);
+  const [hudOpen, setHudOpen] = useState(true);
   /**
    * Which file's contents are open, or null.
    *
@@ -574,6 +584,26 @@ function Evolution({ log }: { log: EvoLog }) {
     else setOrbitOn(null);
   };
 
+  /**
+   * Picking something on the graph moves the navigator to it.
+   *
+   * The sync was one-way: walking a folder moved the selection on the graph, but clicking a
+   * dot left the navigator sitting wherever it had been, showing a folder unrelated to what
+   * was now selected. Two panes claiming to describe the same thing while describing
+   * different ones is worse than either alone.
+   *
+   * It cannot loop back on itself, because it only acts when the target directory differs
+   * from the one already listed — and navigating the explorer sets both together, so by the
+   * time this runs there is nothing left to change.
+   */
+  useEffect(() => {
+    if (browsing === null || selected === null) return;
+    const node = nodes[selected];
+    if (!node) return;
+    const target = dirFor(node.id, node.file);
+    if (target !== browsing) setBrowsing(target);
+  }, [selected, browsing, nodes]);
+
   const recentre = () => {
     setOrbitOn(null);
     framed.current = false;   // let the loop refit once, then hand the camera back
@@ -642,9 +672,29 @@ function Evolution({ log }: { log: EvoLog }) {
               when someone asking "which build am I looking at" cannot see the answer.
             */}
             <div className="evo-hud">
-              <span className="evo-build" title={`built ${__BUILD_TIME__}`}>
-                viewer v{__APP_VERSION__} · {__BUILD_COMMIT__}
-              </span>
+              {/* The eye, left of the block it governs. Provenance is diagnostic furniture:
+                  worth having on hand, worth getting out of the way while looking at the
+                  graph itself. */}
+              <button
+                className="evo-hud-eye"
+                aria-pressed={!hudOpen}
+                aria-label={hudOpen ? 'Hide the build details' : 'Show the build details'}
+                title={hudOpen ? 'Hide build details' : 'Show build details'}
+                onClick={() => setHudOpen((v) => !v)}
+              >
+                {hudOpen ? '◉' : '◌'}
+              </button>
+              {hudOpen && (
+                <>
+                  {/* Which area of the platform this is. A different colour from the build
+                      line beside it, because they answer different questions — where am I,
+                      and what am I running. */}
+                  <span className="evo-area">area {AREA_ID} · codebase viewer</span>
+                  <span className="evo-build" title={`built ${__BUILD_TIME__}`}>
+                    viewer v{__APP_VERSION__} · {__BUILD_COMMIT__}
+                  </span>
+                </>
+              )}
               {!playing && <span className="evo-frozen-tag">frozen</span>}
               <span className="evo-clock">
                 <span className="evo-date" ref={dateRef} />

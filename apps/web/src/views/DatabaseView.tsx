@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   billingGb, CLOUDFLARE_RATES, DEFAULT_SCENARIO, daysUntil, priceMonth, projectUsage,
-  type Scenario,
+  usageFromHistory, type Scenario,
 } from '@sr/core';
 import { bytes } from '../lib/format.js';
+import { PaletteProvider, PalettePicker, Section, usePalette } from '../lib/sections.js';
 import { VersionBadge } from './VersionBadge.js';
 
 /**
@@ -22,6 +23,9 @@ import { VersionBadge } from './VersionBadge.js';
 interface History {
   generated_at: string;
   retention_days: number;
+  /** Whose usage this is. The page prints it beside every figure. */
+  scope: 'account' | 'all';
+  window_days: number;
   totals: {
     frames: number;
     bytes: number;
@@ -31,6 +35,7 @@ interface History {
     min_frame_bytes: number;
     max_frame_bytes: number;
     sessions: number;
+    accounts: number;
     oldest: string | null;
     newest: string | null;
   };
@@ -51,32 +56,71 @@ const num = (n: number) => Math.round(n).toLocaleString();
 export function DatabaseView() {
   const [data, setData] = useState<History | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * Whose usage to show.
+   *
+   * This page reported "0.16 GB in R2" while the operator view reported "453.9 MB", and
+   * both were correct: one counts this account, the other every account. Nothing on either
+   * said which, so they read as a contradiction. The scope is now a choice, it is printed
+   * beside the number, and account-wide is refused for a non-operator rather than silently
+   * narrowed back to your own.
+   */
+  const [scope, setScope] = useState<'account' | 'all'>('account');
+  const [days, setDays] = useState(30);
 
   useEffect(() => {
-    fetch('/v1/usage/history?days=30', { credentials: 'include' })
-      .then((r) => {
-        if (r.status === 401) throw new Error('Sign in to see this account’s usage.');
+    setData(null);
+    setError(null);
+    let cancelled = false;
+    fetch(`/v1/usage/history?days=${days}&scope=${scope}`, { credentials: 'include' })
+      .then(async (r) => {
+        if (r.status === 401) throw new Error('Sign in to see this account\u2019s usage.');
+        if (r.status === 403) throw new Error('Account-wide usage is operator-only.');
         if (!r.ok) throw new Error(`the API answered ${r.status}`);
         return r.json() as Promise<History>;
       })
-      .then(setData)
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
-  }, []);
+      .then((d) => { if (!cancelled) setData(d); })
+      .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); });
+    return () => { cancelled = true; };
+  }, [scope, days]);
 
   return (
-    <div className="app">
-      <header>
-        <h1>ScreenRegister <span>· database &amp; cost</span></h1>
-        <nav>
-          <a href="/status" className="button-link">&larr; Status</a>
-          <a href="/" className="button-link">Recorder</a>
-        </nav>
-      </header>
-      {error && <div className="panel"><div className="banner bad">{error}</div></div>}
-      {!data && !error && <div className="empty">Reading usage…</div>}
-      {data && <Dashboard h={data} />}
-      <VersionBadge />
-    </div>
+    <PaletteProvider>
+      <div className="app">
+        <header>
+          <h1>ScreenRegister <span>\u00b7 database &amp; cost</span></h1>
+          <nav>
+            <a href="/status" className="button-link">&larr; Status</a>
+            <a href="/" className="button-link">Recorder</a>
+          </nav>
+        </header>
+
+        <div className="db-toolbar">
+          <div className="evo-motion" role="group" aria-label="Whose usage">
+            <button className={scope === 'account' ? 'on' : ''} onClick={() => setScope('account')}>
+              this account
+            </button>
+            <button className={scope === 'all' ? 'on' : ''} onClick={() => setScope('all')}>
+              every account
+            </button>
+          </div>
+          <label className="db-range">
+            <span>History window</span>
+            <select value={days} onChange={(e) => setDays(Number(e.target.value))}>
+              {[7, 14, 30, 60, 90, 180, 365].map((d) => (
+                <option key={d} value={d}>last {d} days</option>
+              ))}
+            </select>
+          </label>
+          <PalettePicker />
+        </div>
+
+        {error && <div className="panel"><div className="banner bad">{error}</div></div>}
+        {!data && !error && <div className="empty">Reading usage\u2026</div>}
+        {data && <Dashboard h={data} />}
+        <VersionBadge />
+      </div>
+    </PaletteProvider>
   );
 }
 
@@ -88,6 +132,15 @@ function Dashboard({ h }: { h: History }) {
   const [hours, setHours] = useState(24);
   const [keepOriginal, setKeepOriginal] = useState(false);
   const [plan, setPlan] = useState<'free' | 'paid'>('paid');
+  /**
+   * How many people record like this at once.
+   *
+   * Everything downstream scales linearly, which is exactly why it belongs on the page
+   * rather than left as an exercise: the difference between one person and a team is the
+   * difference between a free tier and a real bill, and multiplying four figures in your
+   * head is where planning goes wrong.
+   */
+  const [users, setUsers] = useState(1);
 
   const scenario: Scenario = {
     ...DEFAULT_SCENARIO,
@@ -97,41 +150,35 @@ function Dashboard({ h }: { h: History }) {
     avgFrameBytes: measured,
     minStoreGapMs: gapS * 1000,
     keepOriginal,
+    users: Math.max(0, users),
   };
-  const usage = useMemo(() => projectUsage(scenario), [fps, gapS, hours, keepOriginal, measured, h.retention_days]);
+  const usage = useMemo(
+    () => projectUsage(scenario),
+    [fps, gapS, hours, keepOriginal, measured, h.retention_days, users],
+  );
   const bill = useMemo(() => priceMonth(usage, plan), [usage, plan]);
 
-  /** What is actually happening, from the rows rather than from a scenario. */
-  const observed = useMemo(() => {
-    const days = h.daily.filter((d) => d.frames > 0);
-    const totalBytes = days.reduce((n, d) => n + d.bytes, 0);
-    const totalFrames = days.reduce((n, d) => n + d.frames, 0);
-    const perDayBytes = days.length ? totalBytes / days.length : 0;
-    const perDayFrames = days.length ? totalFrames / days.length : 0;
-    const steady = perDayBytes * h.retention_days;
-    const live = projectUsage({
-      ...scenario,
-      // Drive the live projection from what the rows say, not from the sliders.
-      fps: 1, minStoreGapMs: 0, hoursPerDay: 24, changeRate: 1,
-    });
-    return { days: days.length, perDayBytes, perDayFrames, steady, live };
-  }, [h, scenario]);
-
-  const observedBill = useMemo(() => priceMonth({
-    ...usage,
-    framesPerDay: observed.perDayFrames,
-    bytesPerDay: observed.perDayBytes,
-    steadyStateBytes: observed.steady,
-    steadyStateGb: observed.steady / 1e9,
-    r2ClassAPerMonth: observed.perDayFrames * 30 * usage.objectsPerFrame,
-    d1RowsWrittenPerMonth: observed.perDayFrames * 30 * 2,
-    workerRequestsPerMonth: observed.perDayFrames * 30,
-  }, plan), [observed, usage, plan]);
+  /**
+   * What the account has actually been doing, from the rows rather than from a scenario.
+   *
+   * Averaged over calendar days in the window, not over the days something happened: an
+   * idle Sunday genuinely costs nothing and belongs in the divisor. Both rates are shown,
+   * because quietly picking one is how a projection ends up overstating.
+   */
+  const observed = useMemo(
+    () => usageFromHistory(h.daily, {
+      days: h.window_days,
+      retentionDays: h.retention_days,
+      objectsPerFrame: 2,
+    }),
+    [h],
+  );
+  const observedBill = useMemo(() => priceMonth(observed.usage, plan), [observed, plan]);
 
   const r = CLOUDFLARE_RATES;
   const gbNow = billingGb(h.totals.bytes);
-  const toFreeCeiling = daysUntil(gbNow, observed.perDayBytes / 1e9, r.r2.freeStorageGbMonth);
-  const rowsPerDay = observed.perDayFrames * 2;
+  const toFreeCeiling = daysUntil(gbNow, observed.usage.bytesPerDay / 1e9, r.r2.freeStorageGbMonth);
+  const rowsPerDay = observed.usage.framesPerDay * 2;
   const writeHeadroom = r.d1.freeDailyRowsWritten > 0
     ? (rowsPerDay / r.d1.freeDailyRowsWritten) * 100 : 0;
 
@@ -140,8 +187,7 @@ function Dashboard({ h }: { h: History }) {
   return (
     <>
       {/* --- what is there right now ------------------------------------------------ */}
-      <div className="panel">
-        <h3 style={{ marginTop: 0 }}>Held right now</h3>
+      <Section n={0} title={h.scope === 'all' ? 'Held right now \u00b7 every account' : 'Held right now \u00b7 this account'}>
         <div className="stats">
           <div className="stat"><b>{gb(h.totals.bytes)}</b><span>in R2 (billed GB)</span></div>
           <div className="stat"><b>{num(h.totals.frames)}</b><span>frames</span></div>
@@ -152,13 +198,21 @@ function Dashboard({ h }: { h: History }) {
           Frames range {bytes(h.totals.min_frame_bytes)} to {bytes(h.totals.max_frame_bytes)}.
           Retention holds {h.retention_days} days, so storage plateaus rather than growing
           without end — the bill is a rolling {h.retention_days} days of frames however long
-          the recorder has run. Read {new Date(h.generated_at).toLocaleString()}.
+          the recorder has run.
+          {h.scope === 'all'
+            ? ` Across ${num(h.totals.accounts)} account${h.totals.accounts === 1 ? '' : 's'}.`
+            : ' This account only — switch the scope above for the whole system.'}
+          {' '}Read {new Date(h.generated_at).toLocaleString()}.
+          <br /><br />
+          <b>On units:</b> every GB beside a price on this page is a billing GB of 10<sup>9</sup>
+          bytes, which is what Cloudflare invoices. The operator view counts in binary MB
+          (2<sup>20</sup>), so the same bytes read about 7% larger there. Same data, two
+          conventions — this page uses the one the bill means.
         </div>
-      </div>
+      </Section>
 
       {/* --- live monitoring against the caps that actually bite --------------------- */}
-      <div className="panel">
-        <h3 style={{ marginTop: 0 }}>Live monitoring</h3>
+      <Section n={1} title="Live monitoring">
         <Gauge
           label="R2 storage" value={gbNow} ceiling={r.r2.freeStorageGbMonth}
           unit="GB" note={`free allowance ${r.r2.freeStorageGbMonth} GB-month`}
@@ -169,15 +223,19 @@ function Dashboard({ h }: { h: History }) {
           note="one row when a frame arrives, one when retention deletes it — the free cap now FAILS queries, it does not throttle"
         />
         <Gauge
-          label="Worker requests per day" value={observed.perDayFrames}
+          label="Worker requests per day" value={observed.usage.framesPerDay}
           ceiling={r.workers.freeDailyRequests} unit="requests"
           note="one upload per stored frame"
         />
         <div className="hint" style={{ marginTop: 12 }}>
-          Measured over the last {observed.days} day{observed.days === 1 ? '' : 's'} with
-          activity: <b>{num(observed.perDayFrames)}</b> frames and{' '}
-          <b>{gb(observed.perDayBytes)}</b> a day, which settles at{' '}
-          <b>{gb(observed.steady)}</b> held once the window is full.
+          Averaged over the last <b>{h.window_days}</b> calendar days, of which{' '}
+          <b>{observed.activeDays}</b> had activity:{' '}
+          <b>{num(observed.usage.framesPerDay)}</b> frames and{' '}
+          <b>{gb(observed.usage.bytesPerDay)}</b> a day, which settles at{' '}
+          <b>{gb(observed.usage.steadyStateBytes)}</b> held once the window is full. While it
+          is actually running the rate is <b>{num(observed.framesPerActiveDay)}</b> frames a
+          day — the bill follows the calendar average, because an idle day genuinely costs
+          nothing.
           {Number.isFinite(toFreeCeiling) && toFreeCeiling > 0 && (
             <> At this rate R2&rsquo;s free 10 GB is reached in about{' '}
               <b>{toFreeCeiling < 1 ? 'less than a day' : `${Math.round(toFreeCeiling)} days`}</b>.</>
@@ -187,23 +245,31 @@ function Dashboard({ h }: { h: History }) {
               free daily cap</b> — on the free plan the recorder stops partway through each day.</>
           )}
         </div>
-      </div>
+      </Section>
 
       {/* --- the next bill ---------------------------------------------------------- */}
-      <div className="panel">
-        <div className="evo-card-link">
-          <h3 style={{ margin: 0 }}>Next bill, at the current rate</h3>
+      <Section
+        n={2}
+        title="Next bill, from the measured history"
+        aside={
           <div className="evo-motion" role="group" aria-label="Plan">
             <button className={plan === 'free' ? 'on' : ''} onClick={() => setPlan('free')}>free</button>
             <button className={plan === 'paid' ? 'on' : ''} onClick={() => setPlan('paid')}>paid</button>
           </div>
+        }
+      >
+        <div className="hint" style={{ marginTop: 0 }}>
+          Projected from what this {h.scope === 'all' ? 'system' : 'account'} actually stored
+          over the last <b>{h.window_days} days</b> — {num(observed.totalFrames)} frames across{' '}
+          <b>{observed.activeDays}</b> active day{observed.activeDays === 1 ? '' : 's'}, at a
+          measured <b>{bytes(observed.avgFrameBytes)}</b> a frame. Change the window above to
+          project from a different stretch of history.
         </div>
         <BillTable bill={observedBill} />
-      </div>
+      </Section>
 
       {/* --- scenarios -------------------------------------------------------------- */}
-      <div className="panel">
-        <h3 style={{ marginTop: 0 }}>If it recorded like this instead</h3>
+      <Section n={3} title="Consumption simulation">
         <div className="hint" style={{ marginTop: 0, marginBottom: 14 }}>
           Every figure below multiplies up from the <b>{bytes(measured)}</b> mean of the
           frames actually stored here, so it answers what <i>this</i> recorder costs rather
@@ -226,6 +292,11 @@ function Dashboard({ h }: { h: History }) {
             <span>Recording <b>{hours} h/day</b></span>
             <input type="range" min={1} max={24} step={1} value={hours}
               onChange={(e) => setHours(Number(e.target.value))} />
+          </label>
+          <label>
+            <span>People recording <b>{users}</b></span>
+            <input type="number" min={0} max={100000} value={users}
+              onChange={(e) => setUsers(Math.max(0, Math.round(Number(e.target.value) || 0)))} />
           </label>
           <label className="db-check">
             <input type="checkbox" checked={keepOriginal}
@@ -250,10 +321,9 @@ function Dashboard({ h }: { h: History }) {
         )}
 
         <BillTable bill={bill} />
-      </div>
+      </Section>
 
-      <div className="panel">
-        <h3 style={{ marginTop: 0 }}>Where these rates come from</h3>
+      <Section n={4} title="Where these rates come from">
         <div className="hint" style={{ marginTop: 0 }}>
           Quoted from Cloudflare&rsquo;s own pricing pages on <b>{r.asOf}</b>, not recalled:{' '}
           R2 ${r.r2.storagePerGbMonth}/GB-month, ${r.r2.classAPerMillion}/million writes,
@@ -273,11 +343,10 @@ function Dashboard({ h }: { h: History }) {
           read, which the status page and this page themselves consume. Those are usage you
           drive by looking, not by recording.
         </div>
-      </div>
+      </Section>
 
       {h.daily.length > 0 && (
-        <div className="panel">
-          <h3 style={{ marginTop: 0 }}>Stored per day</h3>
+        <Section n={5} title="Stored per day">
           <div className="db-bars">
             {h.daily.map((d) => (
               <div key={d.day} className="db-bar" title={`${d.day} · ${num(d.frames)} frames · ${bytes(d.bytes)}`}>
@@ -286,7 +355,7 @@ function Dashboard({ h }: { h: History }) {
               </div>
             ))}
           </div>
-        </div>
+        </Section>
       )}
     </>
   );
