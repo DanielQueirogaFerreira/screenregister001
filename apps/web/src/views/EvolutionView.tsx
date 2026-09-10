@@ -5,6 +5,7 @@ import {
   siblingGroups, stepLayout, strayedBy, VIEWS, zoom,
   type Camera, type EvoLog, type EvoNode, type Layout, type NodeStats, type Quat,
 } from '@sr/core';
+import { stampTimeLine } from '@sr/schema';
 import { VersionBadge } from './VersionBadge.js';
 import { ACTION_COLOUR, ACTION_LABEL, FILE_KINDS, fileColour, fileKind } from '../lib/evolution-palette.js';
 
@@ -57,6 +58,21 @@ const shortDate = (s: number) =>
   timeOf(s).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 const stamp = (ms: number) =>
   new Date(ms).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+/**
+ * The playhead clock, split into the part that rarely changes and the part that never
+ * stops.
+ *
+ * Same rule as the frame stamp and the version badge: UTC to the millisecond, with the Z.
+ * It comes from the same function so it stays the same rule rather than a third
+ * coincidentally-similar format. The date is set small and quiet to the left because it is
+ * context you glance at; the time is the thing actually moving.
+ */
+function splitStamp(ms: number): { date: string; time: string } {
+  const iso = stampTimeLine(ms);
+  const t = iso.indexOf('T');
+  return { date: iso.slice(0, t), time: iso.slice(t + 1) };
+}
 
 interface Hit { x: number; y: number; r: number; depth: number; index: number }
 
@@ -173,6 +189,8 @@ function Evolution({ log }: { log: EvoLog }) {
   const strayRef = useRef(0);
   /** The drift's phase, advanced only while the elements are live. */
   const phase = useRef(0);
+  const dateRef = useRef<HTMLSpanElement>(null);
+  const timeRef = useRef<HTMLSpanElement>(null);
 
   /**
    * Pause freezes the simulation as well as the clock.
@@ -395,6 +413,10 @@ function Evolution({ log }: { log: EvoLog }) {
 
       render(el, nodes, l, cam.current, heatRef.current, liveRef.current, screen,
         selectedRef.current, orbitRef.current);
+
+      const shown = splitStamp(clock.current);
+      if (dateRef.current) dateRef.current.textContent = shown.date;
+      if (timeRef.current) timeRef.current.textContent = shown.time;
       raf = requestAnimationFrame(frame);
     };
     raf = requestAnimationFrame(frame);
@@ -478,10 +500,18 @@ function Evolution({ log }: { log: EvoLog }) {
             {hover && (
               <div className="evo-tip" style={{ left: hover.x, top: hover.y }}>{hover.label}</div>
             )}
+            {/*
+              Written by the animation loop, not by React.
+              Milliseconds mean nothing at the 8 Hz the readable state runs at — the digits
+              would jump in steps of 125. The loop owns this text so the last three digits
+              tick at frame rate, and the element carries no React children for the same
+              reason: nothing here for a re-render to overwrite.
+            */}
             <div className="evo-clock">
-              {stamp(atMs)}
-              {!playing && <span className="evo-frozen-tag">frozen</span>}
+              <span className="evo-date" ref={dateRef} />
+              <span className="evo-time" ref={timeRef} />
             </div>
+            {!playing && <span className="evo-frozen-tag">frozen</span>}
             <div className="evo-viewkeys">
               <button onClick={() => view(VIEWS.front)} title="Look along the z axis">Front</button>
               <button onClick={() => view(VIEWS.side)} title="Look along the x axis">Side</button>
@@ -499,22 +529,36 @@ function Evolution({ log }: { log: EvoLog }) {
               Small on purpose: it is a thing you flick without looking away from the graph,
               which is exactly when a control at the far end of the page is useless.
             */}
-            <div className="evo-modeswitch" role="group" aria-label="Interaction mode">
+            <div className="evo-cornerbar">
+              <div className="evo-modeswitch" role="group" aria-label="Interaction mode">
+                <button
+                  className={mode === 'navigate' ? 'on' : ''}
+                  aria-pressed={mode === 'navigate'}
+                  title="Navigate — alive, fly around, click to pick out"
+                  onClick={() => enterMode('navigate')}
+                >
+                  Nav
+                </button>
+                <button
+                  className={mode === 'inspect' ? 'on' : ''}
+                  aria-pressed={mode === 'inspect'}
+                  title="Inspect — held still, orbits what you select, full detail"
+                  onClick={() => enterMode('inspect')}
+                >
+                  Inspect
+                </button>
+              </div>
+              {/* Its own button rather than a third segment of the pair beside it: Nav and
+                  Inspect are two answers to one question, spin is a separate thing that is
+                  either on or off. Sharing their shape would say otherwise. */}
               <button
-                className={mode === 'navigate' ? 'on' : ''}
-                aria-pressed={mode === 'navigate'}
-                title="Navigate — alive, fly around, click to pick out"
-                onClick={() => enterMode('navigate')}
+                className={`evo-spinbtn${spin ? ' on' : ''}`}
+                aria-pressed={spin}
+                title={spin ? 'Stop the slow turn' : 'Turn the graph slowly on its own'}
+                onClick={() => setSpin((v) => !v)}
               >
-                Nav
-              </button>
-              <button
-                className={mode === 'inspect' ? 'on' : ''}
-                aria-pressed={mode === 'inspect'}
-                title="Inspect — held still, orbits what you select, full detail"
-                onClick={() => enterMode('inspect')}
-              >
-                Inspect
+                <span aria-hidden="true">⟳</span>
+                <span className="sr-only">Auto-rotate</span>
               </button>
             </div>
 
@@ -571,10 +615,6 @@ function Evolution({ log }: { log: EvoLog }) {
             <option value={2}>2×</option>
             <option value={4}>4×</option>
           </select>
-          <label className="evo-spin">
-            <input type="checkbox" checked={spin} onChange={(e) => setSpin(e.target.checked)} />
-            spin
-          </label>
           {/* The elements' own behaviour, separate from the clock. Freeze sets both; this
               is here for when the answer is not the default. */}
           <div className="evo-motion" role="group" aria-label="Element motion">
