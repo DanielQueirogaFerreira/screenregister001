@@ -534,7 +534,7 @@ tbody tr:has(input[type="checkbox"]:checked) { background: var(--panel-2); }
 
 /* What the camera is turning around, bottom-right, opposite the clock. */
 .evo-orbit-readout {
-  position: absolute; right: 10px; bottom: 42px; display: flex; align-items: center; gap: 8px;
+  position: absolute; right: 10px; bottom: 116px; display: flex; align-items: center; gap: 8px;
   font: 11px/1 ui-monospace, monospace; color: var(--dim); pointer-events: none;
 }
 .evo-orbit-readout .locked { color: var(--accent); }
@@ -598,3 +598,108 @@ tbody tr:has(input[type="checkbox"]:checked) { background: var(--panel-2); }
 .evo-commits code { font-size: 10px; color: var(--accent); }
 .evo-commits span { display: block; }
 .evo-commits em { color: var(--dim); font-size: 10px; font-style: normal; }
+
+/* --- Database & cost ------------------------------------------------------ */
+.db-gauge { margin-bottom: 16px; }
+.db-gauge-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px;
+  font-size: 13px; margin-bottom: 5px; }
+.db-gauge-head span { font: 12px/1 ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+.db-gauge-head .good { color: var(--good); }
+.db-gauge-head .warn { color: var(--warn); }
+.db-gauge-head .bad { color: var(--bad); }
+.db-gauge-track { height: 8px; background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 20px; overflow: hidden; }
+/* Clamped at 100% so a bar that is 900% over does not become a formatting bug — the
+   number beside it carries the real figure. */
+.db-gauge-track i { display: block; height: 100%; border-radius: 20px; }
+.db-gauge-track i.good { background: var(--good); }
+.db-gauge-track i.warn { background: var(--warn); }
+.db-gauge-track i.bad { background: var(--bad); }
+
+.db-knobs { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+.db-knobs label { display: block; }
+.db-knobs label span { display: block; color: var(--dim); font-size: 12px; margin-bottom: 5px; }
+.db-knobs label span b { color: var(--fg); }
+.db-check { display: flex !important; align-items: center; gap: 8px; align-self: end; }
+.db-check input { width: auto; }
+.db-check span { margin: 0 !important; }
+
+.db-bars { display: flex; align-items: flex-end; gap: 3px; height: 120px; overflow-x: auto; }
+.db-bar { flex: 1 0 22px; display: flex; flex-direction: column; justify-content: flex-end;
+  height: 100%; }
+.db-bar i { display: block; background: var(--accent); border-radius: 2px 2px 0 0; }
+.db-bar span { color: var(--dim); font-size: 9px; text-align: center; margin-top: 4px;
+  white-space: nowrap; }
+
+/* --- the cockpit ---------------------------------------------------------- */
+/* Everything needed while looking at the graph, in one corner within reach of a thumb.
+   Above the mode switch so the two never fight for the same pixels. */
+/* Spans the stage rather than hugging the right edge, so the speed row has the whole
+   width to align into. Anchored right and it grew rightward off the canvas — measured at
+   414px, where all six chips landed outside the stage and the open row was unreachable. */
+.evo-cockpit {
+  position: absolute; left: 10px; right: 10px; bottom: 74px;
+  display: flex; flex-direction: column; align-items: flex-end; gap: 6px;
+  pointer-events: none;
+}
+.evo-cockpit > * { pointer-events: auto; }
+.evo-cockpit-row { display: flex; gap: 6px; }
+.evo-cbtn {
+  width: 34px; height: 34px; padding: 0; border-radius: 50%;
+  font-size: 13px; line-height: 1; display: inline-flex; align-items: center;
+  justify-content: center; background: rgba(13, 16, 20, .85); color: var(--dim);
+  border-color: var(--line);
+}
+.evo-cbtn.on { color: var(--accent); border-color: var(--accent); }
+/* Wider than round: it carries a number and an arrow, not a glyph. */
+.evo-speedtab { width: auto; padding: 0 8px; border-radius: 18px; font-size: 11px; gap: 1px; }
+.evo-speedtab i { font-style: normal; font-size: 13px; }
+.evo-cbtn.on span[aria-hidden] { display: inline-block; }
+.evo-cockpit .evo-cbtn.on span[aria-hidden] { animation: evospin 3.2s linear infinite; }
+@media (prefers-reduced-motion: reduce) { .evo-cockpit .evo-cbtn.on span[aria-hidden] { animation: none; } }
+
+/* The speed chips, opening as a row above the cockpit rather than a dropdown: a menu that
+   covers the graph hides the thing you are setting the speed of. */
+/* display:none rather than a collapsing max-width. The animated version clipped the row
+   with overflow:hidden, which hid it visually while leaving the buttons laid out off the
+   canvas — invisible and still in the tab order. Wrapping, right-aligned, so six chips fit
+   a phone. */
+.evo-speeds { display: none; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
+.evo-speeds.open { display: flex; animation: evofade .18s ease both; }
+@keyframes evofade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .evo-speeds.open { animation: none; } }
+.evo-speeds button {
+  padding: 3px 9px; font-size: 11px; border-radius: 16px; white-space: nowrap;
+  background: rgba(13, 16, 20, .9); color: var(--dim);
+}
+.evo-speeds button.on { background: var(--accent); color: #04101d; border-color: var(--accent);
+  font-weight: 600; }
+
+/* --- fullscreen ----------------------------------------------------------- */
+/* Portrait first: on a phone held upright there is no room for a column beside the canvas,
+   so the inspector becomes a sheet across the bottom of it. */
+.evo-layout.full, .evo-layout:fullscreen {
+  position: fixed; inset: 0; z-index: 60; background: var(--bg);
+  grid-template-columns: 1fr; grid-template-rows: 1fr auto; gap: 0; padding: 0;
+}
+.evo-layout.full .evo-canvas, .evo-layout:fullscreen .evo-canvas {
+  height: 100%; border: none; border-radius: 0;
+}
+.evo-layout.full .evo-stage, .evo-layout:fullscreen .evo-stage { min-height: 0; }
+.evo-layout.full .evo-inspect, .evo-layout:fullscreen .evo-inspect {
+  border-radius: 0; border-left: none; border-right: none; border-bottom: none;
+  max-height: 42vh; overflow-y: auto;
+}
+/* An empty inspector in fullscreen is a bar of prompt text eating the canvas; collapse it
+   to nothing and let the graph have the room until something is selected. */
+.evo-layout.full .evo-inspect.empty-inspect,
+.evo-layout:fullscreen .evo-inspect.empty-inspect { display: none; }
+
+@media (min-aspect-ratio: 1/1) {
+  .evo-layout.full, .evo-layout:fullscreen {
+    grid-template-columns: 1fr 300px; grid-template-rows: 1fr;
+  }
+  .evo-layout.full .evo-inspect, .evo-layout:fullscreen .evo-inspect {
+    max-height: none; border-left: 1px solid var(--line);
+  }
+}

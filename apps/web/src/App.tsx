@@ -17,6 +17,7 @@ import { SettingsView } from './views/SettingsView.js';
 import { VersionBadge } from './views/VersionBadge.js';
 import { StatusView } from './views/StatusView.js';
 import { EvolutionView } from './views/EvolutionView.js';
+import { DatabaseView } from './views/DatabaseView.js';
 
 type Tab = 'record' | 'library' | 'inspect' | 'settings' | 'admin';
 
@@ -30,6 +31,10 @@ export function App() {
   // public repository and contains nothing belonging to any account. Putting it behind a
   // sign-in would protect nothing and hide it from the people it is for.
   if (path === '/evolution') return <EvolutionView />;
+
+  // Behind the auth gate in substance — the API refuses without a session — but routed
+  // here so the page can say "sign in" rather than 404ing at someone who followed a link.
+  if (path === '/database') return <DatabaseView />;
 
   if (path === '/status') {
     // StatusView draws its own badge on the refusal screen, where it renders the whole

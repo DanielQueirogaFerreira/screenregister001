@@ -43,6 +43,16 @@ const SWEEP_MS = 75_000;
 const WANDER = 7;
 const WANDER_RATE = 0.0016;   // radians per millisecond
 
+/**
+ * The speeds worth having.
+ *
+ * 0.1 and 0.25 exist because the fast end is easy and the slow end is where the work is:
+ * at 1x a busy day goes past in a couple of seconds and a commit you wanted to read is
+ * gone before you find it. Below 0.1 the playhead moves slower than the eye notices and
+ * pausing is the better tool.
+ */
+const SPEEDS = [0.1, 0.25, 0.5, 1, 2, 4] as const;
+
 const AUTHOR_COLOURS = ['#4da3ff', '#35c98b', '#f0b23c', '#c98bf0', '#f0645c', '#3ccfd0'];
 
 /** World-space radii. Screen size comes from these times the projected scale. */
@@ -163,6 +173,10 @@ function Evolution({ log }: { log: EvoLog }) {
    */
   const [orbitOn, setOrbitOn] = useState<number | null>(null);
   const [strayed, setStrayed] = useState(0);
+  /** Whether the speed chips are showing. Collapsed by default: it is six extra targets. */
+  const [speedOpen, setSpeedOpen] = useState(false);
+  const [full, setFull] = useState(false);
+  const shell = useRef<HTMLDivElement>(null);
 
   /**
    * The playhead lives in a ref, not in state.
@@ -439,6 +453,31 @@ function Evolution({ log }: { log: EvoLog }) {
 
   const seek = (t: number) => { clock.current = t; setAtMs(t); };
 
+  /**
+   * Fullscreen puts the scene and its controls edge to edge, and keeps the inspector.
+   *
+   * Keeping it is the point: fullscreen exists to look at the thing closely, and a
+   * fullscreen mode that drops the panel telling you what you are looking at has removed
+   * the reason for going fullscreen. On a phone held upright there is no room beside the
+   * canvas, so the panel becomes a sheet over the bottom of it instead of a column.
+   */
+  useEffect(() => {
+    const onChange = () => setFull(document.fullscreenElement === shell.current);
+    document.addEventListener('fullscreenchange', onChange);
+    return () => document.removeEventListener('fullscreenchange', onChange);
+  }, []);
+
+  const toggleFull = async () => {
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else await shell.current?.requestFullscreen({ navigationUI: 'hide' });
+    } catch {
+      // Refused — Safari on iPhone has no element fullscreen at all. Fall back to filling
+      // the viewport with CSS, which gets most of the benefit and cannot fail.
+      setFull((v) => !v);
+    }
+  };
+
   /** Freeze means freeze: the clock and the elements both. The switches below separate them. */
   const setRunning = (run: boolean) => { setPlaying(run); setMotion(run ? 'live' : 'fixed'); };
 
@@ -483,7 +522,7 @@ function Evolution({ log }: { log: EvoLog }) {
       <div className="panel">
         <h3 style={{ marginTop: 0 }}>Codebase Evolution &amp; Activity</h3>
 
-        <div className="evo-layout">
+        <div className={`evo-layout${full ? ' full' : ''}`} ref={shell}>
           <div className="evo-stage">
             <canvas
               ref={canvas}
@@ -529,6 +568,74 @@ function Evolution({ log }: { log: EvoLog }) {
               Small on purpose: it is a thing you flick without looking away from the graph,
               which is exactly when a control at the far end of the page is useless.
             */}
+            {/*
+              The cockpit.
+              Everything needed while looking at the graph sits in one corner within reach
+              of a thumb, because the alternative is reaching across the page for a control
+              and losing your place in the scene. Icons rather than words: at this size a
+              word is either unreadable or the whole button.
+            */}
+            <div className="evo-cockpit">
+              <div className={`evo-speeds${speedOpen ? ' open' : ''}`}>
+                {SPEEDS.map((v) => (
+                  <button
+                    key={v}
+                    className={speed === v ? 'on' : ''}
+                    aria-pressed={speed === v}
+                    onClick={() => { setSpeed(v); setSpeedOpen(false); }}
+                  >
+                    {v}&times;
+                  </button>
+                ))}
+              </div>
+
+              <div className="evo-cockpit-row">
+                <button
+                  className={`evo-cbtn${playing ? '' : ' on'}`}
+                  title={playing ? 'Freeze' : 'Play'}
+                  aria-label={playing ? 'Freeze' : 'Play'}
+                  onClick={() => setRunning(!playing)}
+                >
+                  {playing ? '❚❚' : '▶'}
+                </button>
+                {/* The arrow that opens the speeds, showing the current one so the row can
+                    stay collapsed without hiding what it is set to. */}
+                <button
+                  className={`evo-cbtn evo-speedtab${speedOpen ? ' on' : ''}`}
+                  title="Playback speed"
+                  aria-expanded={speedOpen}
+                  onClick={() => setSpeedOpen((v) => !v)}
+                >
+                  {speed}&times;<i aria-hidden="true">{speedOpen ? '›' : '‹'}</i>
+                </button>
+                <button
+                  className={`evo-cbtn${motion === 'live' ? ' on' : ''}`}
+                  title={motion === 'live' ? 'Elements are moving — hold them still' : 'Elements are held still — let them move'}
+                  aria-label="Element motion"
+                  aria-pressed={motion === 'live'}
+                  onClick={() => setMotion(motion === 'live' ? 'fixed' : 'live')}
+                >
+                  {motion === 'live' ? '◉' : '◎'}
+                </button>
+                <button
+                  className={`evo-cbtn${spin ? ' on' : ''}`}
+                  aria-pressed={spin}
+                  title={spin ? 'Stop the slow turn' : 'Turn the graph slowly on its own'}
+                  onClick={() => setSpin((v) => !v)}
+                >
+                  <span aria-hidden="true">⟳</span>
+                </button>
+                <button
+                  className={`evo-cbtn${full ? ' on' : ''}`}
+                  title={full ? 'Leave fullscreen' : 'Fullscreen'}
+                  aria-label={full ? 'Leave fullscreen' : 'Fullscreen'}
+                  onClick={toggleFull}
+                >
+                  {full ? '⤡' : '⛶'}
+                </button>
+              </div>
+            </div>
+
             <div className="evo-cornerbar">
               <div className="evo-modeswitch" role="group" aria-label="Interaction mode">
                 <button
@@ -599,32 +706,14 @@ function Evolution({ log }: { log: EvoLog }) {
             : ' — held still, and the camera turns around whatever you select. Click a node to look at it from every side.'}
         </div>
 
+        {/* Only the scrubber is left out here: it wants width, which is the one thing a
+            thumb-sized corner cannot give it. Everything else moved into the cockpit. */}
         <div className="evo-controls">
-          <button onClick={() => setRunning(!playing)} className={playing ? '' : 'primary'}>
-            {playing ? '❚❚ Freeze' : '▶ Play'}
-          </button>
           <input
             type="range" min={startMs} max={endMs} step={1000} value={atMs}
             aria-label="Timeline position"
             onChange={(e) => { setPlaying(false); seek(Number(e.target.value)); }}
           />
-          <select value={speed} onChange={(e) => setSpeed(Number(e.target.value))}
-            aria-label="Playback speed">
-            <option value={0.5}>0.5×</option>
-            <option value={1}>1×</option>
-            <option value={2}>2×</option>
-            <option value={4}>4×</option>
-          </select>
-          {/* The elements' own behaviour, separate from the clock. Freeze sets both; this
-              is here for when the answer is not the default. */}
-          <div className="evo-motion" role="group" aria-label="Element motion">
-            <button className={motion === 'live' ? 'on' : ''} onClick={() => setMotion('live')}>
-              live
-            </button>
-            <button className={motion === 'fixed' ? 'on' : ''} onClick={() => setMotion('fixed')}>
-              fixed
-            </button>
-          </div>
           <button onClick={() => { seek(startMs); setRunning(true); }}>Restart</button>
         </div>
 

@@ -141,6 +141,7 @@ app.use('/v1/sessions', requireAuth);
 app.use('/v1/frames/*', requireAuth);
 app.use('/v1/frames', requireAuth);
 app.use('/v1/usage', requireAuth);
+app.use('/v1/usage/history', requireAuth);
 app.use('/v1/data', requireAuth);
 app.use('/v1/timeline', requireAuth);
 app.use('/v1/scenes', requireAuth);
@@ -1203,6 +1204,56 @@ app.get('/v1/usage', async (c) => {
   const stored = Number(row?.bytes ?? 0);
   const originals = Number(row?.original_bytes ?? 0);
   return c.json({ ...row, bytes: stored + originals, stored_bytes: stored, original_bytes: originals });
+});
+
+/**
+ * Everything needed to price the account's storage, and to watch it move.
+ *
+ * Separate from /v1/usage because it costs more to answer: the daily series groups over
+ * every one of the account's frame rows, and D1 bills on rows read. /v1/usage is polled by
+ * the recorder while it records; this is opened by a person looking at a dashboard, which
+ * is a different frequency and deserves a different query.
+ *
+ * The averages are measured rather than assumed. A cost projection built on a guessed
+ * frame size is a guess wearing a dollar sign.
+ */
+app.get('/v1/usage/history', async (c) => {
+  const userId = c.get('me').userId;
+  const days = Math.min(90, Math.max(1, Number(c.req.query('days') ?? 30)));
+  const since = new Date(Date.now() - days * 86_400_000).toISOString();
+
+  const [totals, series] = await Promise.all([
+    c.env.DB.prepare(
+      `SELECT COUNT(*) AS frames,
+              COALESCE(SUM(bytes),0) AS stored_bytes,
+              COALESCE(SUM(original_bytes),0) AS original_bytes,
+              COALESCE(AVG(bytes),0) AS avg_frame_bytes,
+              COALESCE(MIN(bytes),0) AS min_frame_bytes,
+              COALESCE(MAX(bytes),0) AS max_frame_bytes,
+              COUNT(DISTINCT session_id) AS sessions,
+              MIN(captured_at) AS oldest,
+              MAX(captured_at) AS newest
+       FROM frames WHERE user_id = ?`,
+    ).bind(userId).first<Record<string, number | string | null>>(),
+    c.env.DB.prepare(
+      `SELECT substr(captured_at, 1, 10) AS day,
+              COUNT(*) AS frames,
+              COALESCE(SUM(bytes),0) AS bytes
+       FROM frames
+       WHERE user_id = ? AND captured_at >= ?
+       GROUP BY day ORDER BY day`,
+    ).bind(userId, since).all<{ day: string; frames: number; bytes: number }>(),
+  ]);
+
+  return c.json({
+    generated_at: new Date().toISOString(),
+    retention_days: Number(c.env.RETENTION_DAYS ?? 7),
+    totals: {
+      ...totals,
+      bytes: Number(totals?.stored_bytes ?? 0) + Number(totals?.original_bytes ?? 0),
+    },
+    daily: series.results,
+  });
 });
 
 /**

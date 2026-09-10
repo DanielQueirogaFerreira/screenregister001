@@ -426,6 +426,7 @@ export function StatusView() {
             <a href="/admin" className="button-link">Operator view</a>
           )}
           <a href="/evolution" className="button-link">Codebase evolution</a>
+          <a href="/database" className="button-link">Database &amp; cost</a>
           {/* Styled as a button rather than a link: this is the way back, and on a phone
               a text link tucked in the header is easy to miss entirely. */}
           <a href="/" className="button-link">&larr; Back to the recorder</a>
