@@ -422,55 +422,106 @@ tbody tr:has(input[type="checkbox"]:checked) { background: var(--panel-2); }
 .zone-list input[type="text"] { flex: 1 1 auto; min-width: 0; }
 
 /* --- Codebase evolution --------------------------------------------------- */
-.evo-stage { position: relative; margin-bottom: 12px; }
+/* Canvas and inspector side by side on a desktop, stacked on a phone. The inspector keeps
+   a fixed column so selecting a node never resizes the canvas — a graph that jumps when
+   you click it makes the next click land somewhere else. */
+.evo-layout { display: grid; grid-template-columns: 1fr 268px; gap: 14px; }
+@media (max-width: 860px) { .evo-layout { grid-template-columns: 1fr; } }
+
+.evo-stage { position: relative; }
 .evo-canvas {
-  display: block; width: 100%; height: 460px;
-  background: radial-gradient(ellipse at center, #131922 0%, var(--bg) 78%);
+  display: block; width: 100%; height: 520px;
+  background: radial-gradient(ellipse at 50% 45%, #141b25 0%, #0b0e13 75%);
   border: 1px solid var(--line); border-radius: var(--radius);
-  touch-action: none; cursor: crosshair;
+  touch-action: none; cursor: grab; user-select: none;
 }
-@media (max-width: 720px) { .evo-canvas { height: 320px; } }
+.evo-canvas:active { cursor: grabbing; }
+.evo-canvas:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* A frozen graph says so at its edge as well as on the button: the button reads "Play",
+   which describes what pressing it does, not what the graph is doing now. */
+.evo-canvas.frozen { border-color: #3b4a5a; }
+@media (max-width: 860px) { .evo-canvas { height: 380px; } }
+
 .evo-tip {
   position: absolute; transform: translate(12px, -28px); pointer-events: none;
   background: rgba(13, 16, 20, .92); border: 1px solid var(--line); border-radius: 6px;
   padding: 3px 7px; font: 11px/1.4 ui-monospace, monospace; white-space: nowrap;
-  max-width: 90%; overflow: hidden; text-overflow: ellipsis;
+  max-width: 90%; overflow: hidden; text-overflow: ellipsis; z-index: 2;
 }
 .evo-clock {
   position: absolute; left: 10px; bottom: 10px; pointer-events: none;
   color: var(--dim); font: 12px/1 ui-monospace, monospace;
-  font-variant-numeric: tabular-nums;
+  font-variant-numeric: tabular-nums; display: flex; gap: 8px; align-items: center;
 }
-.evo-controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-/* Without this "▶ Play" wraps onto two lines and the button grows taller than the row it
-   is in, which pushes the scrubber out of alignment every time playback is toggled. */
+.evo-frozen-tag {
+  color: var(--warn); border: 1px solid var(--warn); border-radius: 20px;
+  padding: 1px 7px; font-size: 10px; text-transform: uppercase; letter-spacing: .5px;
+}
+.evo-viewkeys { position: absolute; right: 8px; top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
+.evo-viewkeys button {
+  padding: 3px 9px; font-size: 11px; background: rgba(13, 16, 20, .78);
+}
+
+.evo-controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
 .evo-controls button { white-space: nowrap; }
 /* 120px, not 80: below that the scrubber is too short to aim at, and the row is allowed
-   to wrap rather than squeeze it — measured at 390px wide, where all four controls on one
-   line overflowed the panel by 6px. */
+   to wrap rather than squeeze it. */
 .evo-controls input[type="range"] { flex: 1 1 120px; min-width: 120px; }
 .evo-controls select { width: auto; }
+.evo-spin { display: flex; align-items: center; gap: 5px; color: var(--dim); font-size: 12px; }
+.evo-spin input { width: auto; }
+
 .evo-caption {
   margin-top: 10px; padding: 8px 10px; background: var(--panel-2);
   border: 1px solid var(--line); border-radius: var(--radius);
   font-size: 13px; min-height: 36px;
-  /* One line, always. A long subject must not resize the panel under the animation. */
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .evo-key { display: flex; gap: 6px 14px; flex-wrap: wrap; align-items: baseline;
   margin-top: 10px; color: var(--dim); font-size: 12px; }
-/* The row heading. Its own colour so the eye can find where one group ends: two rows of
-   identical swatches with no headings read as one list of seven unrelated things. */
 .evo-key b { color: var(--fg); font-weight: 600; font-size: 11px;
   text-transform: uppercase; letter-spacing: .4px; flex: 0 0 100%; }
-@media (min-width: 721px) { .evo-key b { flex: 0 0 auto; min-width: 156px; } }
+@media (min-width: 721px) { .evo-key b { flex: 0 0 auto; min-width: 186px; } }
 .evo-key-note { font-style: italic; opacity: .75; }
-/* A ring, not a disc — the legend swatch has to be the shape the canvas draws, or it is
-   explaining something the reader cannot find. */
-.evo-key i.ring { background: none !important; border: 2px solid; box-sizing: border-box; }
 .evo-key i, .evo-author i {
   display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px;
 }
+/* A ring, not a disc — the legend swatch has to be the shape the canvas draws, or it is
+   explaining something the reader cannot find. */
+.evo-key i.ring { background: none !important; border: 2px solid; box-sizing: border-box; }
+.evo-help { margin-top: 12px; line-height: 1.7; }
+.evo-help b { color: var(--fg); }
+
 .evo-authors { display: grid; gap: 8px; }
 .evo-author { display: flex; align-items: center; gap: 8px; }
 .evo-card-link { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+
+/* --- the inspector -------------------------------------------------------- */
+.evo-inspect {
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 12px; font-size: 12px; align-self: start;
+  max-height: 520px; overflow-y: auto;
+}
+@media (max-width: 860px) { .evo-inspect { max-height: none; } }
+.evo-inspect.empty-inspect { display: flex; align-items: center; }
+.evo-inspect h4 { margin: 14px 0 6px; font-size: 11px; text-transform: uppercase;
+  letter-spacing: .4px; color: var(--dim); }
+.evo-inspect-head { display: flex; align-items: center; gap: 8px; }
+.evo-inspect-head b { flex: 1 1 auto; min-width: 0; font-size: 14px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.evo-inspect-head button { padding: 0; width: 22px; height: 22px; line-height: 1; flex: none; }
+.evo-inspect-kind { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.evo-path { color: var(--dim); font: 11px/1.5 ui-monospace, monospace; margin: 4px 0 10px;
+  word-break: break-all; }
+.evo-inspect-tags { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+.evo-inspect-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(56px, 1fr));
+  gap: 6px; margin-bottom: 10px; }
+.evo-inspect-grid div { background: var(--panel); border: 1px solid var(--line);
+  border-radius: 8px; padding: 6px 8px; }
+.evo-inspect-grid b { display: block; font-size: 15px; font-variant-numeric: tabular-nums; }
+.evo-inspect-grid span { color: var(--dim); font-size: 10px; }
+.evo-commits { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.evo-commits li { border-left: 2px solid var(--line); padding-left: 8px; }
+.evo-commits code { font-size: 10px; color: var(--accent); }
+.evo-commits span { display: block; }
+.evo-commits em { color: var(--dim); font-size: 10px; font-style: normal; }

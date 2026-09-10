@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
-  boundsOf, buildTree, DEFAULT_LAYOUT, directoryIndices, energy, eventsBetween, heatAt,
-  livePaths, seedLayout, siblingGroups, stepLayout, type EvoLog,
+  boundingSphere, boundsOf, buildTree, coveredPaths, DEFAULT_LAYOUT, directoryIndices,
+  energy, eventsBetween, heatAt, livePaths, nodeStats, seedLayout, siblingGroups,
+  stepLayout, type EvoLog,
 } from './evolution.js';
 
 const PATHS = [
@@ -231,5 +232,194 @@ describe('aspect', () => {
     for (let i = 0; i < 800; i++) stepLayout(nodes, l, g, d, { ...DEFAULT_LAYOUT, aspect: 2.2 });
     expect(energy(l)).toBeLessThan(1);
     for (let i = 0; i < nodes.length; i++) expect(Number.isFinite(l.x[i]!)).toBe(true);
+  });
+});
+
+describe('the third axis', () => {
+  const nodes = buildTree(PATHS);
+  const settle = (steps: number, aspect = 1) => {
+    const l = seedLayout(nodes);
+    const g = siblingGroups(nodes);
+    const d = directoryIndices(nodes);
+    for (let i = 0; i < steps; i++) stepLayout(nodes, l, g, d, { ...DEFAULT_LAYOUT, aspect });
+    return l;
+  };
+
+  it('seeds onto a sphere, not a disc', () => {
+    // A flat seed leaves the repulsion no direction to push in out of plane, and the graph
+    // stays a pancake no matter how long it runs — 3D in the data and 2D on screen.
+    const l = seedLayout(nodes);
+    let spread = 0;
+    for (let i = 1; i < nodes.length; i++) spread = Math.max(spread, Math.abs(l.z[i]!));
+    expect(spread).toBeGreaterThan(1);
+  });
+
+  it('settles into something with real depth', () => {
+    const l = settle(600);
+    const b = boundingSphere(l);
+    let depth = 0;
+    for (let i = 0; i < nodes.length; i++) depth = Math.max(depth, Math.abs(l.z[i]! - b.z));
+    // Not a demand for a particular shape, only that it is not flat: a graph you can orbit
+    // has to have something to see from the side.
+    expect(depth).toBeGreaterThan(b.r * 0.2);
+  });
+
+  it('still settles, and never to NaN', () => {
+    const l = settle(600);
+    expect(energy(l)).toBeLessThan(1);
+    for (let i = 0; i < nodes.length; i++) {
+      expect(Number.isFinite(l.x[i]!) && Number.isFinite(l.y[i]!) && Number.isFinite(l.z[i]!))
+        .toBe(true);
+    }
+  });
+
+  it('pins the root in all three axes', () => {
+    const l = settle(300);
+    expect([l.x[0], l.y[0], l.z[0]]).toEqual([0, 0, 0]);
+  });
+
+  it('survives every node starting at one point in 3D too', () => {
+    const l = seedLayout(nodes);
+    l.x.fill(0); l.y.fill(0); l.z.fill(0);
+    const g = siblingGroups(nodes);
+    const d = directoryIndices(nodes);
+    for (let i = 0; i < 150; i++) stepLayout(nodes, l, g, d);
+    for (let i = 0; i < nodes.length; i++) expect(Number.isFinite(l.z[i]!)).toBe(true);
+  });
+
+  it('never stretches depth, whatever the aspect', () => {
+    // A shape that is right head-on and wrong from the side is worse than a round one, and
+    // this view exists to be turned around.
+    const wide = settle(600, 2.4);
+    const round = settle(600, 1);
+    const zSpread = (l: typeof wide) => {
+      let lo = Infinity, hi = -Infinity;
+      for (let i = 0; i < nodes.length; i++) { lo = Math.min(lo, l.z[i]!); hi = Math.max(hi, l.z[i]!); }
+      return hi - lo;
+    };
+    const xSpread = (l: typeof wide) => {
+      let lo = Infinity, hi = -Infinity;
+      for (let i = 0; i < nodes.length; i++) { lo = Math.min(lo, l.x[i]!); hi = Math.max(hi, l.x[i]!); }
+      return hi - lo;
+    };
+    expect(xSpread(wide)).toBeGreaterThan(xSpread(round));
+    expect(zSpread(wide)).toBeLessThan(zSpread(round) * 1.6);
+  });
+
+  it('is deterministic in 3D', () => {
+    expect(Array.from(seedLayout(nodes).z)).toEqual(Array.from(seedLayout(nodes).z));
+  });
+});
+
+describe('boundingSphere', () => {
+  it('contains every node', () => {
+    const nodes = buildTree(PATHS);
+    const l = seedLayout(nodes);
+    const g = siblingGroups(nodes);
+    const d = directoryIndices(nodes);
+    for (let i = 0; i < 400; i++) stepLayout(nodes, l, g, d);
+    const b = boundingSphere(l);
+    for (let i = 0; i < nodes.length; i++) {
+      expect(Math.hypot(l.x[i]! - b.x, l.y[i]! - b.y, l.z[i]! - b.z)).toBeLessThanOrEqual(b.r + 1e-9);
+    }
+  });
+
+  it('never reports a zero radius, which would divide by zero when framing', () => {
+    const nodes = buildTree([]);
+    expect(boundingSphere(seedLayout(nodes)).r).toBeGreaterThan(0);
+  });
+});
+
+describe('nodeStats', () => {
+  const paths = ['apps/web/a.ts', 'apps/web/b.ts', 'apps/api/c.ts', 'README.md'];
+  const nodes = buildTree(paths);
+  const idx = (id: string) => nodes.findIndex((n) => n.id === id);
+  const l = (): EvoLog => ({
+    generated_at: '2026-09-10T00:00:00.000Z',
+    window_days: 30, since: 1000, until: 4000,
+    head: { sha: 'aaaaaaa', at: 4000, subject: 'head' },
+    authors: ['Ana', 'Bo'],
+    paths,
+    alive: [1, 1, 0, 1],
+    events: [
+      { t: 1000, a: 0, s: 'c1', m: 'one', f: [[0, 'A'], [1, 'A']] },
+      { t: 2000, a: 1, s: 'c2', m: 'two', f: [[0, 'M']] },
+      { t: 3000, a: 0, s: 'c3', m: 'three', f: [[2, 'A'], [3, 'M']] },
+      { t: 4000, a: 0, s: 'c4', m: 'four', f: [[2, 'D']] },
+    ],
+    totals: { commits: 4, files_touched: 4, files_at_head: 3, authors: 2, edits: 6 },
+  });
+
+  it('reports a single file', () => {
+    const s = nodeStats(l(), nodes, idx('apps/web/a.ts'))!;
+    expect(s).toMatchObject({ file: true, files: 1, commits: 2, edits: 2, added: 1, modified: 1 });
+    expect(s.firstMs).toBe(1000_000);
+    expect(s.lastMs).toBe(2000_000);
+    expect(s.alive).toBe(true);
+  });
+
+  it('aggregates a directory over its whole subtree', () => {
+    // What someone actually wants from clicking apps/web — not "this directory is not a
+    // file and was never edited", which is true and useless.
+    const s = nodeStats(l(), nodes, idx('apps/web'))!;
+    expect(s.files).toBe(2);
+    expect(s.commits).toBe(2);
+    expect(s.edits).toBe(3);
+  });
+
+  it('counts a commit once however many of its files are in the subtree', () => {
+    const s = nodeStats(l(), nodes, idx('apps/web'))!;
+    // c1 touched both a.ts and b.ts: one commit, two edits.
+    expect(s.commits).toBeLessThan(s.edits);
+  });
+
+  it('does not let one directory claim another with the same prefix', () => {
+    // Without the trailing slash on the prefix test, `apps/web` also matches
+    // `apps/website` — a whole directory silently folded into its neighbour's numbers.
+    const ns = buildTree(['apps/web/a.ts', 'apps/website/b.ts']);
+    const covered = coveredPaths(ns, ns.findIndex((n) => n.id === 'apps/web'));
+    expect(covered.size).toBe(1);
+  });
+
+  it('lets the root cover the whole repository', () => {
+    const s = nodeStats(l(), nodes, 0)!;
+    expect(s.files).toBe(4);
+    expect(s.commits).toBe(4);
+    expect(s.edits).toBe(6);
+  });
+
+  it('ranks authors by how much they did here, busiest first', () => {
+    const s = nodeStats(l(), nodes, 0)!;
+    expect(s.authors[0]).toEqual({ author: 0, commits: 3 });
+    expect(s.authors[1]).toEqual({ author: 1, commits: 1 });
+  });
+
+  it('knows a deleted file is gone', () => {
+    const s = nodeStats(l(), nodes, idx('apps/api/c.ts'))!;
+    expect(s.alive).toBe(false);
+    expect(s.deleted).toBe(1);
+  });
+
+  it('lists recent commits newest first', () => {
+    // The panel is read top-down, and the last thing that happened is what a click is
+    // asking about.
+    expect(nodeStats(l(), nodes, 0)!.recent.map((e) => e.s)).toEqual(['c4', 'c3', 'c2', 'c1']);
+  });
+
+  it('caps the recent list rather than rendering the whole history', () => {
+    expect(nodeStats(l(), nodes, 0, 2)!.recent.map((e) => e.s)).toEqual(['c4', 'c3']);
+  });
+
+  it('says nothing happened rather than inventing a date', () => {
+    const quiet = l();
+    quiet.events = [];
+    const s = nodeStats(quiet, nodes, 0)!;
+    expect(s.commits).toBe(0);
+    expect(s.firstMs).toBeNull();
+    expect(s.lastMs).toBeNull();
+  });
+
+  it('returns null for a node that does not exist', () => {
+    expect(nodeStats(l(), nodes, 999)).toBeNull();
   });
 });

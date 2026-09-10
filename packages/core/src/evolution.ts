@@ -120,8 +120,10 @@ export function buildTree(paths: string[]): EvoNode[] {
 export interface Layout {
   x: Float64Array;
   y: Float64Array;
+  z: Float64Array;
   vx: Float64Array;
   vy: Float64Array;
+  vz: Float64Array;
 }
 
 /**
@@ -138,17 +140,23 @@ export interface Layout {
 export function seedLayout(nodes: EvoNode[]): Layout {
   const n = nodes.length;
   const l: Layout = {
-    x: new Float64Array(n), y: new Float64Array(n),
-    vx: new Float64Array(n), vy: new Float64Array(n),
+    x: new Float64Array(n), y: new Float64Array(n), z: new Float64Array(n),
+    vx: new Float64Array(n), vy: new Float64Array(n), vz: new Float64Array(n),
   };
   for (let i = 1; i < n; i++) {
     const node = nodes[i]!;
     const h = hash(node.id);
-    const angle = (h % 3600) / 3600 * Math.PI * 2;
+    // Two angles from one hash, on a sphere rather than a circle. Taking the polar angle
+    // uniformly would crowd the poles — acos of a uniform cosine spreads points evenly
+    // over the surface, which is what keeps the initial cloud from having two dense caps
+    // that the repulsion then has to spend hundreds of steps undoing.
+    const theta = (h % 3600) / 3600 * Math.PI * 2;
+    const phi = Math.acos(1 - 2 * (((h >>> 12) % 1000) + 0.5) / 1000);
     const r = REST * node.depth;
     const p = node.parent;
-    l.x[i] = l.x[p]! + Math.cos(angle) * r;
-    l.y[i] = l.y[p]! + Math.sin(angle) * r;
+    l.x[i] = l.x[p]! + Math.sin(phi) * Math.cos(theta) * r;
+    l.y[i] = l.y[p]! + Math.cos(phi) * r;
+    l.z[i] = l.z[p]! + Math.sin(phi) * Math.sin(theta) * r;
   }
   return l;
 }
@@ -186,7 +194,9 @@ export interface LayoutOptions {
    * Stretching the repulsion rather than the drawing keeps every node round and every
    * label horizontal; scaling the finished picture would flatten both.
    *
-   * 1 is a circle, which is what the tests want and what a square canvas wants.
+   * 1 is a sphere, which is what a camera that can be turned to any angle wants. Above 1
+   * the graph spreads along x only; depth is never stretched, because a shape that is
+   * correct head-on and wrong from the side is worse than one that is merely round.
    */
   aspect: number;
 }
@@ -230,44 +240,51 @@ export function stepLayout(
   const n = nodes.length;
   const fx = new Float64Array(n);
   const fy = new Float64Array(n);
+  const fz = new Float64Array(n);
 
   // 1. Springs to the parent.
   for (let i = 1; i < n; i++) {
     const p = nodes[i]!.parent;
     let dx = l.x[i]! - l.x[p]!;
     let dy = l.y[i]! - l.y[p]!;
-    let d = Math.hypot(dx, dy);
+    let dz = l.z[i]! - l.z[p]!;
+    let d = Math.hypot(dx, dy, dz);
     if (d < 1e-6) {
       // Exactly coincident: the direction is undefined, so pick a stable one from the id
       // rather than leaving a division by zero to produce NaN and poison every later frame.
       const a = (hash(nodes[i]!.id) % 3600) / 3600 * Math.PI * 2;
-      dx = Math.cos(a); dy = Math.sin(a); d = 1;
+      dx = Math.cos(a); dy = Math.sin(a); dz = 0; d = 1;
     }
     const f = (d - REST) * o.spring;
-    const ux = dx / d, uy = dy / d;
-    fx[i]! -= ux * f; fy[i]! -= uy * f;
-    fx[p]! += ux * f; fy[p]! += uy * f;
+    const ux = dx / d, uy = dy / d, uz = dz / d;
+    fx[i]! -= ux * f; fy[i]! -= uy * f; fz[i]! -= uz * f;
+    fx[p]! += ux * f; fy[p]! += uy * f; fz[p]! += uz * f;
   }
 
   // 2. Siblings push apart, 3. directories push apart. Same kernel, different pair lists.
-  for (const g of groups) pairRepel(g, l, fx, fy, o.repel, o.aspect);
-  pairRepel(dirs, l, fx, fy, o.dirRepel, o.aspect);
+  for (const g of groups) pairRepel(g, l, fx, fy, fz, o.repel, o.aspect);
+  pairRepel(dirs, l, fx, fy, fz, o.dirRepel, o.aspect);
 
   for (let i = 1; i < n; i++) {
     let vx = (l.vx[i]! + fx[i]!) * o.damping;
     let vy = (l.vy[i]! + fy[i]!) * o.damping;
-    const speed = Math.hypot(vx, vy);
+    let vz = (l.vz[i]! + fz[i]!) * o.damping;
+    const speed = Math.hypot(vx, vy, vz);
     // A node that has been pushed hard must not teleport across the graph in one frame:
     // it would fly past everything that was holding it in place and come back oscillating.
-    if (speed > o.maxStep) { vx = vx / speed * o.maxStep; vy = vy / speed * o.maxStep; }
-    l.vx[i] = vx; l.vy[i] = vy;
-    l.x[i]! += vx; l.y[i]! += vy;
+    if (speed > o.maxStep) {
+      vx = vx / speed * o.maxStep; vy = vy / speed * o.maxStep; vz = vz / speed * o.maxStep;
+    }
+    l.vx[i] = vx; l.vy[i] = vy; l.vz[i] = vz;
+    l.x[i]! += vx; l.y[i]! += vy; l.z[i]! += vz;
   }
-  l.x[0] = 0; l.y[0] = 0; l.vx[0] = 0; l.vy[0] = 0;
+  l.x[0] = 0; l.y[0] = 0; l.z[0] = 0;
+  l.vx[0] = 0; l.vy[0] = 0; l.vz[0] = 0;
 }
 
 function pairRepel(
-  list: number[], l: Layout, fx: Float64Array, fy: Float64Array, k: number, aspect = 1,
+  list: number[], l: Layout, fx: Float64Array, fy: Float64Array, fz: Float64Array,
+  k: number, aspect = 1,
 ): void {
   // Split evenly around 1 so the total push is unchanged and only its direction is biased:
   // scaling x up alone would also inflate the graph every time the canvas got wider.
@@ -279,18 +296,19 @@ function pairRepel(
       const j = list[b]!;
       let dx = l.x[i]! - l.x[j]!;
       let dy = l.y[i]! - l.y[j]!;
-      let d2 = dx * dx + dy * dy;
+      let dz = l.z[i]! - l.z[j]!;
+      let d2 = dx * dx + dy * dy + dz * dz;
       if (d2 < 1) {
         // Two nodes on top of each other would otherwise divide by nearly zero and launch
         // both to infinity. Nudge them apart along a fixed axis and let the next step do
         // the work properly.
-        dx = (i - j) || 1; dy = 1; d2 = dx * dx + dy * dy;
+        dx = (i - j) || 1; dy = 1; dz = 0; d2 = dx * dx + dy * dy + dz * dz;
       }
       const f = k / d2;
       const d = Math.sqrt(d2);
-      const ux = dx / d * f * kx, uy = dy / d * f * ky;
-      fx[i]! += ux; fy[i]! += uy;
-      fx[j]! -= ux; fy[j]! -= uy;
+      const ux = dx / d * f * kx, uy = dy / d * f * ky, uz = dz / d * f;
+      fx[i]! += ux; fy[i]! += uy; fz[i]! += uz;
+      fx[j]! -= ux; fy[j]! -= uy; fz[j]! -= uz;
     }
   }
 }
@@ -298,8 +316,29 @@ function pairRepel(
 /** Total kinetic energy — how far the layout still is from settled. */
 export function energy(l: Layout): number {
   let e = 0;
-  for (let i = 0; i < l.x.length; i++) e += l.vx[i]! * l.vx[i]! + l.vy[i]! * l.vy[i]!;
+  for (let i = 0; i < l.x.length; i++) {
+    e += l.vx[i]! * l.vx[i]! + l.vy[i]! * l.vy[i]! + l.vz[i]! * l.vz[i]!;
+  }
   return e;
+}
+
+/**
+ * Centre and radius of the smallest sphere the graph fits in.
+ *
+ * A sphere and not a box, because the camera can be anywhere: a box fitted from one angle
+ * crops from another, and this view exists to be turned around.
+ */
+export function boundingSphere(l: Layout): { x: number; y: number; z: number; r: number } {
+  const n = l.x.length;
+  if (n === 0) return { x: 0, y: 0, z: 0, r: 1 };
+  let cx = 0, cy = 0, cz = 0;
+  for (let i = 0; i < n; i++) { cx += l.x[i]!; cy += l.y[i]!; cz += l.z[i]!; }
+  cx /= n; cy /= n; cz /= n;
+  let r = 0;
+  for (let i = 0; i < n; i++) {
+    r = Math.max(r, Math.hypot(l.x[i]! - cx, l.y[i]! - cy, l.z[i]! - cz));
+  }
+  return { x: cx, y: cy, z: cz, r: Math.max(1, r) };
 }
 
 export interface Bounds { minX: number; minY: number; maxX: number; maxY: number }
@@ -370,4 +409,109 @@ export function livePaths(log: EvoLog, atMs: number): Set<number> {
     }
   }
   return live;
+}
+
+/**
+ * Everything the inspector shows about one node.
+ *
+ * Computed on selection rather than kept per node, because it is wanted for exactly one
+ * node at a time and precomputing it for every path would walk the whole log once per file
+ * to fill a panel nobody has opened.
+ *
+ * A directory aggregates its whole subtree. That is the answer people actually want from
+ * clicking `packages/core` — how much has happened in there — rather than the strictly
+ * true but useless "this directory itself was never edited, it is not a file".
+ */
+export interface NodeStats {
+  path: string;
+  file: boolean;
+  /** Files beneath this node, itself included when it is a file. */
+  files: number;
+  /** Commits that touched this node or anything under it. */
+  commits: number;
+  /** Individual file edits, which exceeds `commits` when one commit touched several. */
+  edits: number;
+  added: number;
+  modified: number;
+  deleted: number;
+  /** Unix ms of the first and last touch inside the window, or null if never touched. */
+  firstMs: number | null;
+  lastMs: number | null;
+  /** Author index and their commit count here, busiest first. */
+  authors: { author: number; commits: number }[];
+  /** True if the path (or, for a directory, anything under it) exists at HEAD. */
+  alive: boolean;
+  /** Most recent commits touching this node, newest first. */
+  recent: EvoEvent[];
+}
+
+/** The path indices a node covers: itself if a file, its whole subtree if a directory. */
+export function coveredPaths(nodes: EvoNode[], index: number): Set<number> {
+  const node = nodes[index];
+  const out = new Set<number>();
+  if (!node) return out;
+  if (node.file) {
+    out.add(node.pathIndex);
+    return out;
+  }
+  // The root covers everything; any other directory covers what sits under its path. A
+  // prefix test needs the trailing slash or `apps/web` would also claim `apps/website`.
+  const prefix = node.id === '' ? '' : `${node.id}/`;
+  for (const n of nodes) {
+    if (n.file && (prefix === '' || n.id.startsWith(prefix))) out.add(n.pathIndex);
+  }
+  return out;
+}
+
+export function nodeStats(
+  log: EvoLog, nodes: EvoNode[], index: number, recentLimit = 8,
+): NodeStats | null {
+  const node = nodes[index];
+  if (!node) return null;
+  const paths = coveredPaths(nodes, index);
+
+  const authorCommits = new Map<number, number>();
+  const recent: EvoEvent[] = [];
+  let commits = 0, edits = 0, added = 0, modified = 0, deleted = 0;
+  let firstMs: number | null = null;
+  let lastMs: number | null = null;
+
+  for (const e of log.events) {
+    let hit = 0;
+    for (const [p, action] of e.f) {
+      if (!paths.has(p)) continue;
+      hit++;
+      if (action === 'A') added++;
+      else if (action === 'M') modified++;
+      else if (action === 'D') deleted++;
+    }
+    if (hit === 0) continue;
+    commits++;
+    edits += hit;
+    authorCommits.set(e.a, (authorCommits.get(e.a) ?? 0) + 1);
+    const ms = e.t * 1000;
+    if (firstMs === null) firstMs = ms;
+    lastMs = ms;
+    recent.push(e);
+  }
+
+  return {
+    path: node.id,
+    file: node.file,
+    files: paths.size,
+    commits,
+    edits,
+    added,
+    modified,
+    deleted,
+    firstMs,
+    lastMs,
+    authors: [...authorCommits.entries()]
+      .map(([author, n]) => ({ author, commits: n }))
+      .sort((a, b) => b.commits - a.commits),
+    alive: [...paths].some((p) => log.alive[p] === 1),
+    // Newest first: the panel is read top-down and the last thing that happened is the
+    // thing someone clicked a node to find out.
+    recent: recent.slice(-recentLimit).reverse(),
+  };
 }
