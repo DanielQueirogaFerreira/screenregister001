@@ -7,7 +7,7 @@ import {
   type Camera, type EvoLog, type EvoNode, type Layout, type NodeStats, type Quat,
 } from '@sr/core';
 import { stampTimeLine } from '@sr/schema';
-import { useBadgeOpen } from './AreaBadge.js';
+import { AreaBadge, useBadgeOpen } from './AreaBadge.js';
 import { AREAS, areaLine } from '../lib/areas.js';
 import { SourceViewer } from './SourceViewer.js';
 import { Explorer } from './Explorer.js';
@@ -138,10 +138,15 @@ export function EvolutionView() {
       {!log && !error && <div className="empty">Reading the history…</div>}
       {log && <Evolution log={log} />}
       {/*
-        No fixed badge on this page: the scene draws its own, inside the stage, so it
-        survives fullscreen. Two of them would say the same two lines twice in the same
-        corner.
+        The page's own badge, back.
+
+        Taking it off because the scene draws one was wrong: they are not in the same
+        place. The scene's readout belongs to the viewer and survives fullscreen; this one
+        belongs to the PAGE, sits at the foot of it below the legend and the statistics,
+        and is where every other screen in the system puts the same information. Removing
+        it made /evolution the one page that could not answer "which build is this".
       */}
+      <AreaBadge area={AREAS.evolution} />
     </div>
   );
 }
@@ -197,6 +202,7 @@ function Evolution({ log }: { log: EvoLog }) {
   const [strayed, setStrayed] = useState(0);
   /** Whether the speed chips are showing. Collapsed by default: it is six extra targets. */
   const [speedOpen, setSpeedOpen] = useState(false);
+  const [viewsOpen, setViewsOpen] = useState(false);
   const [legendOpen, setLegendOpen] = useState(false);
   /**
    * Shared with the page's own badge rather than held here.
@@ -674,96 +680,22 @@ function Evolution({ log }: { log: EvoLog }) {
               tick at frame rate, and the element carries no React children for the same
               reason: nothing here for a re-render to overwrite.
             */}
-            <div className="evo-viewkeys">
-              <button onClick={() => view(VIEWS.front)} title="Look along the z axis">Front</button>
-              <button onClick={() => view(VIEWS.side)} title="Look along the x axis">Side</button>
-              <button onClick={() => view(VIEWS.top)} title="Look down the y axis">Top</button>
-              <button
-                onClick={() => { cam.current = { ...DEFAULT_CAMERA }; recentre(); }}
-                title="Back to the opening view, centred on the whole graph"
-              >
-                Reset
-              </button>
-            </div>
+            {/*
+              The cockpit: everything that lives along the bottom of the stage.
 
-            {/*
-              The mode switch, in the corner of the scene it changes.
-              Small on purpose: it is a thing you flick without looking away from the graph,
-              which is exactly when a control at the far end of the page is useless.
-            */}
-            {/*
-              The cockpit.
-              Everything needed while looking at the graph sits in one corner within reach
-              of a thumb, because the alternative is reaching across the page for a control
-              and losing your place in the scene. Icons rather than words: at this size a
-              word is either unreadable or the whole button.
+              TWO rows, and the count is the design. It had grown to four — readouts, the
+              orbit line, the timeline, the buttons — plus a fifth cluster of view buttons
+              in the opposite corner, and together they ate 37% of the scene on a laptop
+              and 46% on a phone. A viewer whose furniture takes half the view is not a
+              viewer.
+
+              So the rows are grouped by what they answer rather than by what they are.
+              Row one is WHEN: the clock, the scrubber, and the commit you are standing on.
+              Row two is HOW and WHAT: the controls, and the identity of what is running.
+              Nothing was dropped to get there — the four view buttons fold into one chip
+              that opens like the speeds do, and the readouts that were three lines are one.
             */}
             <div className="evo-cockpit">
-              {/*
-                Everything that lives along the bottom of the stage, in one column.
-
-                It was three absolutely-positioned blocks with hand-tuned offsets, and
-                adding a full-width timeline is exactly the change that breaks that
-                arrangement: the strip landed on top of the clock, because nothing in the
-                layout knew the clock was there. Offsets cannot be kept in agreement by
-                hand — the previous two rounds of retuning them said so — so the bottom of
-                the stage is a flow now, and a new row pushes the others up.
-              */}
-              <div className="evo-cockpit-top">
-              {/*
-                The bottom-left readout, as one stack rather than three absolutes with
-                hand-tuned offsets — which is what it was, and the offsets needed retuning by
-                hand every time a line was added or the clock wrapped.
-
-                It lives inside the stage, so it survives fullscreen. The page's own version
-                badge is outside the fullscreen shell and disappears with it, which is exactly
-                when someone asking "which build am I looking at" cannot see the answer.
-              */}
-              <div className="evo-hud">
-                {/* The eye, left of the block it governs. Provenance is diagnostic furniture:
-                    worth having on hand, worth getting out of the way while looking at the
-                    graph itself. */}
-                <button
-                  className="evo-hud-eye"
-                  aria-pressed={!hudOpen}
-                  aria-label={hudOpen ? 'Hide the build details' : 'Show the build details'}
-                  title={hudOpen ? 'Hide build details' : 'Show build details'}
-                  onClick={() => setHudOpen(!hudOpen)}
-                >
-                  {hudOpen ? '◉' : '◌'}
-                </button>
-                {hudOpen && (
-                  <>
-                    {/* Which area of the platform this is. A different colour from the build
-                        line beside it, because they answer different questions — where am I,
-                        and what am I running. */}
-                    <span className="evo-area">{areaLine(AREAS.evolution)}</span>
-                    <span className="evo-build" title={`built ${__BUILD_TIME__}`}>
-                      viewer v{__APP_VERSION__} · {__BUILD_COMMIT__}
-                    </span>
-                  </>
-                )}
-                {!playing && <span className="evo-frozen-tag">frozen</span>}
-                <span className="evo-clock">
-                  <span className="evo-date" ref={dateRef} />
-                  <span className="evo-time" ref={timeRef} />
-                </span>
-              </div>
-              {/* Where the camera is turning, and the way back. The crosshair on the canvas
-                  marks the pivot; this says what the pivot is and how far it has wandered. */}
-              <div className="evo-orbit-readout">
-                <span className={orbitOn === null ? '' : 'locked'}>
-                  {orbitOn === null
-                    ? 'orbiting a free point'
-                    : `orbiting ${nodes[orbitOn]?.name || '/'}`}
-                </span>
-                {strayed > 0.55 && (
-                  <button onClick={recentre} title="Bring the whole graph back into view">
-                    Recentre
-                  </button>
-                )}
-              </div>
-              </div>
               {/*
                 The timeline, above the controls and inside the scene.
 
@@ -780,7 +712,31 @@ function Evolution({ log }: { log: EvoLog }) {
                 endMs={endMs}
                 atMs={atMs}
                 onSeek={(t) => { setPlaying(false); seek(t); }}
+                dateRef={dateRef}
+                timeRef={timeRef}
               />
+
+              {/*
+                What the camera is turning around — and ONLY when that is not the obvious
+                answer.
+
+                It used to say "orbiting a free point" permanently, which is the default
+                state and therefore no information at all, on a line of its own. Now it
+                appears when you have locked onto something, or when the centre has drifted
+                far enough that the way back is worth offering.
+              */}
+              {(orbitOn !== null || strayed > 0.55) && (
+                <div className="evo-orbit-readout">
+                  {orbitOn !== null && (
+                    <span className="locked">orbiting {nodes[orbitOn]?.name || '/'}</span>
+                  )}
+                  {strayed > 0.55 && (
+                    <button onClick={recentre} title="Bring the whole graph back into view">
+                      Recentre
+                    </button>
+                  )}
+                </div>
+              )}
               <div className={`evo-speeds${speedOpen ? ' open' : ''}`}>
                 {SPEEDS.map((v) => (
                   <button
@@ -794,7 +750,82 @@ function Evolution({ log }: { log: EvoLog }) {
                 ))}
               </div>
 
+              {/*
+                The view anchors, folded into one chip.
+
+                They were four full-width buttons in the opposite corner of the scene — a
+                second cluster, permanently on screen, for something reached a few times a
+                session. Behind one chip they cost nothing until wanted, and they now sit
+                with every other control instead of across the stage from them.
+              */}
+              <div className={`evo-speeds evo-views${viewsOpen ? ' open' : ''}`}>
+                <button onClick={() => { view(VIEWS.front); setViewsOpen(false); }}
+                  title="Look along the z axis">Front</button>
+                <button onClick={() => { view(VIEWS.side); setViewsOpen(false); }}
+                  title="Look along the x axis">Side</button>
+                <button onClick={() => { view(VIEWS.top); setViewsOpen(false); }}
+                  title="Look down the y axis">Top</button>
+                <button
+                  onClick={() => { cam.current = { ...DEFAULT_CAMERA }; recentre(); setViewsOpen(false); }}
+                  title="Back to the opening view, centred on the whole graph"
+                >
+                  Reset
+                </button>
+              </div>
+
               <div className="evo-cockpit-row">
+                {/*
+                  Where you are and what you are running, on ONE line at the left of the
+                  controls rather than a stack of its own above them.
+
+                  It was three lines and an orbit readout occupying a whole row of the
+                  scene. Everything it said is still here — the area, the build, and the
+                  full timestamp in the tooltip — but a readout nobody consults while flying
+                  should not cost a row that everybody looks past. It lives inside the stage
+                  so it survives fullscreen, which is the one place the page's own badge
+                  cannot follow.
+                */}
+                <div className="evo-hud">
+                  <button
+                    className="evo-hud-eye"
+                    aria-pressed={!hudOpen}
+                    aria-label={hudOpen ? 'Hide the build details' : 'Show the build details'}
+                    title={hudOpen ? 'Hide build details' : 'Show build details'}
+                    onClick={() => setHudOpen(!hudOpen)}
+                  >
+                    {hudOpen ? '◉' : '◌'}
+                  </button>
+                  {hudOpen && (
+                    <span
+                      className="evo-ident"
+                      title={[
+                        areaLine(AREAS.evolution),
+                        `viewer v${__APP_VERSION__} · ${__BUILD_COMMIT__}`,
+                        `built ${__BUILD_TIME__}`,
+                      ].join('\n')}
+                    >
+                      {/* Still its own colour, because it still answers a different question
+                          from the build beside it — where am I, versus what am I running. */}
+                      <b className="evo-area">{AREAS.evolution.id}</b>
+                      <span className="evo-build">
+                        v{__APP_VERSION__} · {__BUILD_COMMIT__}
+                      </span>
+                    </span>
+                  )}
+                </div>
+
+                {/*
+                  The controls as ONE group, so the row shrinks the identity instead of
+                  squeezing the buttons.
+
+                  A wrapping flex row prefers a second line to a narrower item; a
+                  non-wrapping one squeezes every item instead, and at a 390px stage that
+                  took the round buttons from 24px down to 20 — below a comfortable tap
+                  target, and no longer the same size as each other. Both are backwards.
+                  The identity is the part that can afford to lose characters; the buttons
+                  are the part that can afford neither a row nor a millimetre.
+                */}
+                <div className="evo-ctrls">
                 <button
                   className={`evo-cbtn${playing ? '' : ' on'}`}
                   title={playing ? 'Freeze' : 'Play'}
@@ -809,7 +840,7 @@ function Evolution({ log }: { log: EvoLog }) {
                   className={`evo-cbtn evo-speedtab${speedOpen ? ' on' : ''}`}
                   title="Playback speed"
                   aria-expanded={speedOpen}
-                  onClick={() => setSpeedOpen((v) => !v)}
+                  onClick={() => { setSpeedOpen((v) => !v); setViewsOpen(false); }}
                 >
                   {speed}&times;<i aria-hidden="true">{speedOpen ? '›' : '‹'}</i>
                 </button>
@@ -829,6 +860,15 @@ function Evolution({ log }: { log: EvoLog }) {
                   onClick={() => setSpin((v) => !v)}
                 >
                   <span aria-hidden="true">⟳</span>
+                </button>
+                <button
+                  className={`evo-cbtn${viewsOpen ? ' on' : ''}`}
+                  aria-expanded={viewsOpen}
+                  title="Front, side, top, or back to the opening view"
+                  aria-label="View anchors"
+                  onClick={() => { setViewsOpen((v) => !v); setSpeedOpen(false); }}
+                >
+                  <span aria-hidden="true">◱</span>
                 </button>
                 <button
                   className={`evo-cbtn${full ? ' on' : ''}`}
@@ -870,6 +910,7 @@ function Evolution({ log }: { log: EvoLog }) {
                   >
                     Inspect
                   </button>
+                </div>
                 </div>
               </div>
             </div>
@@ -1053,10 +1094,13 @@ function Evolution({ log }: { log: EvoLog }) {
  * is the difference between skimming the history and inspecting a specific point of it.
  */
 function Timeline({
-  log, startMs, endMs, atMs, onSeek,
+  log, startMs, endMs, atMs, onSeek, dateRef, timeRef,
 }: {
   log: EvoLog; startMs: number; endMs: number; atMs: number;
   onSeek: (t: number) => void;
+  /** Written by the animation loop, never by React — see the clock's own note. */
+  dateRef: React.RefObject<HTMLSpanElement>;
+  timeRef: React.RefObject<HTMLSpanElement>;
 }) {
   const marks = useMemo(() => timelineMarks(log, startMs, endMs), [log, startMs, endMs]);
   // Scaled against the busiest bucket, not against an absolute: a quiet week and a frantic
@@ -1070,6 +1114,17 @@ function Timeline({
 
   return (
     <div className="evo-timeline">
+      {/*
+        The playhead's value, beside the playhead's control.
+
+        It used to sit in a readout stack of its own, which put the number that says WHEN
+        two rows away from the thing that changes it. Grouping them costs nothing and means
+        the eye never travels to check what a drag just did.
+      */}
+      <span className="evo-clock">
+        <span className="evo-date" ref={dateRef} />
+        <span className="evo-time" ref={timeRef} />
+      </span>
       <button
         className="evo-cbtn"
         title="Previous commit"

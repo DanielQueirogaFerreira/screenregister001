@@ -26,8 +26,8 @@
   /* The area id's own colour: gold on dark, and a deeper amber on light, where the same
      gold is a smear. It has to differ from --dim without competing with --accent. */
   --area: #c9a227;
-  --badge-fade-1: rgba(8, 11, 15, .92);
-  --badge-fade-2: rgba(8, 11, 15, .78);
+  --badge-fade-1: rgba(8, 11, 15, .96);
+  --badge-fade-2: rgba(8, 11, 15, .88);
   --badge-fade-0: rgba(8, 11, 15, 0);
   color-scheme: dark;
 }
@@ -53,8 +53,8 @@
   --hover: rgba(19, 26, 35, .045);
   --shadow: 0 1px 2px rgba(19, 26, 35, .08);
   --area: #8a5a00;
-  --badge-fade-1: rgba(238, 241, 246, .94);
-  --badge-fade-2: rgba(238, 241, 246, .8);
+  --badge-fade-1: rgba(238, 241, 246, .97);
+  --badge-fade-2: rgba(238, 241, 246, .9);
   --badge-fade-0: rgba(238, 241, 246, 0);
   color-scheme: light;
 }
@@ -260,6 +260,14 @@ code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-si
   pointer-events: none;
   user-select: text;
   white-space: nowrap;
+  /*
+   * It floats over whatever the page happens to have at the foot of the viewport, and a
+   * translucent fade let that text show THROUGH the badge — two sentences occupying the
+   * same pixels, which is worse than either. The blur separates them without hiding the
+   * page: what is underneath is visibly still there, and no longer competing to be read.
+   */
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
 }
 /* Collapsed it is one dot, so the gradient shrinks with it rather than leaving a wash
    over an empty corner. */
@@ -572,42 +580,38 @@ tbody tr:has(input[type="checkbox"]:checked) { background: var(--panel-2); }
   padding: 3px 7px; font: 11px/1.4 ui-monospace, monospace; white-space: nowrap;
   max-width: 90%; overflow: hidden; text-overflow: ellipsis; z-index: 2;
 }
-/* One bottom-left stack: build, state, clock. Reading order is top-down and least to most
-   changeable, so the eye lands on the moving number. In the cockpit's flow rather than
-   absolutely placed — see .evo-cockpit-top. */
+/*
+ * Where you are and what you are running — one line at the left of the controls.
+ *
+ * It was a three-line stack on a row of its own. Everything it said is still here; the
+ * detail that used to need three lines is in the tooltip, because a readout nobody
+ * consults mid-flight should not cost a row that everybody looks past.
+ */
 .evo-hud {
-  pointer-events: none; min-width: 0;
-  display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+  display: flex; align-items: center; gap: 6px;
+  /*
+   * Takes the slack, and gives it back first.
+   *
+   * `flex: 0 1 auto` with `min-width: 0` is what lets the identity truncate instead of
+   * pushing the controls onto a second line. It is the right thing to sacrifice at any
+   * width: it is the only readout on the row with no bearing on what you are doing, and
+   * the tooltip still has all of it.
+   */
+  flex: 0 1 auto; min-width: 0; margin-right: auto;
 }
-/* Technical provenance, quietest thing on the canvas. Inside the stage on purpose: the
-   page's version badge is outside the fullscreen shell and vanishes with it. */
-.evo-build {
-  color: var(--dim); opacity: .6; font: 9px/1.3 ui-monospace, monospace;
-  letter-spacing: .2px;
+.evo-ident {
+  display: flex; align-items: baseline; gap: 6px; min-width: 0;
+  font: 9.5px/1.3 ui-monospace, monospace; letter-spacing: .3px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .evo-clock {
   font: 12px/1 ui-monospace, monospace; font-variant-numeric: tabular-nums;
-  display: flex; gap: 6px; align-items: baseline;
+  display: flex; gap: 6px; align-items: baseline; flex: none;
 }
 /* Context you glance at, so it is small and quiet and tucked to the left. */
 .evo-date { font-size: 10px; color: var(--dim); opacity: .75; }
 /* The part that is actually moving, to the millisecond. */
 .evo-time { font-size: 12.5px; color: var(--fg); letter-spacing: .2px; }
-.evo-frozen-tag {
-  color: var(--warn); border: 1px solid var(--warn); border-radius: 20px;
-  padding: 1px 7px; font: 10px/1.5 ui-monospace, monospace;
-  text-transform: uppercase; letter-spacing: .5px;
-}
-/* On a narrow canvas the timestamp and the corner controls are together wider than the
-   canvas — measured at 390px, where they overlapped. Stacking the date above the time
-   halves the clock's width and costs nothing, since the date is the quiet half anyway. */
-@media (max-width: 560px) {
-  .evo-clock { flex-direction: column; align-items: flex-start; gap: 1px; }
-}
-.evo-viewkeys { position: absolute; right: 8px; top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
-.evo-viewkeys button {
-  padding: 3px 9px; font-size: 11px; background: rgba(13, 16, 20, .78);
-}
 
 .evo-controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
 .evo-controls button { white-space: nowrap; }
@@ -638,6 +642,7 @@ tbody tr:has(input[type="checkbox"]:checked) { background: var(--panel-2); }
 .evo-modeswitch button.on { background: var(--accent); color: var(--on-accent); font-weight: 600; }
 .evo-modeswitch button + button { border-left: 1px solid var(--line); }
 .evo-modeswitch button.on + button { border-left-color: transparent; }
+
 
 /* A segmented pair, not two buttons: they are one question with two answers. */
 .evo-motion { display: inline-flex; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
@@ -814,11 +819,20 @@ tbody tr:has(input[type="checkbox"]:checked) { background: var(--panel-2); }
 .evo-at code { color: var(--accent); font-size: 10px; flex: none; }
 .evo-at span { overflow: hidden; text-overflow: ellipsis; }
 .evo-timeline .evo-cbtn { flex: none; }
-/* On a phone the commit subject and a usable track cannot share one line. The subject is
-   the half that can move, so it wraps to its own line under the track. */
-@media (max-width: 640px) {
-  .evo-timeline { flex-wrap: wrap; }
-  .evo-at { flex: 1 1 100%; order: 3; padding: 0 2px 1px; }
+/* The view anchors share the speed row's mechanics; only the labels are wider. */
+.evo-views button { padding: 3px 10px; }
+/*
+ * Narrow, in the order things are worth losing.
+ *
+ * The subject used to wrap to its own line, which bought legibility with a whole extra row
+ * of a scene that had four already. It truncates instead: a sha and the first few words
+ * still identify the commit, and the caption under the canvas carries the full text.
+ * Below 560px the identity line goes too — it is the one readout with no bearing on what
+ * you are doing, and the eye brings it back.
+ */
+@media (max-width: 700px) {
+  .evo-at span { display: none; }          /* the sha still identifies it */
+  .evo-clock .evo-date { display: none; }  /* the date is in the caption below */
 }
 
 .evo-cockpit {
@@ -827,27 +841,18 @@ tbody tr:has(input[type="checkbox"]:checked) { background: var(--panel-2); }
   pointer-events: none;
 }
 .evo-cockpit > * { pointer-events: auto; }
-/*
-  The readouts, on one row above the controls: where you are on the left, what the camera
-  is turning around on the right. `align-items: flex-end` so they sit on a common baseline
-  however many lines each happens to be.
-*/
-.evo-cockpit-top {
-  align-self: stretch; display: flex; align-items: flex-end;
-  justify-content: space-between; gap: 10px; pointer-events: none;
-}
-.evo-cockpit-top > * { pointer-events: auto; }
-/* On a phone the orbit readout and the clock cannot share a line. The readout is the half
-   that can go: it repeats what the crosshair already shows. */
-@media (max-width: 560px) {
-  .evo-cockpit-top .evo-orbit-readout span { display: none; }
-}
+/* Only drawn when the camera is locked or has strayed — see the note in the view. */
+.evo-orbit-readout { align-self: flex-end; }
 /* 5px gaps, not 7: the row needs to fit one line on a phone, and seven gaps at two pixels
    each is fourteen pixels of the twenty it was short by. It still wraps rather than clips
    below about 390px wide, which is honest degradation — nothing is hidden or cut off.
    The hit-area extension is capped to the gap so neighbours never claim the same tap. */
-.evo-cockpit-row { display: flex; gap: 5px; align-items: center; flex-wrap: wrap;
-  justify-content: flex-end; }
+.evo-cockpit-row { display: flex; gap: 5px; align-items: center; flex-wrap: nowrap;
+  justify-content: flex-end; align-self: stretch; min-width: 0; }
+/* The controls, kept together. Allowed to wrap only when they alone exceed the stage,
+   which is the one case where a second line beats overflowing off the edge. */
+.evo-ctrls { display: flex; gap: 5px; align-items: center; flex-wrap: wrap;
+  justify-content: flex-end; flex: none; }
 .evo-cbtn {
   position: relative;
   width: 27px; height: 27px; padding: 0; border-radius: 50%;
@@ -1209,6 +1214,26 @@ body:has(.evo-layout:fullscreen) .version-badge { display: none; }
 /* A different colour from the build line beside it: they answer different questions —
    where am I, and what am I running. */
 .evo-area {
-  color: #c9a227; opacity: .85; font: 9px/1.3 ui-monospace, monospace; letter-spacing: .4px;
-  text-transform: uppercase;
+  color: var(--area); opacity: .9; font-weight: 700; letter-spacing: .5px; flex: none;
+}
+.evo-build { color: var(--dim); opacity: .6; overflow: hidden; text-overflow: ellipsis; }
+
+/* --- narrow overrides, last so they win over the cockpit rules above --- */
+@media (max-width: 560px) {
+  /* 24px, not 27. Seven controls and a mode switch do not fit a phone at 27, and a row
+     that wraps by default costs more of the scene than three pixels a button. */
+  .evo-cbtn { width: 24px; height: 24px; }
+  .evo-cockpit-row { gap: 4px; }
+  .evo-modeswitch button { padding: 4px 9px; }
+  /*
+   * On a phone, IN THE PAGE, both of these are repeated a few pixels below the canvas —
+   * the commit in the caption, the build in the page's own badge. Repeating them inside a
+   * 328px stage costs a row of a scene that has none to spare.
+   *
+   * In fullscreen neither is there, so both stay. That is the whole reason the scene
+   * carries its own copies at all.
+   */
+  .evo-layout:not(.full) .evo-hud,
+  .evo-layout:not(.full) .evo-at { display: none; }
+  .evo-hud { margin-right: 0; }
 }
