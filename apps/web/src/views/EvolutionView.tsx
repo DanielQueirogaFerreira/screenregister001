@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  boundingSphere, buildTree, clampTarget, DEFAULT_CAMERA, DEFAULT_LAYOUT, dirFor,
-  directoryIndices, focusOn, frameSphere, heatAt, livePaths, nodeStats, orbit, pan, project,
-  seedLayout, siblingGroups, stepLayout, strayedBy, VIEWS, zoom,
+  boundingSphere, buildTree, clampTarget, commitIndexAt, DEFAULT_CAMERA, DEFAULT_LAYOUT,
+  dirFor, directoryIndices, focusOn, frameSphere, heatAt, livePaths, nodeStats, orbit, pan,
+  project, seedLayout, siblingGroups, stepCommit, stepLayout, strayedBy, timelineMarks,
+  VIEWS, zoom,
   type Camera, type EvoLog, type EvoNode, type Layout, type NodeStats, type Quat,
 } from '@sr/core';
 import { stampTimeLine } from '@sr/schema';
-import { VersionBadge } from './VersionBadge.js';
+import { useBadgeOpen } from './AreaBadge.js';
+import { AREAS, areaLine } from '../lib/areas.js';
 import { SourceViewer } from './SourceViewer.js';
 import { Explorer } from './Explorer.js';
 import { ACTION_COLOUR, ACTION_LABEL, FILE_KINDS, fileColour, fileKind } from '../lib/evolution-palette.js';
@@ -62,7 +64,6 @@ const SPEEDS = [0.1, 0.25, 0.5, 1, 2, 4] as const;
  * area, so an identifier read off a screenshot says where it came from without anyone
  * having to describe the page.
  */
-const AREA_ID = '401';
 
 const AUTHOR_COLOURS = ['#4da3ff', '#35c98b', '#f0b23c', '#c98bf0', '#f0645c', '#3ccfd0'];
 
@@ -136,7 +137,11 @@ export function EvolutionView() {
 
       {!log && !error && <div className="empty">Reading the history…</div>}
       {log && <Evolution log={log} />}
-      <VersionBadge />
+      {/*
+        No fixed badge on this page: the scene draws its own, inside the stage, so it
+        survives fullscreen. Two of them would say the same two lines twice in the same
+        corner.
+      */}
     </div>
   );
 }
@@ -193,7 +198,14 @@ function Evolution({ log }: { log: EvoLog }) {
   /** Whether the speed chips are showing. Collapsed by default: it is six extra targets. */
   const [speedOpen, setSpeedOpen] = useState(false);
   const [legendOpen, setLegendOpen] = useState(false);
-  const [hudOpen, setHudOpen] = useState(true);
+  /**
+   * Shared with the page's own badge rather than held here.
+   *
+   * This HUD and the fixed bottom-left badge show the same two facts, and one of them
+   * being collapsed while the other is open would be the clearest possible sign that the
+   * eye does not mean anything.
+   */
+  const [hudOpen, setHudOpen] = useBadgeOpen();
   /**
    * Which file's contents are open, or null.
    *
@@ -662,45 +674,6 @@ function Evolution({ log }: { log: EvoLog }) {
               tick at frame rate, and the element carries no React children for the same
               reason: nothing here for a re-render to overwrite.
             */}
-            {/*
-              The bottom-left readout, as one stack rather than three absolutes with
-              hand-tuned offsets — which is what it was, and the offsets needed retuning by
-              hand every time a line was added or the clock wrapped.
-
-              It lives inside the stage, so it survives fullscreen. The page's own version
-              badge is outside the fullscreen shell and disappears with it, which is exactly
-              when someone asking "which build am I looking at" cannot see the answer.
-            */}
-            <div className="evo-hud">
-              {/* The eye, left of the block it governs. Provenance is diagnostic furniture:
-                  worth having on hand, worth getting out of the way while looking at the
-                  graph itself. */}
-              <button
-                className="evo-hud-eye"
-                aria-pressed={!hudOpen}
-                aria-label={hudOpen ? 'Hide the build details' : 'Show the build details'}
-                title={hudOpen ? 'Hide build details' : 'Show build details'}
-                onClick={() => setHudOpen((v) => !v)}
-              >
-                {hudOpen ? '◉' : '◌'}
-              </button>
-              {hudOpen && (
-                <>
-                  {/* Which area of the platform this is. A different colour from the build
-                      line beside it, because they answer different questions — where am I,
-                      and what am I running. */}
-                  <span className="evo-area">area {AREA_ID} · codebase viewer</span>
-                  <span className="evo-build" title={`built ${__BUILD_TIME__}`}>
-                    viewer v{__APP_VERSION__} · {__BUILD_COMMIT__}
-                  </span>
-                </>
-              )}
-              {!playing && <span className="evo-frozen-tag">frozen</span>}
-              <span className="evo-clock">
-                <span className="evo-date" ref={dateRef} />
-                <span className="evo-time" ref={timeRef} />
-              </span>
-            </div>
             <div className="evo-viewkeys">
               <button onClick={() => view(VIEWS.front)} title="Look along the z axis">Front</button>
               <button onClick={() => view(VIEWS.side)} title="Look along the x axis">Side</button>
@@ -726,6 +699,88 @@ function Evolution({ log }: { log: EvoLog }) {
               word is either unreadable or the whole button.
             */}
             <div className="evo-cockpit">
+              {/*
+                Everything that lives along the bottom of the stage, in one column.
+
+                It was three absolutely-positioned blocks with hand-tuned offsets, and
+                adding a full-width timeline is exactly the change that breaks that
+                arrangement: the strip landed on top of the clock, because nothing in the
+                layout knew the clock was there. Offsets cannot be kept in agreement by
+                hand — the previous two rounds of retuning them said so — so the bottom of
+                the stage is a flow now, and a new row pushes the others up.
+              */}
+              <div className="evo-cockpit-top">
+              {/*
+                The bottom-left readout, as one stack rather than three absolutes with
+                hand-tuned offsets — which is what it was, and the offsets needed retuning by
+                hand every time a line was added or the clock wrapped.
+
+                It lives inside the stage, so it survives fullscreen. The page's own version
+                badge is outside the fullscreen shell and disappears with it, which is exactly
+                when someone asking "which build am I looking at" cannot see the answer.
+              */}
+              <div className="evo-hud">
+                {/* The eye, left of the block it governs. Provenance is diagnostic furniture:
+                    worth having on hand, worth getting out of the way while looking at the
+                    graph itself. */}
+                <button
+                  className="evo-hud-eye"
+                  aria-pressed={!hudOpen}
+                  aria-label={hudOpen ? 'Hide the build details' : 'Show the build details'}
+                  title={hudOpen ? 'Hide build details' : 'Show build details'}
+                  onClick={() => setHudOpen(!hudOpen)}
+                >
+                  {hudOpen ? '◉' : '◌'}
+                </button>
+                {hudOpen && (
+                  <>
+                    {/* Which area of the platform this is. A different colour from the build
+                        line beside it, because they answer different questions — where am I,
+                        and what am I running. */}
+                    <span className="evo-area">{areaLine(AREAS.evolution)}</span>
+                    <span className="evo-build" title={`built ${__BUILD_TIME__}`}>
+                      viewer v{__APP_VERSION__} · {__BUILD_COMMIT__}
+                    </span>
+                  </>
+                )}
+                {!playing && <span className="evo-frozen-tag">frozen</span>}
+                <span className="evo-clock">
+                  <span className="evo-date" ref={dateRef} />
+                  <span className="evo-time" ref={timeRef} />
+                </span>
+              </div>
+              {/* Where the camera is turning, and the way back. The crosshair on the canvas
+                  marks the pivot; this says what the pivot is and how far it has wandered. */}
+              <div className="evo-orbit-readout">
+                <span className={orbitOn === null ? '' : 'locked'}>
+                  {orbitOn === null
+                    ? 'orbiting a free point'
+                    : `orbiting ${nodes[orbitOn]?.name || '/'}`}
+                </span>
+                {strayed > 0.55 && (
+                  <button onClick={recentre} title="Bring the whole graph back into view">
+                    Recentre
+                  </button>
+                )}
+              </div>
+              </div>
+              {/*
+                The timeline, above the controls and inside the scene.
+
+                It used to live under the canvas, on the reasoning that a scrubber wants
+                width and the thumb-sized corner has none. That was half right: it does want
+                width, and it gets it here by spanning the stage rather than sitting in the
+                corner. What the old position cost was fullscreen — the one arrangement
+                where somebody is looking hardest at the graph is the one where the control
+                for moving through it had been left behind on the page.
+              */}
+              <Timeline
+                log={log}
+                startMs={startMs}
+                endMs={endMs}
+                atMs={atMs}
+                onSeek={(t) => { setPlaying(false); seek(t); }}
+              />
               <div className={`evo-speeds${speedOpen ? ' open' : ''}`}>
                 {SPEEDS.map((v) => (
                   <button
@@ -821,20 +876,6 @@ function Evolution({ log }: { log: EvoLog }) {
 
             {legendOpen && <LegendCard onClose={() => setLegendOpen(false)} />}
 
-            {/* Where the camera is turning, and the way back. The crosshair on the canvas
-                marks the pivot; this says what the pivot is and how far it has wandered. */}
-            <div className="evo-orbit-readout">
-              <span className={orbitOn === null ? '' : 'locked'}>
-                {orbitOn === null
-                  ? 'orbiting a free point'
-                  : `orbiting ${nodes[orbitOn]?.name || '/'}`}
-              </span>
-              {strayed > 0.55 && (
-                <button onClick={recentre} title="Bring the whole graph back into view">
-                  Recentre
-                </button>
-              )}
-            </div>
           </div>
 
           {/*
@@ -894,15 +935,12 @@ function Evolution({ log }: { log: EvoLog }) {
             : ' — held still, and the camera turns around whatever you select. Click a node to look at it from every side.'}
         </div>
 
-        {/* Only the scrubber is left out here: it wants width, which is the one thing a
-            thumb-sized corner cannot give it. Everything else moved into the cockpit. */}
+        {/* Everything that steers the graph is now inside the stage, where it survives
+            fullscreen. What is left here is the one action that ends where it started. */}
         <div className="evo-controls">
-          <input
-            type="range" min={startMs} max={endMs} step={1000} value={atMs}
-            aria-label="Timeline position"
-            onChange={(e) => { setPlaying(false); seek(Number(e.target.value)); }}
-          />
-          <button onClick={() => { seek(startMs); setRunning(true); }}>Restart</button>
+          <button onClick={() => { seek(startMs); setRunning(true); }}>
+            Replay from the beginning
+          </button>
         </div>
 
         <div className="evo-caption">
@@ -999,6 +1037,106 @@ function Evolution({ log }: { log: EvoLog }) {
  * legend drifts from what the canvas draws, which is the bug that put an undocumented
  * amber on this graph in the first place.
  */
+/**
+ * The time control: where you are in the history, and how to get somewhere else.
+ *
+ * Three things in one strip, because they are three answers to one question.
+ *
+ * The activity behind the track is the part that makes this navigation rather than
+ * scrubbing. Evenly spaced ticks would only repeat what the caption says — that commits
+ * exist. Drawing how much changed in each stretch of time turns the track into a map of
+ * when the work happened, so "that burst on Tuesday" is one glance and one drag instead of
+ * hunting back and forth for it.
+ *
+ * The step buttons are the other half. A drag lands you between commits, where the graph
+ * shows a state that never existed as a checkout; the arrows put you exactly on one. That
+ * is the difference between skimming the history and inspecting a specific point of it.
+ */
+function Timeline({
+  log, startMs, endMs, atMs, onSeek,
+}: {
+  log: EvoLog; startMs: number; endMs: number; atMs: number;
+  onSeek: (t: number) => void;
+}) {
+  const marks = useMemo(() => timelineMarks(log, startMs, endMs), [log, startMs, endMs]);
+  // Scaled against the busiest bucket, not against an absolute: a quiet week and a frantic
+  // one both need to be readable, and the strip is about relative shape, not volume.
+  const peak = useMemo(() => Math.max(1, ...marks.map((m) => m.edits)), [marks]);
+  const here = commitIndexAt(log, atMs);
+  const at = log.events[here] ?? null;
+  const prev = stepCommit(log, atMs, -1);
+  const next = stepCommit(log, atMs, 1);
+  const pct = endMs > startMs ? ((atMs - startMs) / (endMs - startMs)) * 100 : 0;
+
+  return (
+    <div className="evo-timeline">
+      <button
+        className="evo-cbtn"
+        title="Previous commit"
+        aria-label="Previous commit"
+        disabled={prev === null}
+        onClick={() => prev !== null && onSeek(prev)}
+      >
+        ⏮
+      </button>
+
+      <div className="evo-track">
+        {/* Drawn, not interactive: the range input above it takes every pointer event, so
+            the strip cannot steal a drag that was meant to scrub. */}
+        <div className="evo-track-marks" aria-hidden="true">
+          {marks.map((m) => (
+            <i
+              key={m.at}
+              style={{
+                left: `${m.at * 100}%`,
+                // A floor of 15%, because a one-file commit next to a fifty-file one would
+                // otherwise be a mark too short to see — and it is still a point you might
+                // want to land on.
+                height: `${15 + (m.edits / peak) * 85}%`,
+                opacity: m.at * 100 <= pct ? 0.95 : 0.4,
+              }}
+            />
+          ))}
+        </div>
+        <input
+          className="evo-range"
+          type="range"
+          min={startMs}
+          max={endMs}
+          step={1000}
+          value={atMs}
+          aria-label="Position in the history"
+          aria-valuetext={at ? `${at.s} — ${at.m}` : 'before the first commit'}
+          onChange={(e) => onSeek(Number(e.target.value))}
+        />
+      </div>
+
+      <button
+        className="evo-cbtn"
+        title="Next commit"
+        aria-label="Next commit"
+        disabled={next === null}
+        onClick={() => next !== null && onSeek(next)}
+      >
+        ⏭
+      </button>
+
+      {/* What you are standing on. The subject is the useful half and gets the room; the
+          sha is what you would paste into a terminal. */}
+      <div className="evo-at" title={at ? `${at.s} · ${log.authors[at.a] ?? ''}\n${at.m}` : undefined}>
+        {at ? (
+          <>
+            <code>{at.s}</code>
+            <span>{at.m}</span>
+          </>
+        ) : (
+          <span className="dim">before the first commit</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function Legend({ inScene = false, onClose }: { inScene?: boolean; onClose?: () => void }) {
   return (
     <div className={inScene ? 'evo-legend-card' : ''}>

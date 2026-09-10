@@ -296,7 +296,7 @@ export function SettingsView({
             Retention is enforced on the server: a nightly sweep deletes every frame older
             than {store.retentionDays} days, removing the D1 row and the R2 object in the
             same pass so the catalogue and the images can never drift apart. The setting
-            below controls playback only; the server\u2019s ceiling is authoritative.
+            below controls playback only; the server’s ceiling is authoritative.
           </div>
 
           <div className="row" style={{ marginTop: 12 }}>
@@ -327,8 +327,8 @@ export function SettingsView({
         <div className="panel" style={{ marginTop: 14 }}>
           <h3 style={{ marginTop: 0 }}>Privacy</h3>
           <div className="hint">
-            Screen frames are the most sensitive data a machine holds \u2014 passwords, banking,
-            private messages, other people\u2019s data in calls. Capture starts only after you
+            Screen frames are the most sensitive data a machine holds — passwords, banking,
+            private messages, other people’s data in calls. Capture starts only after you
             explicitly pick a screen or window to share, and{' '}
             <b>every frame that survives change detection is uploaded to Cloudflare</b>,
             where it is kept for {store.retentionDays} days and then deleted. Only your
@@ -336,7 +336,7 @@ export function SettingsView({
             schema.
             <br /><br />
             Use <b>Pause</b> while recording to stop capture without ending the session, and
-            the browser\u2019s own \u201cStop sharing\u201d control to end it entirely.
+            the browser’s own “Stop sharing” control to end it entirely.
             <br /><br />
             The browser gives us pixels but not window titles, so an app or site denylist
             cannot be reliable until frame text extraction lands in a later phase.

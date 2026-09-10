@@ -14,7 +14,9 @@ import { PlayerView } from './views/PlayerView.js';
 import { AdminView } from './views/AdminView.js';
 import { InspectView } from './views/InspectView.js';
 import { SettingsView } from './views/SettingsView.js';
-import { VersionBadge } from './views/VersionBadge.js';
+import { AreaBadge } from './views/AreaBadge.js';
+import { AREAS } from './lib/areas.js';
+import { ThemeToggle } from './lib/sections.js';
 import { StatusView } from './views/StatusView.js';
 import { EvolutionView } from './views/EvolutionView.js';
 import { DatabaseView } from './views/DatabaseView.js';
@@ -42,7 +44,7 @@ export function App() {
     return (
       <>
         <StatusView />
-        <VersionBadge />
+        <AreaBadge area={AREAS.status} />
       </>
     );
   }
@@ -225,7 +227,7 @@ function RecorderApp() {
     return (
       <div className="app">
         <div className="empty">Checking your session…</div>
-        <VersionBadge />
+        <AreaBadge area={AREAS.boot} />
       </div>
     );
   }
@@ -234,7 +236,7 @@ function RecorderApp() {
     return (
       <>
         <AuthView onSignedIn={(user) => { setAccount(user); setBootError(null); }} />
-        <VersionBadge signedIn={false} />
+        <AreaBadge area={AREAS.auth} signedIn={false} />
       </>
     );
   }
@@ -254,7 +256,7 @@ function RecorderApp() {
             <button onClick={signOut}>Sign out</button>
           </div>
         </div>
-        <VersionBadge />
+        <AreaBadge area={AREAS.boot} />
       </div>
     );
   }
@@ -263,7 +265,7 @@ function RecorderApp() {
     return (
       <div className="app">
         <div className="empty">Connecting to the recording service…</div>
-        <VersionBadge />
+        <AreaBadge area={AREAS.boot} />
       </div>
     );
   }
@@ -306,6 +308,9 @@ function RecorderApp() {
               gate and must stay reachable when signing in is the thing that is broken.
               A plain link rather than a tab button says that. */}
           <a className="linkish nav-link" href="/status">Status</a>
+          {/* The colour mode belongs where every screen can reach it, not buried in one
+              tab's settings: it is a property of looking at the app, not of recording. */}
+          <ThemeToggle />
           <span className="who" title={account.email}>{account.email}</span>
           <button onClick={signOut}>Sign out</button>
         </nav>
@@ -428,7 +433,21 @@ function RecorderApp() {
         />
       )}
 
-      <VersionBadge retentionDays={store.retentionDays} signedIn />
+      {/* The area follows what is on screen rather than naming the app: the player and
+          the inspector are different places from the tab that opened them, and an id that
+          says "recorder" while you are looking at a frame is worse than none. */}
+      <AreaBadge
+        area={
+          playing.length > 0 ? AREAS.player
+            : tab === 'record' ? AREAS.record
+            : tab === 'library' ? AREAS.library
+            : tab === 'inspect' ? AREAS.inspect
+            : tab === 'admin' ? AREAS.admin
+            : AREAS.settings
+        }
+        retentionDays={store.retentionDays}
+        signedIn
+      />
     </div>
   );
 }

@@ -1,7 +1,83 @@
+/*
+ * Two colour modes, one token set.
+ *
+ * Every rule below reads tokens; only this block knows a colour. The mode is an attribute
+ * on <html>, set before the first paint by a snippet in index.html and thereafter by
+ * lib/theme.ts, so the page never paints in one mode and flips to the other.
+ *
+ * Light is not the dark palette inverted. Inversion gives a page that is technically light
+ * and unreadable in practice — mid-greys that were quiet on black shout on white, and
+ * accents tuned to glow go pale. Each mode's values were chosen against its own ground.
+ */
 :root {
   --bg: #0d1014; --panel: #151a21; --panel-2: #1c232c; --line: #262f3a;
   --fg: #e6edf5; --dim: #8a99ad; --accent: #4da3ff; --good: #35c98b;
   --warn: #f0b23c; --bad: #f0645c; --radius: 10px;
+  /* Ink ON an accent fill. Dark mode's accents are light, so this is near-black. */
+  --on-accent: #04101d;
+  /* Banner grounds, which are tinted surfaces rather than shades of the status colour. */
+  --warn-bg: #3a2c10; --warn-line: #6b5218; --warn-fg: #f5d79a;
+  --bad-bg: #3a1614; --bad-line: #6b2622; --bad-fg: #f5b0ab;
+  --info-bg: #10283a; --info-line: #1c4a6b; --info-fg: #a9d6f5;
+  --good-bg: #12291d; --good-line: #1f5c3c; --good-fg: #9fe6c2;
+  /* The wash under a hovered row, and the shadow a raised surface casts. */
+  --hover: rgba(255, 255, 255, .035);
+  --shadow: 0 1px 2px rgba(0, 0, 0, .4);
+  /* The area id's own colour: gold on dark, and a deeper amber on light, where the same
+     gold is a smear. It has to differ from --dim without competing with --accent. */
+  --area: #c9a227;
+  --badge-fade-1: rgba(8, 11, 15, .92);
+  --badge-fade-2: rgba(8, 11, 15, .78);
+  --badge-fade-0: rgba(8, 11, 15, 0);
+  color-scheme: dark;
+}
+
+/*
+ * Light mode.
+ *
+ * The accents that carry meaning (--accent, --good, --warn, --bad) are darkened rather
+ * than reused: at the lightness that reads well on near-black, none of them clears 4.5:1
+ * on white, and status colour that cannot be read is worse than no status colour. --dim
+ * moves the least in name and the most in effect — it is the one that decides whether a
+ * hint is quiet or invisible.
+ */
+:root[data-theme="light"] {
+  --bg: #eef1f6; --panel: #ffffff; --panel-2: #f2f5f9; --line: #d5dde7;
+  --fg: #131a23; --dim: #56646f; --accent: #0b62c4; --good: #0f7048;
+  --warn: #8a5300; --bad: #b4231b;
+  --on-accent: #ffffff;
+  --warn-bg: #fdf4e3; --warn-line: #e6c98a; --warn-fg: #6b4400;
+  --bad-bg: #fdeceb; --bad-line: #f0b7b3; --bad-fg: #8f1a14;
+  --info-bg: #e9f2fd; --info-line: #a9cdf2; --info-fg: #0a4d99;
+  --good-bg: #e7f5ee; --good-line: #a6d9bf; --good-fg: #0b5537;
+  --hover: rgba(19, 26, 35, .045);
+  --shadow: 0 1px 2px rgba(19, 26, 35, .08);
+  --area: #8a5a00;
+  --badge-fade-1: rgba(238, 241, 246, .94);
+  --badge-fade-2: rgba(238, 241, 246, .8);
+  --badge-fade-0: rgba(238, 241, 246, 0);
+  color-scheme: light;
+}
+
+/*
+ * The codebase viewer is an instrument, and instruments stay dark.
+ *
+ * Its whole subtree keeps the dark tokens whatever the page is doing. That is not a corner
+ * cut: the 3D scene draws lit marks — green for added, blue for modified, red for deleted —
+ * whose separations were measured against a near-black stage, and a white stage would
+ * need every one of them re-picked and re-validated rather than merely re-tinted. Every
+ * 3D tool that has a light interface keeps a dark viewport for the same reason. The chrome
+ * around it follows the page.
+ */
+.evo-layout {
+  --panel: #151a21; --panel-2: #1c232c; --line: #262f3a;
+  --fg: #e6edf5; --dim: #8a99ad; --on-accent: #04101d;
+  --info-bg: #10283a; --info-line: #1c4a6b; --info-fg: #a9d6f5;
+  --hover: rgba(255, 255, 255, .035);
+  --area: #c9a227;
+  --badge-fade-1: rgba(8, 11, 15, .92);
+  --badge-fade-2: rgba(8, 11, 15, .78);
+  --badge-fade-0: rgba(8, 11, 15, 0);
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
@@ -16,7 +92,7 @@ button {
 }
 button:hover:not(:disabled) { border-color: var(--accent); }
 button:disabled { opacity: .45; cursor: not-allowed; }
-button.primary { background: var(--accent); border-color: var(--accent); color: #04101d; font-weight: 600; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
 button.danger { background: transparent; border-color: var(--bad); color: var(--bad); }
 input[type="range"] { width: 100%; accent-color: var(--accent); }
 input[type="number"], select {
@@ -51,7 +127,7 @@ header { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; fle
 h1 { font-size: 17px; margin: 0; letter-spacing: -.2px; }
 h1 span { color: var(--dim); font-weight: 400; }
 nav { display: flex; gap: 6px; margin-left: auto; }
-nav button.on { background: var(--accent); border-color: var(--accent); color: #04101d; }
+nav button.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px; }
 .grid { display: grid; gap: 14px; }
 .cols { grid-template-columns: 1fr 320px; }
@@ -66,9 +142,10 @@ nav button.on { background: var(--accent); border-color: var(--accent); color: #
 .field label b { color: var(--fg); font-variant-numeric: tabular-nums; }
 .hint { color: var(--dim); font-size: 12px; margin-top: 5px; }
 .banner { border-radius: var(--radius); padding: 12px 14px; margin-bottom: 16px; font-size: 13px; }
-.banner.warn { background: #3a2c10; border: 1px solid #6b5218; color: #f5d79a; }
-.banner.bad { background: #3a1614; border: 1px solid #6b2622; color: #f5b0ab; }
-.banner.info { background: #10283a; border: 1px solid #1c4a6b; color: #a9d6f5; }
+.banner.warn { background: var(--warn-bg); border: 1px solid var(--warn-line); color: var(--warn-fg); }
+.banner.bad { background: var(--bad-bg); border: 1px solid var(--bad-line); color: var(--bad-fg); }
+.banner.good { background: var(--good-bg); border: 1px solid var(--good-line); color: var(--good-fg); }
+.banner.info { background: var(--info-bg); border: 1px solid var(--info-line); color: var(--info-fg); }
 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--bad); display: inline-block; }
 .dot.live { animation: pulse 1.4s infinite; }
 @keyframes pulse { 50% { opacity: .25; } }
@@ -151,31 +228,74 @@ code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-si
  * the plain background everywhere else. pointer-events:none keeps it from ever
  * intercepting a click on whatever sits underneath.
  */
-.version-badge {
+/*
+ * Where you are, and what you are running. Bottom-left, every screen.
+ *
+ * The gradient fades to nothing rather than being a box, so the badge sits on whatever is
+ * behind it without drawing a rectangle around itself. It is `--badge-fade`, a token,
+ * because on a white page a fade to black is a smudge.
+ *
+ * pointer-events are off on the block and back ON for the eye: the text should never
+ * intercept a click meant for the page under it, but the one control has to be clickable.
+ */
+.area-badge {
   position: fixed;
   left: 0;
   bottom: 0;
   z-index: 50;
-  padding: 10px 14px 7px 12px;
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  padding: 10px 14px 7px 8px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 10.5px;
   line-height: 1.2;
   letter-spacing: .2px;
-  color: var(--dim);
   background: linear-gradient(
     to top right,
-    rgba(8, 11, 15, .92) 0%,
-    rgba(8, 11, 15, .78) 45%,
-    rgba(8, 11, 15, 0) 100%
+    var(--badge-fade-1) 0%,
+    var(--badge-fade-2) 45%,
+    var(--badge-fade-0) 100%
   );
   border-top-right-radius: 10px;
   pointer-events: none;
   user-select: text;
   white-space: nowrap;
 }
+/* Collapsed it is one dot, so the gradient shrinks with it rather than leaving a wash
+   over an empty corner. */
+.area-badge.shut { padding: 6px 10px 6px 8px; background: none; }
+.area-badge-eye {
+  pointer-events: auto;
+  flex: none;
+  padding: 0;
+  width: 18px;
+  height: 18px;
+  line-height: 1;
+  font-size: 10px;
+  border-radius: 50%;
+  background: var(--panel-2);
+  color: var(--dim);
+  border: 1px solid var(--line);
+  opacity: .8;
+}
+.area-badge-eye:hover { opacity: 1; }
+.area-badge-lines { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+/* A different colour from the build line beneath it, because they answer different
+   questions — where am I, and what am I running. */
+.area-badge-area {
+  color: var(--area);
+  font-size: 9.5px;
+  letter-spacing: .4px;
+  text-transform: uppercase;
+}
+.area-badge-build { color: var(--dim); font-size: 10.5px; opacity: .85; }
 
 @media (max-width: 640px) {
-  .version-badge { font-size: 10px; padding: 8px 12px 6px 10px; }
+  .area-badge { padding: 8px 12px 6px 6px; }
+  .area-badge-build { font-size: 10px; }
+  /* Two long monospace lines do not fit beside a phone's soft-key bar. The build line is
+     the half you can look up elsewhere, so it is the half that wraps away. */
+  .area-badge-build { white-space: normal; max-width: 62vw; }
 }
 
 /* Sign-in / sign-up, shown instead of the app when there is no session. */
@@ -291,7 +411,11 @@ code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-si
  * The version badge is fixed, so without this the last line of the page sits underneath it
  * permanently — not merely overlapped while scrolling, but unreachable.
  */
-.app { padding-bottom: 52px; }
+/* Room for the fixed area badge, which floats over whatever the page ends with. It is two
+   lines now rather than one, and the last paragraph of the colour key was reading through
+   it. Reserved unconditionally: the badge collapses, but content that reflows every time
+   somebody presses the eye is worse than a little space at the bottom. */
+.app { padding-bottom: 72px; }
 
 /* "<1 ms" wraps between the operator and the unit at narrow tile widths, which makes one
    tile taller than its neighbours and reads as a broken value. */
@@ -449,9 +573,10 @@ tbody tr:has(input[type="checkbox"]:checked) { background: var(--panel-2); }
   max-width: 90%; overflow: hidden; text-overflow: ellipsis; z-index: 2;
 }
 /* One bottom-left stack: build, state, clock. Reading order is top-down and least to most
-   changeable, so the eye lands on the moving number. */
+   changeable, so the eye lands on the moving number. In the cockpit's flow rather than
+   absolutely placed — see .evo-cockpit-top. */
 .evo-hud {
-  position: absolute; left: 6px; bottom: 8px; pointer-events: none;
+  pointer-events: none; min-width: 0;
   display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
 }
 /* Technical provenance, quietest thing on the canvas. Inside the stage on purpose: the
@@ -498,7 +623,7 @@ tbody tr:has(input[type="checkbox"]:checked) { background: var(--panel-2); }
   font-size: 12px; color: var(--dim);
 }
 .evo-modeline b { color: var(--fg); }
-.evo-modeline.inspect { border-color: #1c4a6b; background: #10283a; }
+.evo-modeline.inspect { border-color: var(--info-line); background: var(--info-bg); }
 
 /* Spinning only while it is doing something, so the button reports the state it controls. */
 @keyframes evospin { to { transform: rotate(360deg); } }
@@ -510,7 +635,7 @@ tbody tr:has(input[type="checkbox"]:checked) { background: var(--panel-2); }
   border: none; border-radius: 0; background: transparent; color: var(--dim);
   font-size: 11px; padding: 4px 12px; letter-spacing: .3px;
 }
-.evo-modeswitch button.on { background: var(--accent); color: #04101d; font-weight: 600; }
+.evo-modeswitch button.on { background: var(--accent); color: var(--on-accent); font-weight: 600; }
 .evo-modeswitch button + button { border-left: 1px solid var(--line); }
 .evo-modeswitch button.on + button { border-left-color: transparent; }
 
@@ -525,7 +650,7 @@ tbody tr:has(input[type="checkbox"]:checked) { background: var(--panel-2); }
 
 /* What the camera is turning around, bottom-right, opposite the clock. */
 .evo-orbit-readout {
-  position: absolute; right: 10px; bottom: 45px; display: flex; align-items: center; gap: 8px;
+  display: flex; align-items: center; gap: 8px; text-align: right;
   font: 11px/1 ui-monospace, monospace; color: var(--dim); pointer-events: none;
 }
 .evo-orbit-readout .locked { color: var(--accent); }
@@ -634,12 +759,89 @@ tbody tr:has(input[type="checkbox"]:checked) { background: var(--panel-2); }
   capped by the gap so two neighbours can never claim the same tap, which would be worse
   than a small target.
 */
+/*
+ * The time control, spanning the stage above the cockpit.
+ *
+ * It stretches while the rest of the cockpit column is right-aligned, because this is the
+ * one control whose usefulness is proportional to its width — a short track cannot be
+ * aimed at, and aiming is the point.
+ */
+.evo-timeline {
+  align-self: stretch;
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 8px;
+  border-radius: 20px;
+  background: rgba(13, 16, 20, .85);
+  border: 1px solid var(--line);
+}
+.evo-track { position: relative; flex: 1 1 auto; min-width: 80px; height: 26px; }
+/* The activity behind the track: where the work actually happened. */
+.evo-track-marks {
+  position: absolute; inset: 6px 0 6px 0; pointer-events: none;
+}
+.evo-track-marks i {
+  position: absolute; bottom: 0; width: 2px; margin-left: -1px; border-radius: 1px;
+  background: var(--accent);
+}
+/*
+ * The input sits over the marks with no track of its own, so the activity IS the track.
+ * -webkit-appearance is still required: without it Safari and Chrome draw their own track
+ * over the marks and the whole strip becomes a plain grey bar.
+ */
+.evo-range {
+  position: absolute; inset: 0; width: 100%; margin: 0;
+  -webkit-appearance: none; appearance: none; background: transparent;
+}
+.evo-range::-webkit-slider-runnable-track { height: 26px; background: transparent; }
+.evo-range::-moz-range-track { height: 26px; background: transparent; }
+.evo-range::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 3px; height: 26px; border-radius: 2px;
+  background: var(--fg); border: none; cursor: ew-resize;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .6);
+}
+.evo-range::-moz-range-thumb {
+  width: 3px; height: 26px; border-radius: 2px;
+  background: var(--fg); border: none; cursor: ew-resize;
+}
+.evo-range:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* The commit you are standing on. It truncates rather than wrapping: this row must stay
+   one line high or it pushes the graph out of the stage on every long subject. */
+.evo-at {
+  flex: 1 1 130px; min-width: 0; display: flex; align-items: baseline; gap: 6px;
+  font-size: 11px; color: var(--dim); overflow: hidden; white-space: nowrap;
+}
+.evo-at code { color: var(--accent); font-size: 10px; flex: none; }
+.evo-at span { overflow: hidden; text-overflow: ellipsis; }
+.evo-timeline .evo-cbtn { flex: none; }
+/* On a phone the commit subject and a usable track cannot share one line. The subject is
+   the half that can move, so it wraps to its own line under the track. */
+@media (max-width: 640px) {
+  .evo-timeline { flex-wrap: wrap; }
+  .evo-at { flex: 1 1 100%; order: 3; padding: 0 2px 1px; }
+}
+
 .evo-cockpit {
   position: absolute; left: 10px; right: 10px; bottom: 10px;
   display: flex; flex-direction: column; align-items: flex-end; gap: 6px;
   pointer-events: none;
 }
 .evo-cockpit > * { pointer-events: auto; }
+/*
+  The readouts, on one row above the controls: where you are on the left, what the camera
+  is turning around on the right. `align-items: flex-end` so they sit on a common baseline
+  however many lines each happens to be.
+*/
+.evo-cockpit-top {
+  align-self: stretch; display: flex; align-items: flex-end;
+  justify-content: space-between; gap: 10px; pointer-events: none;
+}
+.evo-cockpit-top > * { pointer-events: auto; }
+/* On a phone the orbit readout and the clock cannot share a line. The readout is the half
+   that can go: it repeats what the crosshair already shows. */
+@media (max-width: 560px) {
+  .evo-cockpit-top .evo-orbit-readout span { display: none; }
+}
 /* 5px gaps, not 7: the row needs to fit one line on a phone, and seven gaps at two pixels
    each is fourteen pixels of the twenty it was short by. It still wraps rather than clips
    below about 390px wide, which is honest degradation — nothing is hidden or cut off.
@@ -688,7 +890,7 @@ tbody tr:has(input[type="checkbox"]:checked) { background: var(--panel-2); }
 .evo-speeds button::after {
   content: ''; position: absolute; inset: -8px -2px;
 }
-.evo-speeds button.on { background: var(--accent); color: #04101d; border-color: var(--accent);
+.evo-speeds button.on { background: var(--accent); color: var(--on-accent); border-color: var(--accent);
   font-weight: 600; }
 
 /* The mode pair, last in the row: least often touched, and the only control with words. */
@@ -705,7 +907,7 @@ tbody tr:has(input[type="checkbox"]:checked) { background: var(--panel-2); }
   font-size: 10px; padding: 0 8px; height: 27px; letter-spacing: .3px;
 }
 .evo-modeswitch button::after { content: ''; position: absolute; inset: -9px 0; }
-.evo-modeswitch button.on { background: var(--accent); color: #04101d; font-weight: 600; }
+.evo-modeswitch button.on { background: var(--accent); color: var(--on-accent); font-weight: 600; }
 .evo-modeswitch button + button { border-left: 1px solid var(--line); }
 .evo-modeswitch button.on + button { border-left-color: transparent; }
 
@@ -795,7 +997,7 @@ tbody tr:has(input[type="checkbox"]:checked) { background: var(--panel-2); }
   border: none; border-radius: 0; background: transparent; color: var(--dim);
   font-size: 10px; padding: 0 10px; height: 26px;
 }
-.src-tabs button.on { background: var(--accent); color: #04101d; font-weight: 600; }
+.src-tabs button.on { background: var(--accent); color: var(--on-accent); font-weight: 600; }
 .src-tabs button + button { border-left: 1px solid var(--line); }
 .src-raw { padding: 3px 9px; font-size: 10px; }
 .src-close { padding: 0; width: 26px; height: 26px; line-height: 1; flex: none; }
@@ -820,7 +1022,7 @@ tbody tr:has(input[type="checkbox"]:checked) { background: var(--panel-2); }
 /* --- code ----------------------------------------------------------------- */
 .src-lines { padding: 8px 0 20px; font: 11.5px/1.55 ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
 .src-line { display: flex; gap: 10px; padding: 0 12px; }
-.src-line:hover { background: rgba(255, 255, 255, .028); }
+.src-line:hover { background: var(--hover); }
 .src-ln {
   flex: none; text-align: right; color: #4a5666; user-select: none;
   font-variant-numeric: tabular-nums;
@@ -914,7 +1116,7 @@ body:has(.evo-layout:fullscreen) .version-badge { display: none; }
   font-size: 12px;
 }
 .xp-row:hover { background: var(--panel-2); }
-.xp-row.current { background: #10283a; }
+.xp-row.current { background: var(--info-bg); }
 .xp-up { color: var(--dim); }
 .xp-icon { flex: none; width: 10px; color: var(--dim); font-size: 10px; }
 /* The same colour the dot has on the graph, so a name here and a dot there read as the
@@ -947,8 +1149,22 @@ body:has(.evo-layout:fullscreen) .version-badge { display: none; }
 .sec-head > *:last-child:not(h3):not(.sec-id) { flex: none; }
 .sec-id {
   flex: none; font: 10px/1 ui-monospace, monospace; letter-spacing: .5px;
-  color: var(--sec, var(--dim)); border: 1px solid var(--sec, var(--line));
+  color: var(--sec-ink, var(--dim)); border: 1px solid var(--sec, var(--line));
   border-radius: 20px; padding: 3px 7px;
+}
+
+/* The forecast: bars to the plateau, and the plateau as a line across them. */
+.db-forecast {
+  position: relative; display: flex; align-items: flex-end; gap: 1px;
+  height: 130px; padding-top: 6px;
+}
+.db-forecast .db-bar { flex: 1 1 0; min-width: 0; height: 100%; display: flex; align-items: flex-end; }
+.db-forecast .db-bar i { width: 100%; background: var(--sec, var(--accent)); border-radius: 2px 2px 0 0; }
+/* Faded once what ages out is itself a projection rather than a measurement. */
+.db-forecast .db-bar.projected i { opacity: .42; }
+.db-plateau {
+  position: absolute; left: 0; right: 0; height: 0;
+  border-top: 1px dashed var(--warn); pointer-events: none; z-index: 1;
 }
 
 .db-toolbar {
@@ -971,6 +1187,18 @@ body:has(.evo-layout:fullscreen) .version-badge { display: none; }
 .pal-chip i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
 .pal-act { padding: 3px 9px; font-size: 11px; border-radius: 20px; }
 .pal-act.on { border-color: var(--good); color: var(--good); }
+/* Dark / light / auto, as one segmented control rather than three loose buttons: they are
+   three states of one setting, and spacing them apart says otherwise. */
+.pal-modes { display: inline-flex; }
+.pal-modes button {
+  padding: 3px 9px; font-size: 11px; border-radius: 0; margin-left: -1px;
+}
+.pal-modes button:first-child { border-radius: 20px 0 0 20px; margin-left: 0; }
+.pal-modes button:last-child { border-radius: 0 20px 20px 0; }
+.pal-modes button.on {
+  background: var(--accent); border-color: var(--accent); color: var(--on-accent);
+  font-weight: 600; position: relative; z-index: 1;
+}
 
 /* --- the HUD's area badge and its eye -------------------------------------- */
 .evo-hud-eye {

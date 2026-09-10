@@ -422,3 +422,180 @@ export function daysUntil(current: number, perDay: number, ceiling: number): num
   if (!(perDay > 0)) return Infinity;
   return (ceiling - current) / perDay;
 }
+
+/** One day of the forecast: what is held, and what moved that day. */
+export interface ForecastDay {
+  /** 'YYYY-MM-DD'. */
+  day: string;
+  /** Bytes held in R2 at the end of this day. */
+  bytes: number;
+  added: number;
+  /** Bytes the retention sweep removed — real history while it is still known. */
+  expired: number;
+  /** False once nothing expiring that day is a real measurement any more. */
+  measured: boolean;
+}
+
+export interface Forecast {
+  days: ForecastDay[];
+  /** Where it settles: a rolling `retentionDays` of the daily rate. */
+  plateauBytes: number;
+  /** Days until it is within 2% of the plateau, or null if it is already there. */
+  settlesInDays: number | null;
+  /** True when the recorder is shedding more than it adds, so the total is falling. */
+  shrinking: boolean;
+}
+
+const dayKey = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
+
+/**
+ * What the database will hold, day by day, and where it stops.
+ *
+ * This exists because a 24-hour recording rate multiplied out reads like a runaway bill,
+ * and it is not one. Retention caps it: a frame written today is deleted `retentionDays`
+ * later, so the total climbs, flattens, and stays flat however long the recorder runs.
+ * That plateau is the number the invoice actually follows, and a page that shows only the
+ * daily rate leaves the reader to guess it.
+ *
+ * The first `retentionDays` of the forecast are not a projection. What ages out tomorrow
+ * is what was recorded `retentionDays` ago, and that is a fact sitting in the history — so
+ * it is read from there rather than assumed to equal the average, which matters exactly
+ * when it is not: a quiet week ending and a busy one aging out look nothing alike. After
+ * that the days falling off are themselves projections, and the curve becomes one.
+ *
+ * `todayMs` is a parameter rather than `Date.now()` so this is testable at all.
+ */
+export function growthForecast(
+  history: HistoryPoint[],
+  o: {
+    heldBytes: number;
+    bytesPerDay: number;
+    retentionDays: number;
+    horizonDays: number;
+    todayMs: number;
+    /**
+     * The earliest moment the history reliably covers.
+     *
+     * This is the difference between "nothing was recorded that day" and "we do not know",
+     * and getting it wrong is not a rounding error. Told that an absent day means zero for
+     * days the window never reached, the model expires nothing for a whole retention
+     * period: fifty gigabytes held with the recorder switched off climbs to fifty-seven and
+     * stays there forever. Caught by a test rather than by reading the code.
+     */
+    historyFromMs: number;
+  },
+): Forecast {
+  const retention = Math.max(1, Math.round(o.retentionDays));
+  const horizon = Math.max(1, Math.round(o.horizonDays));
+  const byDay = new Map(history.map((p) => [p.day, p.bytes]));
+  const days: ForecastDay[] = [];
+  let held = Math.max(0, o.heldBytes);
+  const plateauBytes = o.bytesPerDay * retention;
+
+  /**
+   * What is falling off from before the history window, per day.
+   *
+   * Bytes are conserved: everything held either has a known arrival day inside the window
+   * or arrived before it, and the second group is what drains at this rate. The first
+   * version spread ALL the holdings over the whole retention window, which double-counted
+   * the measured days and left the total stranded at twice the plateau — a test caught
+   * that too, after catching the version before it.
+   */
+  let measuredInWindow = 0;
+  let unknownDays = 0;
+  for (let t = 1; t <= retention; t++) {
+    const bornMs = o.todayMs + (t - retention) * 86_400_000;
+    if (bornMs > o.todayMs) continue;
+    if (bornMs >= o.historyFromMs) measuredInWindow += byDay.get(dayKey(bornMs)) ?? 0;
+    else unknownDays += 1;
+  }
+  const unaccounted = Math.max(0, held - measuredInWindow);
+  /**
+   * Where the unexplained holdings go.
+   *
+   * When part of the window is out of view, they drain over those days — that is what
+   * being out of view means. When the window IS fully covered, the leftover is still real:
+   * frames older than the retention cut that the nightly sweep has not reached, or copies
+   * the daily totals do not count. It has to leave, and if nothing makes it leave the
+   * forecast flattens above its own plateau and quietly contradicts the number printed
+   * beside it — which is what the chart showed before this existed.
+   *
+   * Spread over the retention window either way, and the days carrying it are reported as
+   * not measured, because their total is partly an inference.
+   */
+  const drainDays = unknownDays > 0 ? unknownDays : retention;
+  const unknownExpiry = unaccounted / drainDays;
+  // Only when the gap is material. The holdings and the daily series come from two separate
+  // queries a moment apart, so they disagree slightly as a matter of course, and repainting
+  // every bar as "inferred" over a rounding difference would make the honest label
+  // meaningless by making it always true.
+  const reconciling = unknownDays === 0 && unaccounted > held * 0.02;
+
+  for (let t = 1; t <= horizon; t++) {
+    // What leaves on day t is what arrived `retention` days before day t.
+    const bornMs = o.todayMs + (t - retention) * 86_400_000;
+    let expired: number;
+    let measured: boolean;
+    if (bornMs > o.todayMs) {
+      // Still in the future: what expires then is what this forecast says will arrive.
+      expired = o.bytesPerDay;
+      measured = false;
+    } else if (bornMs >= o.historyFromMs) {
+      // Inside the window, so an absent day is a genuine zero — nothing was recorded.
+      // Plus this day's share of anything held that the window does not account for.
+      expired = (byDay.get(dayKey(bornMs)) ?? 0) + (reconciling && t <= retention ? unknownExpiry : 0);
+      measured = !reconciling || t > retention;
+    } else {
+      expired = unknownExpiry;
+      measured = false;
+    }
+    held = Math.max(0, held + o.bytesPerDay - expired);
+    days.push({
+      day: dayKey(o.todayMs + t * 86_400_000),
+      bytes: held,
+      added: o.bytesPerDay,
+      expired,
+      measured,
+    });
+  }
+
+  const within = days.findIndex((d) => Math.abs(d.bytes - plateauBytes) <= plateauBytes * 0.02);
+  return {
+    days,
+    plateauBytes,
+    settlesInDays: within === -1 ? null : within + 1,
+    shrinking: o.heldBytes > plateauBytes * 1.02,
+  };
+}
+
+/** One account's share of the system, for the operator's whole-estate view. */
+export interface AccountUsage {
+  userId: string;
+  email: string;
+  frames: number;
+  bytes: number;
+  sessions: number;
+  lastSeen: string | null;
+}
+
+/**
+ * How concentrated the system's storage is.
+ *
+ * The figure that changes a decision. A hundred accounts averaging a little is a capacity
+ * problem; a hundred accounts where one holds most of it is a conversation with one person,
+ * and the mean hides the difference completely — which is what makes a mean the wrong
+ * summary to put on an operator's page on its own.
+ */
+export function concentration(
+  accounts: AccountUsage[],
+): { total: number; top: AccountUsage | null; topShare: number; median: number } {
+  const total = accounts.reduce((n, a) => n + a.bytes, 0);
+  if (accounts.length === 0) return { total: 0, top: null, topShare: 0, median: 0 };
+  const sorted = [...accounts].sort((a, b) => b.bytes - a.bytes);
+  const mid = Math.floor(sorted.length / 2);
+  const median = sorted.length % 2 === 1
+    ? sorted[mid]!.bytes
+    : (sorted[mid - 1]!.bytes + sorted[mid]!.bytes) / 2;
+  const top = sorted[0]!;
+  return { total, top, topShare: total > 0 ? top.bytes / total : 0, median };
+}

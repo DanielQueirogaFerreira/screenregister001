@@ -599,3 +599,94 @@ export function nodeStats(
     recent: recent.slice(-recentLimit).reverse(),
   };
 }
+
+// --- moving about in time ----------------------------------------------------------------
+
+/**
+ * The commit in force at `atMs`: the last one at or before it, or -1 before the first.
+ *
+ * A binary search rather than the linear scan the caption used, because this now runs from
+ * a scrubber being dragged rather than from a clock ticking eight times a second, and a
+ * project with a year of history has a lot of commits to walk past on every pointer move.
+ */
+export function commitIndexAt(log: EvoLog, atMs: number): number {
+  let lo = 0;
+  let hi = log.events.length - 1;
+  let found = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (log.events[mid]!.t * 1000 <= atMs) { found = mid; lo = mid + 1; } else hi = mid - 1;
+  }
+  return found;
+}
+
+/**
+ * Where the playhead lands stepping one commit back or forward, in ms.
+ *
+ * Stepping BACK from a position that is already exactly on a commit has to go to the one
+ * before it, not stay put — otherwise the button does nothing at the only moment anyone
+ * presses it twice. Stepping forward from between two commits goes to the next one, which
+ * is the same rule stated the other way round.
+ */
+export function stepCommit(log: EvoLog, atMs: number, dir: -1 | 1): number | null {
+  if (log.events.length === 0) return null;
+  const here = commitIndexAt(log, atMs);
+  if (dir > 0) {
+    // `here` is at or before atMs, so the next one is always here+1 — except when atMs sits
+    // exactly on a commit and floating-point has put it a hair behind.
+    for (let i = Math.max(0, here); i < log.events.length; i++) {
+      const t = log.events[i]!.t * 1000;
+      if (t > atMs) return t;
+    }
+    return null;
+  }
+  for (let i = here; i >= 0; i--) {
+    const t = log.events[i]!.t * 1000;
+    if (t < atMs) return t;
+  }
+  return null;
+}
+
+/** One bucket of the timeline strip: where it sits, and how much happened in it. */
+export interface TimelineMark {
+  /** Position along the track, 0 at the start of the window and 1 at the end. */
+  at: number;
+  commits: number;
+  /** File edits, which is what makes one commit taller than another. */
+  edits: number;
+}
+
+/**
+ * The activity strip behind the scrubber.
+ *
+ * Evenly spaced ticks would say only "there are commits", which the caption already says.
+ * Bucketing by time and drawing the volume in each turns the track into a map of when the
+ * work actually happened — so aiming at "that burst last Tuesday" is one glance and one
+ * drag rather than scrubbing back and forth to find it.
+ *
+ * Empty buckets are dropped rather than returned as zeros: a project with a quiet fortnight
+ * would otherwise carry a hundred marks of height nothing, each of them a DOM node.
+ */
+export function timelineMarks(
+  log: EvoLog, startMs: number, endMs: number, buckets = 120,
+): TimelineMark[] {
+  const span = endMs - startMs;
+  if (!(span > 0) || buckets < 1) return [];
+  const commits = new Float64Array(buckets);
+  const edits = new Float64Array(buckets);
+  for (const e of log.events) {
+    const t = e.t * 1000;
+    if (t < startMs || t > endMs) continue;
+    // Clamped rather than trusted to land inside: a commit exactly at endMs indexes one
+    // past the last bucket, which is a silent out-of-bounds write in a typed array.
+    const i = Math.min(buckets - 1, Math.floor(((t - startMs) / span) * buckets));
+    commits[i]! += 1;
+    edits[i]! += e.f.length;
+  }
+  const out: TimelineMark[] = [];
+  for (let i = 0; i < buckets; i++) {
+    if (commits[i]! === 0) continue;
+    out.push({ at: (i + 0.5) / buckets, commits: commits[i]!, edits: edits[i]! });
+  }
+  return out;
+}

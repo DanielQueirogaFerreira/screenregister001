@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  billingGb, CLOUDFLARE_RATES, DEFAULT_SCENARIO, daysUntil, priceMonth, projectToPeriodEnd,
-  projectUsage, usageFromHistory, type Scenario,
+  billingGb, CLOUDFLARE_RATES, concentration, DEFAULT_SCENARIO, daysUntil, growthForecast,
+  priceMonth, projectToPeriodEnd, projectUsage, usageFromHistory, type Scenario,
 } from './cost.js';
 
 const s = (over: Partial<Scenario> = {}): Scenario => ({ ...DEFAULT_SCENARIO, ...over });
@@ -303,5 +303,134 @@ describe('usageFromHistory', () => {
     const bill = priceMonth(o.usage, 'paid');
     expect(bill.total).toBeGreaterThanOrEqual(CLOUDFLARE_RATES.workers.subscriptionPerMonth);
     for (const i of bill.items) expect(i.cost, i.label).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe('where the database growth stops', () => {
+  const DAY = 86_400_000;
+  const today = Date.parse('2026-09-10T00:00:00Z');
+  const dayKey = (n: number) => new Date(today + n * DAY).toISOString().slice(0, 10);
+  /** A steady week: 1 GB a day for the last seven days. */
+  const steady = [-6, -5, -4, -3, -2, -1, 0].map((n) => ({
+    day: dayKey(n), frames: 1000, bytes: 1e9,
+  }));
+
+  it('flattens rather than climbing without end', () => {
+    // The whole reason this exists. A daily rate multiplied out reads like a runaway bill;
+    // retention means it is not one, and the plateau is the number the invoice follows.
+    const f = growthForecast(steady, {
+      heldBytes: 7e9, bytesPerDay: 1e9, retentionDays: 7, horizonDays: 60,
+      todayMs: today, historyFromMs: today - 7 * DAY,
+    });
+    expect(f.plateauBytes).toBe(7e9);
+    expect(f.days[59]!.bytes).toBeCloseTo(7e9, -6);
+    // and it got there without wandering above it
+    expect(Math.max(...f.days.map((d) => d.bytes))).toBeLessThanOrEqual(7e9 * 1.001);
+  });
+
+  it('fills up to the plateau when the recorder has only just started', () => {
+    const f = growthForecast([{ day: dayKey(0), frames: 1000, bytes: 1e9 }], {
+      heldBytes: 1e9, bytesPerDay: 1e9, retentionDays: 7, horizonDays: 30,
+      todayMs: today, historyFromMs: today - 30 * DAY,
+    });
+    expect(f.days[0]!.bytes).toBeCloseTo(2e9, -6);
+    expect(f.days[5]!.bytes).toBeCloseTo(7e9, -6);
+    expect(f.days[29]!.bytes).toBeCloseTo(7e9, -6);
+    expect(f.settlesInDays).toBe(6);
+  });
+
+  it('uses what really ages out, not the average, while that is still known', () => {
+    // The case the average gets wrong: six quiet days and one enormous one. On the day that
+    // big day falls out of the window, the total drops by the big day — not by the mean.
+    const spiky = [-6, -5, -4, -3, -2, -1, 0].map((n) => ({
+      day: dayKey(n), frames: 10, bytes: n === -6 ? 6e9 : 1e8,
+    }));
+    const f = growthForecast(spiky, {
+      heldBytes: 6.6e9, bytesPerDay: 6.6e9 / 7, retentionDays: 7, horizonDays: 10,
+      todayMs: today, historyFromMs: today - 7 * DAY,
+    });
+    expect(f.days[0]!.expired).toBe(6e9);
+    expect(f.days[0]!.measured).toBe(true);
+    expect(f.days[1]!.expired).toBe(1e8);
+    // Past the window the history has run out and the rate takes over.
+    expect(f.days[7]!.measured).toBe(false);
+    expect(f.days[7]!.expired).toBeCloseTo(6.6e9 / 7, 3);
+  });
+
+  it('falls back toward the plateau when more is held than the rate supports', () => {
+    // Someone recorded heavily and stopped. Storage does not stay where it is; it drains as
+    // the window rolls, and a projection that only ever climbs would keep billing for it.
+    // With no history at all, every day falling out of the window is unknown — and
+    // "unknown" must not mean "nothing", or the total climbs and then sits there forever.
+    const f = growthForecast([], {
+      heldBytes: 50e9, bytesPerDay: 1e9, retentionDays: 7, horizonDays: 30,
+      todayMs: today, historyFromMs: today,
+    });
+    expect(f.shrinking).toBe(true);
+    expect(f.days[29]!.bytes).toBeLessThan(50e9);
+    // and it drains to the plateau rather than to nothing
+    expect(f.days[29]!.bytes).toBeCloseTo(7e9, -9);
+  });
+
+  it('drains holdings the window cannot explain, instead of stranding them', () => {
+    // Caught by looking at the chart, not by a test: with a full window of history, every
+    // day of expiry was "measured", so anything held beyond what those days account for
+    // had nowhere to go and the curve flattened above its own plateau. Old frames the
+    // sweep has not reached yet are exactly this, and they do leave.
+    const week = [-6, -5, -4, -3, -2, -1, 0].map((n) => ({
+      day: dayKey(n), frames: 100, bytes: 1e9,
+    }));
+    const f = growthForecast(week, {
+      heldBytes: 20e9, bytesPerDay: 1e9, retentionDays: 7, horizonDays: 40,
+      todayMs: today, historyFromMs: today - 30 * DAY,
+    });
+    expect(f.shrinking).toBe(true);
+    expect(f.days[39]!.bytes).toBeCloseTo(7e9, -9);
+    // and it says so: those days are not a pure measurement any more
+    expect(f.days[0]!.measured).toBe(false);
+  });
+
+  it('never reports negative storage', () => {
+    const f = growthForecast(
+      [{ day: dayKey(-1), frames: 1, bytes: 900e9 }],
+      { heldBytes: 1e9, bytesPerDay: 0, retentionDays: 2, horizonDays: 5,
+        todayMs: today, historyFromMs: today - 7 * DAY },
+    );
+    expect(f.days.every((d) => d.bytes >= 0)).toBe(true);
+  });
+
+  it('treats a day the history simply does not have as a real zero', () => {
+    // A gap inside the retention window is a day nothing was recorded, so nothing expires
+    // that day. Reading it as "unknown, use the average" would invent deletions.
+    const f = growthForecast([{ day: dayKey(-3), frames: 1, bytes: 5e9 }], {
+      heldBytes: 5e9, bytesPerDay: 0, retentionDays: 7, horizonDays: 7,
+      todayMs: today, historyFromMs: today - 7 * DAY,
+    });
+    expect(f.days[3]!.expired).toBe(5e9);
+    expect(f.days[0]!.expired).toBe(0);
+  });
+});
+
+describe('who is using the system', () => {
+  const acct = (id: string, bytes: number) => ({
+    userId: id, email: `${id}@x`, frames: 1, bytes, sessions: 1, lastSeen: null,
+  });
+
+  it('names the account holding the most, and its share', () => {
+    // The figure that changes a decision: a hundred accounts averaging a little is a
+    // capacity problem, and one account holding most of it is a conversation with a person.
+    const c = concentration([acct('a', 90), acct('b', 5), acct('c', 5)]);
+    expect(c.top?.userId).toBe('a');
+    expect(c.topShare).toBeCloseTo(0.9, 5);
+    expect(c.total).toBe(100);
+  });
+
+  it('reports a median that the mean would hide', () => {
+    const c = concentration([acct('a', 900), acct('b', 10), acct('c', 10), acct('d', 10)]);
+    expect(c.median).toBe(10);
+  });
+
+  it('has nothing to say about an empty system rather than dividing by zero', () => {
+    expect(concentration([])).toEqual({ total: 0, top: null, topShare: 0, median: 0 });
   });
 });

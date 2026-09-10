@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  billingGb, CLOUDFLARE_RATES, DEFAULT_SCENARIO, daysUntil, priceMonth, projectUsage,
-  usageFromHistory, type Scenario,
+  billingGb, CLOUDFLARE_RATES, concentration, DEFAULT_SCENARIO, daysUntil, growthForecast,
+  priceMonth, projectUsage, usageFromHistory, type AccountUsage, type Scenario,
 } from '@sr/core';
 import { bytes } from '../lib/format.js';
-import { PaletteProvider, PalettePicker, Section, usePalette } from '../lib/sections.js';
-import { VersionBadge } from './VersionBadge.js';
+import { PaletteProvider, PalettePicker, Section } from '../lib/sections.js';
+import { AreaBadge } from './AreaBadge.js';
+import { AREAS } from '../lib/areas.js';
 
 /**
  * What the database holds, what it is costing, and what it will cost.
@@ -26,6 +27,8 @@ interface History {
   /** Whose usage this is. The page prints it beside every figure. */
   scope: 'account' | 'all';
   window_days: number;
+  /** The earliest moment `daily` covers — see the forecast, which needs it. */
+  since: string;
   totals: {
     frames: number;
     bytes: number;
@@ -40,6 +43,11 @@ interface History {
     newest: string | null;
   };
   daily: { day: string; frames: number; bytes: number }[];
+  /** Per-account holdings. Present only for the whole-system scope, which is operator-only. */
+  accounts: {
+    user_id: string; email: string; frames: number; bytes: number;
+    sessions: number; last_seen: string | null;
+  }[];
 }
 
 const usd = (n: number) => `$${n.toFixed(2)}`;
@@ -67,8 +75,34 @@ export function DatabaseView() {
    */
   const [scope, setScope] = useState<'account' | 'all'>('account');
   const [days, setDays] = useState(30);
+  /**
+   * Whether this account may see the whole system, and therefore what to open on.
+   *
+   * An operator arriving at a page called "database & cost" wants the estate, not their own
+   * corner of it — that is what the page is for. So the default follows the capability
+   * rather than being the safest possible answer, while the server keeps refusing anyone
+   * who asks for more than they hold. `null` means the question has not come back yet, and
+   * the fetch waits for it rather than loading the account view and immediately replacing
+   * it.
+   */
+  const [operator, setOperator] = useState<boolean | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
+    fetch('/v1/me', { credentials: 'include' })
+      .then((r) => (r.ok ? r.json() as Promise<{ is_admin?: boolean }> : null))
+      .then((me) => {
+        if (cancelled) return;
+        const admin = me?.is_admin === true;
+        setOperator(admin);
+        if (admin) setScope('all');
+      })
+      .catch(() => { if (!cancelled) setOperator(false); });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (operator === null) return;
     setData(null);
     setError(null);
     let cancelled = false;
@@ -82,13 +116,13 @@ export function DatabaseView() {
       .then((d) => { if (!cancelled) setData(d); })
       .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); });
     return () => { cancelled = true; };
-  }, [scope, days]);
+  }, [scope, days, operator]);
 
   return (
     <PaletteProvider>
       <div className="app">
         <header>
-          <h1>ScreenRegister <span>\u00b7 database &amp; cost</span></h1>
+          <h1>ScreenRegister <span>· database &amp; cost</span></h1>
           <nav>
             <a href="/status" className="button-link">&larr; Status</a>
             <a href="/" className="button-link">Recorder</a>
@@ -100,7 +134,13 @@ export function DatabaseView() {
             <button className={scope === 'account' ? 'on' : ''} onClick={() => setScope('account')}>
               this account
             </button>
-            <button className={scope === 'all' ? 'on' : ''} onClick={() => setScope('all')}>
+            <button
+              className={scope === 'all' ? 'on' : ''}
+              onClick={() => setScope('all')}
+              title={operator === false
+                ? 'Operator accounts only — the server refuses this for anyone else'
+                : 'Every account on this deployment'}
+            >
               every account
             </button>
           </div>
@@ -116,15 +156,15 @@ export function DatabaseView() {
         </div>
 
         {error && <div className="panel"><div className="banner bad">{error}</div></div>}
-        {!data && !error && <div className="empty">Reading usage\u2026</div>}
-        {data && <Dashboard h={data} />}
-        <VersionBadge />
+        {!data && !error && <div className="empty">Reading usage…</div>}
+        {data && <Dashboard h={data} operator={operator === true} />}
+        <AreaBadge area={AREAS.database} />
       </div>
     </PaletteProvider>
   );
 }
 
-function Dashboard({ h }: { h: History }) {
+function Dashboard({ h, operator }: { h: History; operator: boolean }) {
   const measured = Math.round(h.totals.avg_frame_bytes) || DEFAULT_SCENARIO.avgFrameBytes;
 
   const [fps, setFps] = useState(1);
@@ -174,6 +214,37 @@ function Dashboard({ h }: { h: History }) {
     [h],
   );
   const observedBill = useMemo(() => priceMonth(observed.usage, plan), [observed, plan]);
+
+  /**
+   * Where the stored bytes are heading, and where they stop.
+   *
+   * The question this page kept failing to answer. A daily rate multiplied out reads like a
+   * runaway bill; retention means it is not one — every frame is deleted after the window,
+   * so the total climbs, flattens, and stays flat however long the recorder runs. The
+   * plateau is the figure the invoice follows, and until now the page only implied it in a
+   * sentence.
+   */
+  const [horizon, setHorizon] = useState(30);
+  const forecast = useMemo(() => growthForecast(h.daily, {
+    heldBytes: h.totals.bytes,
+    bytesPerDay: observed.usage.bytesPerDay,
+    retentionDays: h.retention_days,
+    horizonDays: horizon,
+    todayMs: Date.parse(h.generated_at),
+    historyFromMs: Date.parse(h.since),
+  }), [h, observed, horizon]);
+  const plateauBill = useMemo(() => priceMonth({
+    ...observed.usage,
+    steadyStateBytes: forecast.plateauBytes,
+    steadyStateGb: forecast.plateauBytes / 1e9,
+  }, plan), [observed, forecast, plan]);
+
+  const accounts = useMemo<AccountUsage[]>(() => (h.accounts ?? []).map((a) => ({
+    userId: a.user_id, email: a.email, frames: a.frames, bytes: a.bytes,
+    sessions: a.sessions, lastSeen: a.last_seen,
+  })), [h]);
+  const spread = useMemo(() => concentration(accounts), [accounts]);
+  const peakForecast = Math.max(1, forecast.plateauBytes, ...forecast.days.map((d) => d.bytes));
 
   const r = CLOUDFLARE_RATES;
   const gbNow = billingGb(h.totals.bytes);
@@ -247,9 +318,71 @@ function Dashboard({ h }: { h: History }) {
         </div>
       </Section>
 
-      {/* --- the next bill ---------------------------------------------------------- */}
+      {/* --- where it is heading, and where it stops --------------------------------- */}
       <Section
         n={2}
+        title="Where the database is heading"
+        aside={
+          <label className="db-range">
+            <span>Look ahead</span>
+            <select value={horizon} onChange={(e) => setHorizon(Number(e.target.value))}>
+              {[14, 30, 60, 90, 180].map((d) => (
+                <option key={d} value={d}>{d} days</option>
+              ))}
+            </select>
+          </label>
+        }
+      >
+        <div className="hint" style={{ marginTop: 0, marginBottom: 12 }}>
+          A rate of <b>{gb(observed.usage.bytesPerDay)}</b> a day sounds like a bill that
+          never stops growing. It is not one: retention deletes every frame after{' '}
+          <b>{h.retention_days} days</b>, so what is held climbs, flattens, and then stays
+          flat for as long as the recorder runs. <b>{gb(forecast.plateauBytes)}</b> is where
+          it settles &mdash; and that, not the running total, is what the invoice follows.
+          {forecast.shrinking && (
+            <> Right now more is held than this rate supports, so the total <b>falls</b>{' '}
+              toward it as the window rolls.</>
+          )}
+        </div>
+
+        <div className="stats">
+          <div className="stat"><b>{gb(h.totals.bytes)}</b><span>held today</span></div>
+          <div className="stat"><b>{gb(forecast.plateauBytes)}</b><span>held at the plateau</span></div>
+          <div className="stat">
+            <b>{forecast.settlesInDays === null ? `>${horizon}d` : `${forecast.settlesInDays} days`}</b>
+            <span>until it settles</span>
+          </div>
+          <div className="stat"><b>{usd(plateauBill.total)}</b><span>a month, at the plateau</span></div>
+        </div>
+
+        <div className="db-forecast">
+          {/* The plateau drawn as a line rather than stated only in the caption: the point
+              of the chart is that the curve meets it and stops. */}
+          <i
+            className="db-plateau"
+            style={{ bottom: `${(forecast.plateauBytes / peakForecast) * 100}%` }}
+          />
+          {forecast.days.map((d) => (
+            <div
+              key={d.day}
+              className={`db-bar${d.measured ? '' : ' projected'}`}
+              title={`${d.day} · ${gb(d.bytes)} held · +${gb(d.added)} −${gb(d.expired)}${d.measured ? '' : ' (projected)'}`}
+            >
+              <i style={{ height: `${Math.max(2, (d.bytes / peakForecast) * 100)}%` }} />
+            </div>
+          ))}
+        </div>
+        <div className="hint" style={{ marginTop: 8 }}>
+          Solid bars are days where what ages out is <b>known</b> &mdash; what expires
+          tomorrow is what was recorded {h.retention_days} days ago, and that is a fact in
+          the history rather than an average. Faded bars are past that, where the days
+          falling off are themselves projections. The dashed line is the plateau.
+        </div>
+      </Section>
+
+      {/* --- the next bill ---------------------------------------------------------- */}
+      <Section
+        n={3}
         title="Next bill, from the measured history"
         aside={
           <div className="evo-motion" role="group" aria-label="Plan">
@@ -269,7 +402,7 @@ function Dashboard({ h }: { h: History }) {
       </Section>
 
       {/* --- scenarios -------------------------------------------------------------- */}
-      <Section n={3} title="Consumption simulation">
+      <Section n={4} title="Consumption simulation">
         <div className="hint" style={{ marginTop: 0, marginBottom: 14 }}>
           Every figure below multiplies up from the <b>{bytes(measured)}</b> mean of the
           frames actually stored here, so it answers what <i>this</i> recorder costs rather
@@ -323,7 +456,62 @@ function Dashboard({ h }: { h: History }) {
         <BillTable bill={bill} />
       </Section>
 
-      <Section n={4} title="Where these rates come from">
+      {/* --- the whole estate, account by account ------------------------------------ */}
+      <Section n={5} title="Who is holding it">
+        {h.scope !== 'all' ? (
+          <div className="hint" style={{ marginTop: 0 }}>
+            {operator
+              ? 'Switch the scope above to "every account" to see the whole system, account by account.'
+              : 'This breaks the system down account by account, and it is operator-only \u2014 this account can see its own usage above.'}
+          </div>
+        ) : accounts.length === 0 ? (
+          <div className="hint" style={{ marginTop: 0 }}>Nothing stored by anyone yet.</div>
+        ) : (
+          <>
+            <div className="hint" style={{ marginTop: 0, marginBottom: 12 }}>
+              An average would hide the thing worth knowing here. {num(accounts.length)}{' '}
+              account{accounts.length === 1 ? '' : 's'} holding{' '}
+              <b>{gb(spread.total)}</b> between them, the largest with{' '}
+              <b>{Math.round(spread.topShare * 100)}%</b> of it and the median account at{' '}
+              <b>{gb(spread.median)}</b>. A hundred accounts each storing a little is a
+              capacity question; a hundred where one holds most of it is a conversation with
+              one person, and the mean reads the same either way.
+            </div>
+            <div className="table-scroll">
+              <table>
+                <thead>
+                  <tr><th>Account</th><th>Held</th><th>Share</th><th>Frames</th><th>Recordings</th><th>Last frame</th></tr>
+                </thead>
+                <tbody>
+                  {accounts.map((a) => (
+                    <tr key={a.userId}>
+                      <td>{a.email}</td>
+                      <td>{gb(a.bytes)}</td>
+                      <td style={{ color: 'var(--dim)' }}>
+                        {spread.total > 0 ? `${((a.bytes / spread.total) * 100).toFixed(1)}%` : '\u2014'}
+                      </td>
+                      <td>{num(a.frames)}</td>
+                      <td>{num(a.sessions)}</td>
+                      <td style={{ color: 'var(--dim)' }}>
+                        {a.lastSeen ? new Date(a.lastSeen).toLocaleDateString() : '\u2014'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {accounts.length >= 200 && (
+              <div className="hint" style={{ marginTop: 8 }}>
+                Showing the 200 largest. This is a page to read, not an export — an
+                unbounded row count on a page that also refreshes is how a D1 read allowance
+                goes.
+              </div>
+            )}
+          </>
+        )}
+      </Section>
+
+      <Section n={6} title="Where these rates come from">
         <div className="hint" style={{ marginTop: 0 }}>
           Quoted from Cloudflare&rsquo;s own pricing pages on <b>{r.asOf}</b>, not recalled:{' '}
           R2 ${r.r2.storagePerGbMonth}/GB-month, ${r.r2.classAPerMillion}/million writes,
@@ -346,7 +534,7 @@ function Dashboard({ h }: { h: History }) {
       </Section>
 
       {h.daily.length > 0 && (
-        <Section n={5} title="Stored per day">
+        <Section n={7} title="Stored per day">
           <div className="db-bars">
             {h.daily.map((d) => (
               <div key={d.day} className="db-bar" title={`${d.day} · ${num(d.frames)} frames · ${bytes(d.bytes)}`}>

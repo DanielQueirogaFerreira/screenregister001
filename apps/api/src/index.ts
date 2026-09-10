@@ -1246,7 +1246,7 @@ app.get('/v1/usage/history', async (c) => {
   const where = scope === 'all' ? '1=1' : 'user_id = ?';
   const args = scope === 'all' ? [] : [userId];
 
-  const [totals, series] = await Promise.all([
+  const [totals, series, perAccount] = await Promise.all([
     c.env.DB.prepare(
       `SELECT COUNT(*) AS frames,
               COALESCE(SUM(bytes),0) AS stored_bytes,
@@ -1268,6 +1268,34 @@ app.get('/v1/usage/history', async (c) => {
        WHERE ${where} AND captured_at >= ?
        GROUP BY day ORDER BY day`,
     ).bind(...args, since).all<{ day: string; frames: number; bytes: number }>(),
+
+    /**
+     * Who is holding what, for the whole-estate view.
+     *
+     * Only for `scope=all`, and only because that scope is already operator-only: this is
+     * a list of every account's email beside how much they are storing, which is exactly
+     * the kind of thing that must not fall out of a query someone can reach by changing a
+     * parameter. A mean would not do instead — a hundred accounts averaging a little is a
+     * capacity problem, and a hundred where one holds most of it is a conversation with one
+     * person, and only this tells them apart.
+     *
+     * Capped at 200 rows. This is a page someone reads, not an export, and an unbounded
+     * row count on a page that also refreshes is how the D1 read allowance goes.
+     */
+    scope === 'all'
+      ? c.env.DB.prepare(
+          `SELECT f.user_id,
+                  COALESCE(u.email, '(deleted account)') AS email,
+                  COUNT(*) AS frames,
+                  COALESCE(SUM(f.bytes),0) + COALESCE(SUM(f.original_bytes),0) AS bytes,
+                  COUNT(DISTINCT f.session_id) AS sessions,
+                  MAX(f.captured_at) AS last_seen
+             FROM frames f LEFT JOIN users u ON u.user_id = f.user_id
+            GROUP BY f.user_id
+            ORDER BY bytes DESC
+            LIMIT 200`,
+        ).all<Record<string, string | number | null>>()
+      : Promise.resolve({ results: [] as Record<string, string | number | null>[] }),
   ]);
 
   return c.json({
@@ -1275,11 +1303,19 @@ app.get('/v1/usage/history', async (c) => {
     retention_days: Number(c.env.RETENTION_DAYS ?? 7),
     scope,
     window_days: days,
+    /**
+     * The earliest moment `daily` covers, so a forecast can tell "nothing was recorded
+     * that day" from "we cannot see that day". Without it a projection reads every gap as
+     * a real zero and expires nothing it cannot account for — see growthForecast, where
+     * getting this wrong stranded the total at twice its plateau.
+     */
+    since,
     totals: {
       ...totals,
       bytes: Number(totals?.stored_bytes ?? 0) + Number(totals?.original_bytes ?? 0),
     },
     daily: series.results,
+    accounts: perAccount.results,
   });
 });
 

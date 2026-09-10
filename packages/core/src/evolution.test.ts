@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   boundingSphere, boundsOf, buildTree, coveredPaths, DEFAULT_LAYOUT, directoryIndices,
   energy, eventsBetween, heatAt, livePaths, nodeStats, seedLayout, siblingGroups,
-  spanX, spanY, spanZ, stepLayout, type EvoLog,
+  commitIndexAt, spanX, spanY, spanZ, stepCommit, stepLayout, timelineMarks, type EvoLog,
 } from './evolution.js';
 
 const PATHS = [
@@ -515,5 +515,80 @@ describe('the drift that keeps a settled graph alive', () => {
     // A shared phase makes every node lean the same way at the same moment.
     expect(leaning).toBeGreaterThan(nodes.length * 0.2);
     expect(leaning).toBeLessThan(nodes.length * 0.8);
+  });
+});
+
+describe('moving about in time', () => {
+  const log = {
+    generated_at: '', window_days: 7, since: 1000, until: 2000, head: null,
+    authors: ['a'], paths: ['x', 'y'], alive: [1, 1],
+    events: [
+      { t: 1000, a: 0, s: 'aaa', m: 'first', f: [[0, 'A']] as [number, string][] },
+      { t: 1200, a: 0, s: 'bbb', m: 'second', f: [[0, 'M'], [1, 'A']] as [number, string][] },
+      { t: 1800, a: 0, s: 'ccc', m: 'third', f: [[1, 'M']] as [number, string][] },
+    ],
+    totals: { commits: 3, files_touched: 2, files_at_head: 2, authors: 1, edits: 4 },
+  };
+
+  it('finds the commit in force at a moment', () => {
+    expect(commitIndexAt(log, 999_000)).toBe(-1);
+    expect(commitIndexAt(log, 1_000_000)).toBe(0);
+    expect(commitIndexAt(log, 1_100_000)).toBe(0);
+    expect(commitIndexAt(log, 1_800_000)).toBe(2);
+    expect(commitIndexAt(log, 9_999_000)).toBe(2);
+  });
+
+  it('steps back off a commit it is standing on, rather than staying put', () => {
+    // The one moment anyone presses the button twice, and the one that a naive
+    // "last commit at or before now" search gets wrong by returning where you already are.
+    expect(stepCommit(log, 1_200_000, -1)).toBe(1_000_000);
+    expect(stepCommit(log, 1_800_000, -1)).toBe(1_200_000);
+  });
+
+  it('steps forward to the next commit from between two', () => {
+    expect(stepCommit(log, 1_100_000, 1)).toBe(1_200_000);
+    expect(stepCommit(log, 1_200_000, 1)).toBe(1_800_000);
+  });
+
+  it('reports nothing left rather than clamping silently at either end', () => {
+    expect(stepCommit(log, 1_000_000, -1)).toBeNull();
+    expect(stepCommit(log, 1_800_000, 1)).toBeNull();
+  });
+
+  it('has nowhere to step in an empty history', () => {
+    const empty = { ...log, events: [] };
+    expect(stepCommit(empty, 1_000_000, 1)).toBeNull();
+    expect(commitIndexAt(empty, 1_000_000)).toBe(-1);
+  });
+
+  describe('the activity strip', () => {
+    it('puts each commit in the bucket its time falls in', () => {
+      const marks = timelineMarks(log, 1_000_000, 2_000_000, 10);
+      expect(marks.map((m) => m.commits)).toEqual([1, 1, 1]);
+      expect(marks[0]!.at).toBeCloseTo(0.05, 3);
+      expect(marks[2]!.at).toBeCloseTo(0.85, 3);
+    });
+
+    it('counts edits, so a big commit draws taller than a small one', () => {
+      const marks = timelineMarks(log, 1_000_000, 2_000_000, 10);
+      expect(marks[1]!.edits).toBe(2);
+      expect(marks[0]!.edits).toBe(1);
+    });
+
+    it('keeps a commit sitting exactly on the end inside the last bucket', () => {
+      // Unclamped this indexes one past the array, which in a Float64Array is a silent
+      // no-op write — the commit simply vanishes from the strip with nothing to show why.
+      const marks = timelineMarks(log, 1_000_000, 1_800_000, 4);
+      expect(marks.reduce((n, m) => n + m.commits, 0)).toBe(3);
+      expect(marks[marks.length - 1]!.at).toBeLessThan(1);
+    });
+
+    it('drops the empty stretches rather than returning a row of zeros', () => {
+      expect(timelineMarks(log, 1_000_000, 2_000_000, 200).length).toBe(3);
+    });
+
+    it('is empty when the window has no width', () => {
+      expect(timelineMarks(log, 1_000_000, 1_000_000, 10)).toEqual([]);
+    });
   });
 });

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { ThemeToggle } from '../lib/sections.js';
 import { bytes, perFrame } from '../lib/format.js';
 import { EvolutionCard } from './EvolutionView.js';
 
@@ -427,6 +428,7 @@ export function StatusView() {
           )}
           <a href="/evolution" className="button-link">Codebase evolution</a>
           <a href="/database" className="button-link">Database &amp; cost</a>
+          <ThemeToggle />
           {/* Styled as a button rather than a link: this is the way back, and on a phone
               a text link tucked in the header is easy to miss entirely. */}
           <a href="/" className="button-link">&larr; Back to the recorder</a>
