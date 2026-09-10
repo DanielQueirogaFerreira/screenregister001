@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Copy the repository's own tracked files into the build, so the codebase viewer can show
+ * Copy the repository's own tracked files into the build, so the codebase navigator can show
  * what is inside a node instead of only what has happened to it.
  *
  * One asset per file rather than one bundle of all of them. A single JSON keyed by path

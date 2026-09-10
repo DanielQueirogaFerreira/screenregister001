@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Turn git history into the file the "Codebase Evolution" view animates.
+ * Turn git history into the file the codebase navigator animates.
  *
  * This exists instead of a Gource video, and the reason is storage and honesty rather than
  * taste. A Gource render of this repository is tens of megabytes of MP4 that has to live

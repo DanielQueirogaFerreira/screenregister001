@@ -14,7 +14,7 @@
  *   3xx  operating the platform for other people
  *   4xx  instrumentation — the pages that describe the system rather than use it
  *
- * 401 was assigned first, on the codebase viewer, and keeps its number. Everything else is
+ * 401 was assigned first, on the codebase navigator, and keeps its number. Everything else is
  * arranged around it.
  */
 
@@ -32,7 +32,7 @@ export const AREAS = {
   settings: { id: '201', name: 'settings' },
   auth: { id: '202', name: 'sign-in' },
   admin: { id: '301', name: 'operator console' },
-  evolution: { id: '401', name: 'codebase viewer' },
+  evolution: { id: '401', name: 'codebase navigator' },
   database: { id: '402', name: 'database & cost' },
   status: { id: '403', name: 'status' },
   boot: { id: '404', name: 'starting up' },

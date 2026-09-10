@@ -5,7 +5,7 @@ import type { Mode } from '@sr/core';
  * Which colour mode the app is in.
  *
  * Deliberately not React state and not a provider. The theme has to be readable from the
- * recorder, the database page, the status page and the codebase viewer — four separate
+ * recorder, the database page, the status page and the codebase navigator — four separate
  * roots, two of them rendered before any provider could wrap them — and a context would
  * mean remembering to mount it in each, with a crash or a silent fallback when someone
  * adds a fifth. A module-level store with `useSyncExternalStore` has no mounting order to

@@ -426,7 +426,7 @@ export function StatusView() {
           {isAdmin && (
             <a href="/admin" className="button-link">Operator view</a>
           )}
-          <a href="/evolution" className="button-link">Codebase evolution</a>
+          <a href="/evolution" className="button-link">Codebase navigator</a>
           <a href="/database" className="button-link">Database &amp; cost</a>
           <ThemeToggle />
           {/* Styled as a button rather than a link: this is the way back, and on a phone

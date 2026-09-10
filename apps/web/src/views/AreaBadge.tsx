@@ -93,7 +93,7 @@ function read(): boolean {
 /**
  * Shared between every badge on the page rather than held per component.
  *
- * There is normally one badge, but the codebase viewer draws its own inside the scene so
+ * There is normally one badge, but the codebase navigator draws its own inside the scene so
  * it survives fullscreen — and two badges that disagree about whether they are collapsed
  * would be the clearest possible sign that the control does not mean anything.
  */

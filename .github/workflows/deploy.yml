@@ -72,7 +72,7 @@ jobs:
       - name: Build the codebase-evolution log
         run: pnpm run evolution
 
-      # The repository's own files, so the codebase viewer can show what is inside a node
+      # The repository's own files, so the codebase navigator can show what is inside a node
       # rather than only what has happened to it. One asset per file, uploaded by content
       # hash, so a deploy re-uploads only what changed.
       #
@@ -80,7 +80,7 @@ jobs:
       # reason: this repository is public and already served unauthenticated by
       # raw.githubusercontent.com, so nothing new is exposed. If it is ever made private,
       # remove this step — /evolution sits outside the auth gate.
-      - name: Bundle the source for the codebase viewer
+      - name: Bundle the source for the codebase navigator
         run: pnpm run source-bundle
 
       - name: Resolve account id

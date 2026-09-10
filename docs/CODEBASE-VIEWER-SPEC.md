@@ -1,9 +1,9 @@
-# Codebase Viewer — portable build specification
+# Codebase Navigator — portable build specification
 
-**Version 1.0 · extracted from ScreenRegister (`screenregister001`), area 401.**
+**Version 1.1 · extracted from ScreenRegister (`screenregister001`), area 401.**
 
 This document is a complete, self-contained specification for building the 3D codebase
-evolution viewer. It is written to be handed to another engineer or another AI agent
+navigator: a repository's structure and history as a scene you fly through. It is written to be handed to another engineer or another AI agent
 working in a *different* codebase, who cannot see the original source. Every constant in
 here is the value that actually ships, and every one that looks arbitrary has a reason
 recorded beside it — most of them were arrived at by measuring a failure, not by choosing.
@@ -21,6 +21,34 @@ Paste the following, then this whole file, into the assistant that will build it
 > Where the spec says a behaviour was measured, do not substitute your own judgement for
 > the measurement without re-measuring. Ask me before deviating from the data contract in
 > section 3, because that contract is what lets two implementations interoperate.
+
+### On the name
+
+It was called the *codebase viewer* until this revision. "Viewer" described what it was when
+it only animated history; everything added since has been about **moving through** —
+stepping commit by commit, walking directories with breadcrumbs and a way back, locking the
+camera onto a node, opening files without leaving the folder. Navigator is what it became.
+
+Two things were **not** renamed with it, and the distinction is worth carrying into your own
+build:
+
+- **The route** (`/evolution`) is an address, not a name. It sits in links, bookmarks and in
+  this document's own examples. Names are for people; addresses should not churn because a
+  word improved.
+- **The contract** (`evolution.json`, §3) describes the *data* — the evolution of a git
+  history — not the tool that draws it. Renaming a tool must never rename its interoperability
+  surface. This is the first test of the "stable and additive" rule in §10, and it would have
+  been an easy one to fail.
+
+This document's own filename (`CODEBASE-VIEWER-SPEC.md`) is left alone for the same reason,
+which is worth noticing rather than reading as an oversight: it is the URL people have
+already been handed. Renaming it would have broken every link to the thing arguing that
+addresses should not churn.
+
+Pick one name and use it everywhere else. Before this revision the same thing was called
+three things — the page heading said "Codebase Evolution & Activity", the area badge said
+"codebase viewer", this document said "Codebase Viewer" — which is how a team ends up unsure
+whether two people are discussing the same screen.
 
 ---
 
@@ -64,7 +92,7 @@ paused on the commit you care about, and read — the renderer knows which file 
 
 **Keep these three genuinely separate.** The renderer must never know about git, and the
 producer must never know about rendering. That boundary is what makes the third instance in
-section 10 possible at all: a hosted viewer that connects to arbitrary repositories is the
+section 10 possible at all: a hosted navigator that connects to arbitrary repositories is the
 same renderer pointed at a different producer.
 
 The renderer is a pure client. It fetches three static things and needs no API:
@@ -136,7 +164,7 @@ A flat map of every servable file path to its size in bytes.
 { "apps/web/src/App.tsx": 14231, "README.md": 8102 }
 ```
 
-It exists so the viewer knows a file is there, and how big, **before** fetching it. A "view
+It exists so the navigator knows a file is there, and how big, **before** fetching it. A "view
 content" button that leads to a 404 is worse than no button. It is also the source of truth
 for the folder explorer — see the trap in 8.9 about why the explorer must not be built on
 the event log instead.
@@ -224,13 +252,13 @@ Separately, copy every tracked file to the source root and write `manifest.json`
 
 - Skip the same paths as above, **plus** `.dev.vars` and `.env` and anything else your
   project uses for secrets.
-- Skip files over **512 KB** — bigger than that is not something a viewer should try to
+- Skip files over **512 KB** — bigger than that is not something a navigator should try to
   paint. Report how many were skipped.
 - Files in the tree but not on disk (submodules, partial checkouts) are skipped silently.
 
 > **Security gate — read this before enabling the bundle.** This publishes your repository's
 > source at your application's origin. It is safe *only* if the repository is already
-> public. If your repository is private, or the viewer route sits outside your auth gate,
+> public. If your repository is private, or the navigator's route sits outside your auth gate,
 > **do not ship this step** — or put the source root behind the same authentication as
 > everything else. Verify, do not assume: check the repository's visibility, and scan the
 > bundle for credentials before the first deploy.
@@ -702,9 +730,15 @@ assumption.
 
 ### 6.7 The timeline
 
-A full-width strip **inside the scene**, directly above the controls.
+A full-width strip **inside the scene**, directly above the controls. It is the top of a
+two-row bar and it carries everything that answers **WHEN**: the clock, the scrubber, and
+the commit you are standing on.
 
-Three things, because they are three answers to one question.
+Put the clock here rather than in a readout of its own. It is the playhead's value, and it
+belongs beside the playhead's control — two rows apart, the eye has to travel to check what
+a drag just did.
+
+Four things, because they are four answers to one question.
 
 **The activity histogram behind the track.** Evenly spaced ticks would only repeat what the
 caption says — that commits exist. Bucketing by time and drawing the volume in each turns
@@ -745,11 +779,31 @@ Return `null` at the ends rather than clamping silently, so the buttons can disa
 draw their own track over the marks and the whole strip becomes a plain grey bar. Give the
 thumb `aria-valuetext` naming the commit, so a screen reader says something useful.
 
-### 6.8 Controls — the cockpit
+### 6.8 Controls — the cockpit, and the furniture budget
 
-One row, bottom-right, within reach of a thumb. The alternative is reaching across the page
-for a control and losing your place in the scene. Icons, not words: at 27 px a word is
-either unreadable or the whole button.
+**Two rows. The count is the design, not an accident of what fitted.**
+
+This is the section that went wrong in the original and is worth reading before you lay
+anything out. Every control was added on its own, each one small and each one justified,
+and nobody added up the rows. It reached four stacked rows along the bottom plus a fifth
+cluster in the opposite corner, and measured against the canvas they sat on:
+
+```
+                            before      after
+  laptop,  1400px            26.9%      14.2%
+  narrow,   780px            36.8%      19.5%
+  phone,    390px            46.2%      19.2%
+  phone, fullscreen          22.5%       9.4%
+```
+
+**A navigator whose furniture takes half the view is not a navigator.** Measure this. It is two
+lines of script — the cockpit's height over the canvas's height — and it is the only way the
+number ever gets looked at, because no individual control looks expensive.
+
+Group the rows by **what they answer**, not by what they are:
+
+- **Row one — WHEN:** clock · ⏮ · track · ⏭ · the commit you are on.
+- **Row two — HOW and WHAT:** the identity of what is running, then the controls.
 
 | Control | Behaviour |
 |---|---|
@@ -757,9 +811,22 @@ either unreadable or the whole button.
 | `1×` ‹ | speed tab; expands a row of `[0.1, 0.25, 0.5, 1, 2, 4]` |
 | ◉ / ◎ | element motion: live (drifting) / fixed |
 | ⟳ | slow automatic turn, suspended while the pointer is down |
+| ◱ | view anchors; expands `Front · Side · Top · Reset` |
 | ⛶ | fullscreen |
 | ? | colour key, reachable from inside the scene |
 | Nav ∣ Inspect | interaction mode |
+
+**Fold rarely-used clusters behind one chip.** The four view anchors were four full-width
+buttons, permanently on screen, in the corner furthest from every other control, for
+something reached a few times a session. Behind one chip they cost nothing until wanted.
+**Opening either chip row must close the other** — two open at once stack, and hand back
+exactly what the folding reclaimed.
+
+**Cut readouts that state the default.** An orbit line saying "orbiting a free point"
+permanently is the default state and therefore no information at all, on a row of its own.
+Show it when you have locked onto something, or strayed far enough that the way back is
+worth offering. Same for a "frozen" tag when the play button and the canvas border already
+say so.
 
 **0.1 and 0.25 exist because the fast end is easy and the slow end is where the work is.**
 At 1× a busy day goes past in a couple of seconds and a commit you wanted to read is gone
@@ -796,6 +863,33 @@ anything feels broken.
 **Register the wheel listener by hand with `{ passive: false }`.** React attaches wheel
 listeners passively and a passive listener cannot `preventDefault`, so the page scrolls away
 underneath while you are trying to zoom.
+
+**Make the controls one group, and let the identity truncate.**
+
+This is the rule that makes a two-row bar hold at 390 px, and both of the obvious flex
+settings get it wrong in opposite directions:
+
+- `flex-wrap: wrap` prefers a **second line** to a narrower item — the row grows.
+- `flex-wrap: nowrap` **squeezes every item** instead. Measured at a 390 px stage, that took
+  the round buttons from 24 px to 20 — below a comfortable tap target, and no longer the
+  same size as each other.
+
+So: the row does not wrap, the controls are their own non-shrinking group, and the identity
+readout takes `flex: 0 1 auto; min-width: 0` with `text-overflow: ellipsis`. The identity is
+the part that can afford to lose characters. The buttons are the part that can afford
+neither a row nor a millimetre.
+
+```css
+.cockpit-row { display: flex; flex-wrap: nowrap; align-items: center; min-width: 0; }
+.identity    { flex: 0 1 auto; min-width: 0; overflow: hidden;
+               text-overflow: ellipsis; white-space: nowrap; margin-right: auto; }
+.controls    { flex: none; display: flex; flex-wrap: wrap; }  /* wrap only as a last resort */
+```
+
+**On a phone, drop from the scene whatever the page repeats a few pixels below** — the
+commit is in the caption under the canvas, the build in the page's own badge. In fullscreen
+neither is there, so both come back. That is the whole reason the scene carries its own
+copies at all.
 
 ### 6.9 Auto-framing, and when to stop
 
@@ -943,27 +1037,37 @@ full-height iframe it is pushed out of sight in the one arrangement where it is 
 
 ### 6.14 The HUD
 
-Bottom-left, inside the scene so it survives fullscreen — the page's own version badge is
-outside the fullscreen shell and disappears with it, which is exactly when someone asking
-"which build am I looking at" cannot see the answer.
+Inside the scene so it survives fullscreen — the page's own version badge is outside the
+fullscreen shell and disappears with it, which is exactly when someone asking "which build
+am I looking at" cannot see the answer.
 
-Three lines, reading top-down from least to most changeable so the eye lands on the moving
-number:
+**One line, at the left of the control row.** It began as a three-line stack on a row of its
+own, and that is the shape to avoid: a readout nobody consults while flying should not cost
+a row that everybody looks past. Everything it said is still available — the rest is in its
+tooltip.
 
 ```
-[◉]  AREA 401 · CODEBASE VIEWER      ← where am I      (distinct colour)
-     viewer v1.2.3 · da96955          ← what am I running
-     2026-09-10  21:09:54.332Z        ← the playhead, to the millisecond
+[◉] 401 · v1.2.3 · da96955          ← the area id keeps its own colour
 ```
 
-The area line and the build line are two colours because they answer two different
-questions. The eye collapses both and **its state is shared** with any other badge on the
-page: two badges disagreeing about whether they are collapsed would be the clearest possible
-sign the control means nothing. Persist the choice — a badge that re-expands on every
-navigation is one you have to dismiss over and over.
+The area id and the build are two colours because they answer two different questions —
+where am I, versus what am I running. The eye collapses the line and **its state is shared**
+with any other badge on the page: two badges disagreeing about whether they are collapsed
+would be the clearest possible sign the control means nothing. Persist the choice — a badge
+that re-expands on every navigation is one you have to dismiss over and over.
+
+**The page keeps its own badge as well, and that is not a duplicate.** They are in different
+places and answer for different things: the scene's belongs to the navigator and survives
+fullscreen; the page's sits at the foot of the page, below the legend and the statistics,
+where every other screen in the system puts the same information. Removing the page's
+because the scene had one made that page the only one in the system that could not answer
+"which build is this". A fixed badge floating over page content needs an opaque or blurred
+backdrop — a translucent fade lets the paragraph underneath show *through* it, which is two
+sentences in the same pixels and worse than either.
 
 **The clock is written by the animation loop through a ref, never by React.** Milliseconds
-at 8 Hz would be a re-render per frame for digits nobody reads individually.
+at 8 Hz would be a re-render per frame for digits nobody reads individually. It lives on the
+timeline row rather than here — see 6.7.
 
 Timestamps are UTC to the millisecond with the `Z`. `Z` is unambiguous everywhere, forever,
 to anyone; an offset invites the reader to do arithmetic and disagree with the answer.
@@ -1024,7 +1128,16 @@ Build in this order; each line is independently checkable.
 - [ ] leaving inspect restores what was running
 - [ ] every camera action stops the auto-refit
 
+**Furniture budget** — measure, do not eyeball
+- [ ] cockpit height over canvas height is **under 20%** at 390px, windowed and fullscreen
+- [ ] two rows at every width tested; the control row never wraps by default
+- [ ] round buttons are the same size as each other at every width (no squeeze)
+- [ ] opening one chip row closes the other
+- [ ] the identity truncates before anything else moves
+- [ ] no readout states only its own default
+
 **Timeline**
+- [ ] the clock sits with the scrubber, not in a readout of its own
 - [ ] histogram scaled to the busiest bucket, minimum 15% height
 - [ ] a commit exactly at the end lands in the last bucket
 - [ ] stepping back off a commit goes to the previous one
@@ -1117,12 +1230,27 @@ this wrong and a whole directory disappears into its neighbour's listing with no
 show that it happened. It is worth more tests than it looks like it deserves — the original
 has twenty-one for the tree logic and most are about this.
 
-**8.15 — Locator waits in browser tests.** If you verify with Playwright, read the DOM
+**8.15 — Flex wrap versus flex squeeze.** Covered in 6.8. Both defaults are wrong and they
+are wrong in opposite directions, so trying the other one when the first misbehaves does not
+converge. Group what must not shrink; let one item absorb the slack.
+
+**8.16 — A media query that lands above the rule it overrides.** Equal specificity means
+source order decides, and a narrow-screen block placed earlier in the file than the rule it
+targets does *nothing at all*. This happened twice in one sitting here, and both times the
+code read correctly: the buttons stayed 27px at 390px through two rebuilds while the CSS
+said 24. Only measurement caught it. Put narrow overrides at the end of the stylesheet.
+
+**8.17 — Editing a CSS block by slicing text and losing its closing brace.** An unterminated
+`@media` swallows every rule after it until the next stray `}`, which corrupts the cascade in
+ways that look like unrelated layout bugs. If you edit stylesheets programmatically, count
+braces afterwards — it is three lines and it catches this instantly.
+
+**8.18 — Locator waits in browser tests.** If you verify with Playwright, read the DOM
 through `page.evaluate` rather than locators when checking for *absence* or iterating —
 locators wait the full 30 s timeout on every miss and a sweep takes minutes instead of
 seconds.
 
-**8.16 — Tests that confirm what you hoped.** Two in this project reported success while the
+**8.19 — Tests that confirm what you hoped.** Two in this project reported success while the
 feature was broken: the live-motion test above, and a sync test that reported "0 changes"
 because it kept re-selecting the same node. When a test passes for a feature you have not
 seen work, make it fail on purpose first.
@@ -1153,7 +1281,7 @@ the page.
 
 ---
 
-## 10. The third instance — a hosted viewer for any repository
+## 10. The third instance — a hosted navigator for any repository
 
 The architecture in §2 already supports this; nothing in the renderer needs to change. What
 is missing is a producer that runs against a repository it does not own.
@@ -1202,7 +1330,7 @@ one you add makes it more expensive to change.
 
 ## 11. Scope of this document
 
-This specifies the viewer and nothing else. It deliberately does not cover the surrounding
+This specifies the navigator and nothing else. It deliberately does not cover the surrounding
 application — authentication, storage, the recording pipeline it was extracted from — and
 none of that is needed to build it.
 

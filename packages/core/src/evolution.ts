@@ -1,5 +1,5 @@
 /**
- * The force-directed layout behind the "Codebase Evolution" view.
+ * The force-directed layout behind the codebase navigator.
  *
  * It is the Gource model — a tree of directories and files, sprung apart until it settles,
  * with commits lighting up the files they touched — written as pure functions so it can be

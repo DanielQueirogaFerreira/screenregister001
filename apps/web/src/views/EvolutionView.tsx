@@ -117,7 +117,7 @@ export function EvolutionView() {
   return (
     <div className="app">
       <header>
-        <h1>ScreenRegister <span>· codebase evolution</span></h1>
+        <h1>ScreenRegister <span>· codebase navigator</span></h1>
         <nav>
           <a href="/status" className="button-link">&larr; Status</a>
           <a href="/" className="button-link">Recorder</a>
@@ -216,7 +216,7 @@ function Evolution({ log }: { log: EvoLog }) {
    * Which file's contents are open, or null.
    *
    * Mirrored into the query string so a particular file is a link someone can send —
-   * "look at this one" is most of what a team does with a codebase viewer, and it was
+   * "look at this one" is most of what a team does with a codebase navigator, and it was
    * otherwise a place you could only reach by clicking the right dot.
    */
   const [viewing, setViewing] = useState<string | null>(() => {
@@ -654,7 +654,7 @@ function Evolution({ log }: { log: EvoLog }) {
   return (
     <>
       <div className="panel">
-        <h3 style={{ marginTop: 0 }}>Codebase Evolution &amp; Activity</h3>
+        <h3 style={{ marginTop: 0 }}>Codebase Navigator</h3>
 
         <div className={`evo-layout${full ? ' full' : ''}`} ref={shell}>
           <div className="evo-stage">
@@ -662,7 +662,7 @@ function Evolution({ log }: { log: EvoLog }) {
               ref={canvas}
               className={`evo-canvas${playing ? '' : ' frozen'}`}
               tabIndex={0}
-              aria-label="Codebase evolution, in three dimensions. Drag to turn, shift-drag to pan, scroll to zoom, click a node to inspect it."
+              aria-label="Codebase navigator, in three dimensions. Drag to turn, shift-drag to pan, scroll to zoom, click a node to inspect it."
               onPointerDown={onDown}
               onPointerMove={onMove}
               onPointerUp={onUp}
@@ -1563,7 +1563,7 @@ export function EvolutionCard() {
   return (
     <div className="panel">
       <div className="evo-card-link">
-        <h3 style={{ margin: 0 }}>Codebase Evolution &amp; Activity</h3>
+        <h3 style={{ margin: 0 }}>Codebase Navigator</h3>
         <a href="/evolution" className="button-link">Open the animation &rarr;</a>
       </div>
       {log ? (
