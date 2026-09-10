@@ -492,25 +492,8 @@ tbody tr:has(input[type="checkbox"]:checked) { background: var(--panel-2); }
 .evo-modeline b { color: var(--fg); }
 .evo-modeline.inspect { border-color: #1c4a6b; background: #10283a; }
 
-/* The controls that belong in the scene: bottom-right, small enough to flick without
-   looking away from the graph, which is exactly when a control at the far end of the page
-   fails. */
-.evo-cornerbar {
-  position: absolute; right: 10px; bottom: 10px; display: flex; gap: 6px; align-items: center;
-}
-.evo-modeswitch {
-  display: inline-flex; border: 1px solid var(--line); border-radius: 20px;
-  overflow: hidden; background: rgba(13, 16, 20, .85);
-}
-.evo-spinbtn {
-  width: 26px; height: 26px; padding: 0; border-radius: 50%; font-size: 13px; line-height: 1;
-  background: rgba(13, 16, 20, .85); color: var(--dim); border-color: var(--line);
-}
-.evo-spinbtn.on { color: var(--accent); border-color: var(--accent); }
 /* Spinning only while it is doing something, so the button reports the state it controls. */
-.evo-spinbtn.on span[aria-hidden] { display: inline-block; animation: evospin 3.2s linear infinite; }
 @keyframes evospin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .evo-spinbtn.on span[aria-hidden] { animation: none; } }
 .sr-only {
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
@@ -534,7 +517,7 @@ tbody tr:has(input[type="checkbox"]:checked) { background: var(--panel-2); }
 
 /* What the camera is turning around, bottom-right, opposite the clock. */
 .evo-orbit-readout {
-  position: absolute; right: 10px; bottom: 116px; display: flex; align-items: center; gap: 8px;
+  position: absolute; right: 10px; bottom: 45px; display: flex; align-items: center; gap: 8px;
   font: 11px/1 ui-monospace, monospace; color: var(--dim); pointer-events: none;
 }
 .evo-orbit-readout .locked { color: var(--accent); }
@@ -632,48 +615,121 @@ tbody tr:has(input[type="checkbox"]:checked) { background: var(--panel-2); }
   white-space: nowrap; }
 
 /* --- the cockpit ---------------------------------------------------------- */
-/* Everything needed while looking at the graph, in one corner within reach of a thumb.
-   Above the mode switch so the two never fight for the same pixels. */
-/* Spans the stage rather than hugging the right edge, so the speed row has the whole
-   width to align into. Anchored right and it grew rightward off the canvas — measured at
-   414px, where all six chips landed outside the stage and the open row was unreachable. */
+/*
+  One row, bottom right, with the orbit readout as a second line above it.
+  It was two rows of controls with the spin icon in both — a duplicate that came from
+  adding it to the cockpit without removing the older one.
+
+  Controls are 20% smaller than they were (34px to 27px). That is still above the 24px
+  WCAG 2.5.8 minimum, but well under the 44px a thumb wants, so the hit area is extended
+  past the paint with a pseudo-element: 27px to look at, 44px to hit. The extension is
+  capped by the gap so two neighbours can never claim the same tap, which would be worse
+  than a small target.
+*/
 .evo-cockpit {
-  position: absolute; left: 10px; right: 10px; bottom: 74px;
+  position: absolute; left: 10px; right: 10px; bottom: 10px;
   display: flex; flex-direction: column; align-items: flex-end; gap: 6px;
   pointer-events: none;
 }
 .evo-cockpit > * { pointer-events: auto; }
-.evo-cockpit-row { display: flex; gap: 6px; }
+/* 5px gaps, not 7: the row needs to fit one line on a phone, and seven gaps at two pixels
+   each is fourteen pixels of the twenty it was short by. It still wraps rather than clips
+   below about 390px wide, which is honest degradation — nothing is hidden or cut off.
+   The hit-area extension is capped to the gap so neighbours never claim the same tap. */
+.evo-cockpit-row { display: flex; gap: 5px; align-items: center; flex-wrap: wrap;
+  justify-content: flex-end; }
 .evo-cbtn {
-  width: 34px; height: 34px; padding: 0; border-radius: 50%;
-  font-size: 13px; line-height: 1; display: inline-flex; align-items: center;
+  position: relative;
+  width: 27px; height: 27px; padding: 0; border-radius: 50%;
+  font-size: 11px; line-height: 1; display: inline-flex; align-items: center;
   justify-content: center; background: rgba(13, 16, 20, .85); color: var(--dim);
   border-color: var(--line);
 }
+/* The thumb target, invisible and outside the layout. Height runs past the button because
+   there is empty canvas above and below; width stops inside the gap. */
+.evo-cbtn::after {
+  content: ''; position: absolute; left: 50%; top: 50%;
+  width: 32px; height: 44px; transform: translate(-50%, -50%);
+}
 .evo-cbtn.on { color: var(--accent); border-color: var(--accent); }
 /* Wider than round: it carries a number and an arrow, not a glyph. */
-.evo-speedtab { width: auto; padding: 0 8px; border-radius: 18px; font-size: 11px; gap: 1px; }
-.evo-speedtab i { font-style: normal; font-size: 13px; }
-.evo-cbtn.on span[aria-hidden] { display: inline-block; }
-.evo-cockpit .evo-cbtn.on span[aria-hidden] { animation: evospin 3.2s linear infinite; }
-@media (prefers-reduced-motion: reduce) { .evo-cockpit .evo-cbtn.on span[aria-hidden] { animation: none; } }
+.evo-speedtab { width: auto; padding: 0 7px; border-radius: 16px; font-size: 10px; gap: 1px; }
+.evo-speedtab::after { width: 100%; }
+.evo-speedtab i { font-style: normal; font-size: 12px; }
+.evo-cockpit .evo-cbtn.on span[aria-hidden] {
+  display: inline-block; animation: evospin 3.2s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .evo-cockpit .evo-cbtn.on span[aria-hidden] { animation: none; }
+}
 
 /* The speed chips, opening as a row above the cockpit rather than a dropdown: a menu that
-   covers the graph hides the thing you are setting the speed of. */
-/* display:none rather than a collapsing max-width. The animated version clipped the row
+   covers the graph hides the thing you are setting the speed of.
+   display:none rather than a collapsing max-width — the animated version clipped the row
    with overflow:hidden, which hid it visually while leaving the buttons laid out off the
-   canvas — invisible and still in the tab order. Wrapping, right-aligned, so six chips fit
-   a phone. */
+   canvas, invisible and still in the tab order. */
 .evo-speeds { display: none; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
 .evo-speeds.open { display: flex; animation: evofade .18s ease both; }
 @keyframes evofade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .evo-speeds.open { animation: none; } }
 .evo-speeds button {
-  padding: 3px 9px; font-size: 11px; border-radius: 16px; white-space: nowrap;
+  position: relative;
+  padding: 3px 8px; font-size: 10px; border-radius: 14px; white-space: nowrap;
   background: rgba(13, 16, 20, .9); color: var(--dim);
+}
+.evo-speeds button::after {
+  content: ''; position: absolute; inset: -8px -2px;
 }
 .evo-speeds button.on { background: var(--accent); color: #04101d; border-color: var(--accent);
   font-weight: 600; }
+
+/* The mode pair, last in the row: least often touched, and the only control with words. */
+.evo-modeswitch {
+  display: inline-flex; border: 1px solid var(--line); border-radius: 16px;
+  overflow: hidden; background: rgba(13, 16, 20, .85);
+}
+/* Same height as the round buttons beside it. A control row whose segments differ by four
+   pixels reads as unfinished, and the difference is invisible as a cause — it just looks
+   slightly wrong. */
+.evo-modeswitch button {
+  position: relative;
+  border: none; border-radius: 0; background: transparent; color: var(--dim);
+  font-size: 10px; padding: 0 8px; height: 27px; letter-spacing: .3px;
+}
+.evo-modeswitch button::after { content: ''; position: absolute; inset: -9px 0; }
+.evo-modeswitch button.on { background: var(--accent); color: #04101d; font-weight: 600; }
+.evo-modeswitch button + button { border-left: 1px solid var(--line); }
+.evo-modeswitch button.on + button { border-left-color: transparent; }
+
+/* --- the colour key, inside the scene ------------------------------------- */
+/* Fullscreen leaves the page below behind, and fullscreen is exactly when an operator is
+   looking hardest at colours they have not memorised. Same component as the footnotes
+   under the canvas, so the two cannot drift apart. */
+.evo-legend-card {
+  position: absolute; left: 10px; right: 10px; bottom: 46px;
+  max-width: 460px; margin-left: auto;
+  background: rgba(13, 16, 20, .96); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 10px 12px;
+  max-height: 60%; overflow-y: auto;
+}
+.evo-legend-head { display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; margin-bottom: 4px; }
+.evo-legend-head b { font-size: 12px; }
+.evo-legend-head button { padding: 0; width: 22px; height: 22px; line-height: 1; flex: none; }
+.evo-legend-card .evo-key { margin-top: 8px; }
+.evo-legend-card .evo-key b { flex: 0 0 100%; min-width: 0; }
+/* The two marks that are drawn rather than filled: the pivot crosshair and the ring the
+   selected node wears. Shown as themselves, because a swatch that is not the shape on the
+   canvas is explaining something the reader cannot find. */
+.evo-key i.cross {
+  border-radius: 0; background: none; position: relative; width: 11px; height: 11px;
+}
+.evo-key i.cross::before, .evo-key i.cross::after {
+  content: ''; position: absolute; background: #4a5666;
+}
+.evo-key i.cross::before { left: 5px; top: 0; width: 1px; height: 11px; }
+.evo-key i.cross::after { top: 5px; left: 0; height: 1px; width: 11px; }
+.evo-key i.sel { background: none; border: 2px solid #e6edf5; box-sizing: border-box; }
 
 /* --- fullscreen ----------------------------------------------------------- */
 /* Portrait first: on a phone held upright there is no room for a column beside the canvas,

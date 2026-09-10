@@ -175,6 +175,7 @@ function Evolution({ log }: { log: EvoLog }) {
   const [strayed, setStrayed] = useState(0);
   /** Whether the speed chips are showing. Collapsed by default: it is six extra targets. */
   const [speedOpen, setSpeedOpen] = useState(false);
+  const [legendOpen, setLegendOpen] = useState(false);
   const [full, setFull] = useState(false);
   const shell = useRef<HTMLDivElement>(null);
 
@@ -633,41 +634,43 @@ function Evolution({ log }: { log: EvoLog }) {
                 >
                   {full ? '⤡' : '⛶'}
                 </button>
+                {/* The colour key, reachable from inside the scene.
+                    It also lives under the canvas, but fullscreen leaves that behind — and
+                    fullscreen is exactly when an operator is looking hardest at colours
+                    they have not memorised. */}
+                <button
+                  className={`evo-cbtn${legendOpen ? ' on' : ''}`}
+                  aria-expanded={legendOpen}
+                  title="What the colours mean"
+                  aria-label="Colour key"
+                  onClick={() => setLegendOpen((v) => !v)}
+                >
+                  ?
+                </button>
+                {/* Last in the row because it is the least often touched of the six, and the
+                    only one carrying words. */}
+                <div className="evo-modeswitch" role="group" aria-label="Interaction mode">
+                  <button
+                    className={mode === 'navigate' ? 'on' : ''}
+                    aria-pressed={mode === 'navigate'}
+                    title="Navigate — alive, fly around, click to pick out"
+                    onClick={() => enterMode('navigate')}
+                  >
+                    Nav
+                  </button>
+                  <button
+                    className={mode === 'inspect' ? 'on' : ''}
+                    aria-pressed={mode === 'inspect'}
+                    title="Inspect — held still, orbits what you select, full detail"
+                    onClick={() => enterMode('inspect')}
+                  >
+                    Inspect
+                  </button>
+                </div>
               </div>
             </div>
 
-            <div className="evo-cornerbar">
-              <div className="evo-modeswitch" role="group" aria-label="Interaction mode">
-                <button
-                  className={mode === 'navigate' ? 'on' : ''}
-                  aria-pressed={mode === 'navigate'}
-                  title="Navigate — alive, fly around, click to pick out"
-                  onClick={() => enterMode('navigate')}
-                >
-                  Nav
-                </button>
-                <button
-                  className={mode === 'inspect' ? 'on' : ''}
-                  aria-pressed={mode === 'inspect'}
-                  title="Inspect — held still, orbits what you select, full detail"
-                  onClick={() => enterMode('inspect')}
-                >
-                  Inspect
-                </button>
-              </div>
-              {/* Its own button rather than a third segment of the pair beside it: Nav and
-                  Inspect are two answers to one question, spin is a separate thing that is
-                  either on or off. Sharing their shape would say otherwise. */}
-              <button
-                className={`evo-spinbtn${spin ? ' on' : ''}`}
-                aria-pressed={spin}
-                title={spin ? 'Stop the slow turn' : 'Turn the graph slowly on its own'}
-                onClick={() => setSpin((v) => !v)}
-              >
-                <span aria-hidden="true">⟳</span>
-                <span className="sr-only">Auto-rotate</span>
-              </button>
-            </div>
+            {legendOpen && <LegendCard onClose={() => setLegendOpen(false)} />}
 
             {/* Where the camera is turning, and the way back. The crosshair on the canvas
                 marks the pivot; this says what the pivot is and how far it has wandered. */}
@@ -734,25 +737,7 @@ function Evolution({ log }: { log: EvoLog }) {
           )}
         </div>
 
-        <div className="evo-key">
-          <b>The ring — what just happened</b>
-          {(['A', 'M', 'D'] as const).map((a) => (
-            <span key={a}><i className="ring" style={{ borderColor: ACTION_COLOUR[a] }} /> {ACTION_LABEL[a]}</span>
-          ))}
-          <span className="evo-key-note">expands and fades over a few seconds</span>
-        </div>
-        <div className="evo-key">
-          <b>The dot — what the file is</b>
-          {FILE_KINDS.map((k) => (
-            <span key={k.id} title={k.hint}>
-              <i style={{ background: k.colour }} /> {k.label}
-            </span>
-          ))}
-          <span className="evo-key-note">
-            always, brightening when touched; a deleted file shows faded, and only while its
-            own commit is on screen
-          </span>
-        </div>
+        <Legend />
 
         <div className="hint evo-help">
           <b>Drag</b> to turn — in any direction, without end · <b>Shift-drag</b> or
@@ -819,6 +804,61 @@ function Evolution({ log }: { log: EvoLog }) {
     </>
   );
 }
+
+/**
+ * The colour key.
+ *
+ * One component, rendered in two places: under the canvas where there is room for it, and
+ * as a card inside the scene for fullscreen — where the page below is gone and an operator
+ * has nothing else to read a colour against. Two hand-written copies of a key is how a
+ * legend drifts from what the canvas draws, which is the bug that put an undocumented
+ * amber on this graph in the first place.
+ */
+function Legend({ inScene = false, onClose }: { inScene?: boolean; onClose?: () => void }) {
+  return (
+    <div className={inScene ? 'evo-legend-card' : ''}>
+      {inScene && (
+        <div className="evo-legend-head">
+          <b>What the colours mean</b>
+          <button onClick={onClose} title="Close" aria-label="Close the colour key">×</button>
+        </div>
+      )}
+      <div className="evo-key">
+        <b>The ring — what just happened</b>
+        {(['A', 'M', 'D'] as const).map((a) => (
+          <span key={a}>
+            <i className="ring" style={{ borderColor: ACTION_COLOUR[a] }} /> {ACTION_LABEL[a]}
+          </span>
+        ))}
+        <span className="evo-key-note">expands and fades over a few seconds</span>
+      </div>
+      <div className="evo-key">
+        <b>The dot — what the file is</b>
+        {FILE_KINDS.map((k) => (
+          <span key={k.id} title={k.hint}>
+            <i style={{ background: k.colour }} /> {k.label}
+          </span>
+        ))}
+        <span className="evo-key-note">
+          always, brightening when touched; a deleted file shows faded, and only while its
+          own commit is on screen
+        </span>
+      </div>
+      <div className="evo-key">
+        <b>On the canvas</b>
+        <span><i className="cross" /> the orbit centre — what the camera turns around</span>
+        <span><i className="sel" /> the selected node</span>
+        <span className="evo-key-note">
+          nearer nodes are larger and brighter, and hide what is behind them
+        </span>
+      </div>
+    </div>
+  );
+}
+
+const LegendCard = ({ onClose }: { onClose: () => void }) => (
+  <Legend inScene onClose={onClose} />
+);
 
 /** What one selected node is, and what has happened to it. */
 function Inspector({
