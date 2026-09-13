@@ -235,7 +235,27 @@ function RecorderApp() {
   if (!account) {
     return (
       <>
-        <AuthView onSignedIn={(user) => { setAccount(user); setBootError(null); }} />
+        <AuthView onSignedIn={(user) => {
+          /*
+           * Back to where you were going.
+           *
+           * The consent screen for a connecting assistant sends an unauthenticated visitor
+           * here with ?next= holding its own URL and every OAuth parameter. Without this
+           * they sign in, land on the recorder, and the app that sent them is simply
+           * waiting — the flow does not fail, it silently does not finish.
+           *
+           * Only same-origin paths are honoured. `next` arrives in a URL, which means
+           * anyone can put anything in it, and following an absolute one would turn the
+           * sign-in page into an open redirect.
+           */
+          const next = new URLSearchParams(location.search).get('next');
+          if (next && next.startsWith('/') && !next.startsWith('//')) {
+            location.replace(next);
+            return;
+          }
+          setAccount(user);
+          setBootError(null);
+        }} />
         <AreaBadge area={AREAS.auth} signedIn={false} />
       </>
     );

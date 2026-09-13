@@ -10,6 +10,7 @@ import {
 import { hashPassword, validatePassword, verifyPassword } from './password.js';
 import { buildStatus, pruneStatusTables, recordProbes, runProbes } from './status.js';
 import { handleMcp } from './mcp.js';
+import { oauth } from './oauth.js';
 import { buildScenes, listFrames, resolveWindow } from './queries.js';
 import { StampError, decodeStamp, ulid } from '@sr/schema';
 import { HEARTBEAT_INTERVAL_MS, LIVE_WINDOW_MS, adminAudit, liveCutoff } from './admin.js';
@@ -609,6 +610,37 @@ app.get('/v1/admin/events', adminOnly(async (c) => {
   ).all();
   return c.json({ events: results });
 }));
+
+/**
+ * The OAuth endpoints mount BEFORE any auth middleware, and must.
+ *
+ * Discovery and registration happen before anybody has signed in — that is the entire
+ * point of them. The consent screen does its own session check and redirects to sign-in
+ * when there is none, rather than answering 401 to a person following a link.
+ */
+app.route('/', oauth);
+
+/**
+ * The 401 that starts an OAuth flow.
+ *
+ * A client with no credential has to be told where to look, and RFC 9728 says how: the
+ * WWW-Authenticate header names the resource metadata document, which names the
+ * authorisation server. Without this header the discovery chain has no first link and
+ * "paste the URL and press next" ends at a bare 401.
+ *
+ * Wrapped around requireAuth rather than replacing it, so there is exactly one place that
+ * decides whether a request is authenticated.
+ */
+app.use('/mcp', async (c, next) => {
+  await next();
+  if (c.res.status === 401) {
+    const origin = new URL(c.req.url).origin;
+    c.res.headers.set(
+      'WWW-Authenticate',
+      `Bearer realm="screenregister", resource_metadata="${origin}/.well-known/oauth-protected-resource"`,
+    );
+  }
+});
 
 app.use('/mcp', requireAuth);
 

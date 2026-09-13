@@ -71,20 +71,34 @@ Requires **Developer Mode** and a paid plan (Plus, Pro, Business, Enterprise or 
 Settings → Apps & Connectors → Create. Paste the URL, choose **Token**, paste the token.
 ChatGPT connects only to remote HTTPS servers, which this is.
 
-### Grok (web) — works today
+### Gemini (Spark / Connected Apps) — OAuth, no token to paste
 
-`grok.com/connectors` → New Connector → Custom → paste the URL.
+Settings & help → Connected Apps → *Add a custom app* → paste
+`https://<your-worker>/mcp` → Next.
 
-### Gemini (Spark / Connected Apps) — works today
+**There is no token field, and that is not an oversight on Google's part — Spark speaks
+OAuth 2.1 and nothing else.** What happens when you press Next:
 
-Settings & help → Connected Apps → *Add a custom app* → paste the URL.
+1. Spark fetches `/.well-known/oauth-authorization-server` from your Worker.
+2. It finds `registration_endpoint` and **registers itself** — no client ID to create by
+   hand.
+3. It opens a consent screen served by your Worker. If you are not signed in, you are sent
+   to sign in first and returned to exactly where you were.
+4. You press **Allow**. Spark receives a code, exchanges it with PKCE, and gets a read-only
+   token that expires in 90 days.
 
-### claude.ai (web) — the one that needs more
+The grant then appears in **Settings → Account & security** beside your hand-made tokens,
+with the same last-used column and the same revoke button.
 
-The custom-connector UI is built around OAuth. Static bearer tokens are available through
-admin-entered request headers, in beta and at organisation level, so for a personal account
-this is the client that does not yet work with a pasted token. Use Claude Code for now, or
-wait for the OAuth work in §6.
+### Grok (web) — same flow
+
+`grok.com/connectors` → New Connector → Custom → paste the URL. Grok discovers and
+registers the same way.
+
+### claude.ai (web) — same flow
+
+Its connector UI is built around OAuth too, which this now speaks. Claude Code remains the
+simpler route if you are at a terminal anyway.
 
 **A client that does not speak MCP at all** can use the REST surface instead: the same
 reads are described in the OpenAPI document the Worker serves, with the same Bearer token.
@@ -171,11 +185,10 @@ That is the right posture to borrow.
 
 ## 6. What is deliberately not built yet
 
-**OAuth.** Bearer tokens work in six of the seven clients above, and OAuth 2.1 with Dynamic
-Client Registration would unlock the seventh while also being strictly better everywhere
-else: no long-lived credential sitting inside a vendor's product, and revocation from your
-side without rotating anything. It is a few days of work and it is the next thing worth
-doing here.
+**Refresh tokens.** A grant lasts 90 days and then the assistant has to be reconnected by
+hand. Refresh tokens would make that invisible. Deliberately skipped for now: a refresh
+token is a credential that renews itself, and for a screen archive an access that quietly
+never ends is the thing to think hardest about before building.
 
 **Per-token time windows.** A token that can only see the last two days, or one named week.
 The schema has no column for it and every tool would need the check. Worth it once more
@@ -186,6 +199,25 @@ above and a good first step if you want an assistant surveying your week without
 leaving.
 
 ---
+
+## 6a. How the OAuth side works, if you are wondering what you approved
+
+- **Registration is open**, as the MCP specification intends. Anyone can register a client.
+  A `client_id` on its own reaches nothing: every token still requires you, signed in, to
+  press Allow on a consent screen served by your own Worker.
+- **Every token it issues is read-only**, whatever was asked for. An authorisation server
+  that could mint write access to a screen archive on behalf of a web app is not a trade
+  worth having.
+- **PKCE with S256 is required**, not merely offered. A flow without it is refused rather
+  than downgraded.
+- **Codes live 60 seconds and are spent once.** A replayed code fails even if it arrives
+  first.
+- **Redirects are matched exactly** against what the client registered — no prefix match,
+  no origin match. The one exception is `http://localhost`, at any port, for desktop
+  clients that cannot know their port in advance; host and path must still match.
+- **The consent screen is plain HTML served by the Worker**, not a route in the app. It
+  must be impossible to reach in a state where it does not yet know whose data is being
+  consented to.
 
 ## 7. Operational rules worth keeping
 
