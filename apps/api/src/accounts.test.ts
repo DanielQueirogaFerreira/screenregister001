@@ -181,6 +181,35 @@ describe('rate limiting', () => {
   });
 });
 
+describe('an assistant\'s own rate bucket', () => {
+  it('keeps one account\'s assistant from spending another account\'s allowance', async () => {
+    // The bucket is keyed by user, and that is the point: these tokens live inside other
+    // companies' products, and a noisy or leaked one must not be able to lock anybody else
+    // out of their own history.
+    const { env } = fakeDb();
+    for (let i = 0; i < 300; i++) await rateLimit(env, 'mcp:user-a', 240, 60_000);
+    expect((await rateLimit(env, 'mcp:user-a', 240, 60_000)).allowed).toBe(false);
+    expect((await rateLimit(env, 'mcp:user-b', 240, 60_000)).allowed).toBe(true);
+  });
+
+  it('leaves room for a conversation and not for a sweep', async () => {
+    // A person asking about their week makes a handful of calls a minute. Walking the
+    // whole archive makes thousands. The ceiling has to be invisible to the first and
+    // slow enough for the second to show up in last_used_at before it finishes.
+    const { env } = fakeDb();
+    const conversation = [];
+    for (let i = 0; i < 40; i++) conversation.push(await rateLimit(env, 'mcp:u', 240, 60_000));
+    expect(conversation.every((r) => r.allowed)).toBe(true);
+
+    const { env: env2 } = fakeDb();
+    let allowed = 0;
+    for (let i = 0; i < 2000; i++) {
+      if ((await rateLimit(env2, 'mcp:u', 240, 60_000)).allowed) allowed++;
+    }
+    expect(allowed).toBe(240);
+  });
+});
+
 describe('read-token scope', () => {
   it('allows reads by method', () => {
     expect(isReadOnly('GET', '/v1/sessions')).toBe(true);

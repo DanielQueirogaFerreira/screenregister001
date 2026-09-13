@@ -5,7 +5,7 @@ import { AuthNotConfiguredError, isAuthConfigured } from './auth.js';
 import { authRoutes, requireAuth } from './auth-routes.js';
 import { healthFacts, isLocalhostOrigin, localhostAllowed } from './health.js';
 import {
-  isPlausibleEmail, normaliseEmail, pruneAuthTables, revokeAllSessions,
+  isPlausibleEmail, normaliseEmail, pruneAuthTables, rateLimit, revokeAllSessions,
 } from './accounts.js';
 import { hashPassword, validatePassword, verifyPassword } from './password.js';
 import { buildStatus, pruneStatusTables, recordProbes, runProbes } from './status.js';
@@ -615,8 +615,26 @@ app.use('/mcp', requireAuth);
 /**
  * MCP endpoint. Same device token as the REST API — an MCP client that can send an
  * Authorization header is all that is required.
+ *
+ * Rate limited per account, which is not about cost. A token handed to an assistant is a
+ * credential living inside somebody else's product, and the failure that matters is not a
+ * chatty model: it is a token that has leaked and is being used to walk the whole archive.
+ * A human asking about their week makes a handful of calls a minute; a sweep makes
+ * thousands. The ceiling is high enough never to be noticed by the first and low enough
+ * that the second takes long enough to spot in `last_used_at`.
  */
-app.all('/mcp', (c) => handleMcp(c.req.raw, c.env, c.get('me')));
+app.all('/mcp', async (c) => {
+  const { userId } = c.get('me');
+  const limit = await rateLimit(c.env, `mcp:${userId}`, 240, 60_000);
+  if (!limit.allowed) {
+    return c.json({
+      jsonrpc: '2.0',
+      error: { code: -32000, message: 'Rate limit reached. Try again in a minute.' },
+      id: null,
+    }, 429);
+  }
+  return handleMcp(c.req.raw, c.env, c.get('me'));
+});
 
 
 /**

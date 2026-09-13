@@ -43,6 +43,15 @@ export function AccountPanel({ account, emailConfigured, onSignedOut, onEraseRec
   const [next, setNext] = useState('');
   const [tokenName, setTokenName] = useState('');
   const [tokenScope, setTokenScope] = useState<'read' | 'write'>('read');
+  /**
+   * How long the token lives.
+   *
+   * Defaulted to 90 days rather than to forever, because these are pasted into other
+   * companies' products and the one that leaks is always the one nobody remembered
+   * issuing. The API has supported an expiry since the first migration; only this form
+   * never offered it, so every token ever created here was permanent.
+   */
+  const [tokenDays, setTokenDays] = useState(90);
   const [freshToken, setFreshToken] = useState<string | null>(null);
   const [verifyLink, setVerifyLink] = useState<string | null>(null);
 
@@ -193,8 +202,17 @@ export function AccountPanel({ account, emailConfigured, onSignedOut, onEraseRec
           <option value="read">Read only</option>
           <option value="write">Read &amp; write</option>
         </select>
+        <select value={tokenDays} onChange={(e) => setTokenDays(Number(e.target.value))}
+          style={{ width: 120 }} disabled={busy} aria-label="Expires">
+          <option value={30}>30 days</option>
+          <option value={90}>90 days</option>
+          <option value={365}>1 year</option>
+          <option value={0}>Never</option>
+        </select>
         <button disabled={busy || !tokenName.trim()} onClick={() => void run(async () => {
-          const created = await createToken(tokenName.trim(), tokenScope);
+          const created = await createToken(
+            tokenName.trim(), tokenScope, tokenDays > 0 ? tokenDays : undefined,
+          );
           setFreshToken(created.token);
           setTokenName('');
           return null;
@@ -203,12 +221,15 @@ export function AccountPanel({ account, emailConfigured, onSignedOut, onEraseRec
 
       {tokens.length > 0 && (
         <table style={{ marginTop: 10 }}>
-          <thead><tr><th>Name</th><th>Scope</th><th>Last used</th><th></th></tr></thead>
+          <thead><tr><th>Name</th><th>Scope</th><th>Expires</th><th>Last used</th><th></th></tr></thead>
           <tbody>
             {tokens.map((t) => (
               <tr key={t.id}>
                 <td>{t.name}</td>
                 <td>{t.scope}</td>
+                <td style={{ color: t.expires_at ? 'var(--dim)' : 'var(--warn)' }}>
+                  {t.expires_at ? when(t.expires_at) : 'never'}
+                </td>
                 <td style={{ color: 'var(--dim)' }}>{when(t.last_used_at)}</td>
                 <td>
                   <button className="danger" disabled={busy} onClick={() => void run(async () => {
