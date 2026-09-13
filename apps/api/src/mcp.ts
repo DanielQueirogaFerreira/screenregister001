@@ -211,6 +211,14 @@ export function buildServer(env: Env, me: Principal): McpServer {
           `SELECT COUNT(*) AS n FROM frames WHERE user_id = ? AND ocr_text IS NOT NULL`,
           me.userId,
         ).first<{ n: number }>();
+        const unscanned = await q(
+          `SELECT COUNT(*) AS n FROM frames WHERE user_id = ? AND enrich_status = 'inconclusive'`,
+          me.userId,
+        ).first<{ n: number }>();
+        const caveat = unscanned && unscanned.n > 0
+          ? `\n\nNote: ${unscanned.n} frame(s) in this account could not be read and carry no ` +
+            'text at all. They are not covered by this search, so a miss is not proof of absence.'
+          : '';
         if (!anyText || anyText.n === 0) {
           return text(
             'No screen text has been recorded for this account, so there is nothing to ' +
@@ -218,7 +226,9 @@ export function buildServer(env: Env, me: Principal): McpServer {
             'not yet available — this is NOT evidence that the thing was never on screen.',
           );
         }
-        return text(`Nothing matching "${args.query}" between ${clock(w.from)} and ${clock(w.to)}.`);
+        return text(
+          `Nothing matching "${args.query}" between ${clock(w.from)} and ${clock(w.to)}.${caveat}`,
+        );
       }
 
       return text(

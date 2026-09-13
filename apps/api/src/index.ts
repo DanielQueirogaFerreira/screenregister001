@@ -173,15 +173,32 @@ app.get('/v1/search', async (c) => {
     c.req.query('limit') ? Number(c.req.query('limit')) : 50,
   );
 
-  const indexed = await c.env.DB.prepare(
-    `SELECT COUNT(*) AS n FROM frames WHERE user_id = ? AND ocr_text IS NOT NULL`,
-  ).bind(userId).first<{ n: number }>();
+  /**
+   * How much of the archive this search could not see.
+   *
+   * A frame whose read was inconclusive holds no text, so it cannot match anything — and a
+   * caller that does not know how many of those exist will read "no results" as "it never
+   * happened". These frames are also the ones stored without text-secret masking, so the
+   * count is the honest measure of both blind spots at once.
+   */
+  const coverage = await c.env.DB.prepare(
+    `SELECT
+       SUM(CASE WHEN ocr_text IS NOT NULL THEN 1 ELSE 0 END) AS searchable,
+       SUM(CASE WHEN enrich_status = 'inconclusive' THEN 1 ELSE 0 END) AS unread,
+       COUNT(*) AS total
+     FROM frames WHERE user_id = ?`,
+  ).bind(userId).first<{ searchable: number; unread: number; total: number }>();
 
   return c.json({
     query,
     window: w,
-    /** How many frames have any text at all. Zero means "nothing to search", not "no match". */
-    frames_with_text: Number(indexed?.n ?? 0),
+    coverage: {
+      /** Frames carrying text. Zero means "nothing to search", never "no match". */
+      searchable: Number(coverage?.searchable ?? 0),
+      /** Frames the reader could not resolve. Invisible to this search by construction. */
+      unread: Number(coverage?.unread ?? 0),
+      total: Number(coverage?.total ?? 0),
+    },
     results: rows.map((f) => ({
       frame_id: f.frame_id,
       session_id: f.session_id,

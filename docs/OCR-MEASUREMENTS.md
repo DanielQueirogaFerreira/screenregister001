@@ -113,19 +113,64 @@ A second consequence, already built into `buildFrameText`: the key scored **0.39
 the transcript, the one word that had to be masked would have been dropped before anything
 looked at it. Doubtful words are too weak to index and strong enough to redact.
 
-## Still to decide, and it is a policy question
+## Telling "no text" from "could not read it" — and a heuristic that failed
 
-When OCR fails or times out, there are no words, and **"no words" and "no secrets" are the
-same shape**. Three honest options:
+Decided: **frames are always stored**, with field and zone masking, and a read that could
+not resolve the frame marks it `inconclusive` rather than discarding it. It is then owed a
+second look on the server. The cost of that choice is explicit — an inconclusive frame is
+stored **without text-secret masking**, because there was no text to scan — so every
+consumer is told how many such frames exist.
 
-1. **Store the frame with field and zone masking only**, as today, and record that the text
-   pass failed. Keeps recording working; means a frame nobody scanned is stored.
-2. **Drop the frame.** Never store what was not scanned. Safest, and loses moments on a
-   slow machine without saying why.
-3. **Pause capture** and tell the person. Most honest, most disruptive.
+That requires separating two outcomes that look identical: a frame with genuinely nothing
+to read, and a frame whose text the reader could not resolve.
 
-This is not a decision to make silently in a `catch` block. `scanFrame` returns `failed`
-rather than an empty result for exactly that reason.
+**The obvious heuristic does not work, and it is worth recording why.** The idea was to
+measure fine structure in the frame — text being the highest-frequency thing a screen
+normally contains — and use it to break the tie. Seven scenes, each rendered at 1920×1080
+and read at the shipped quality:
+
+| scene | detail | words | conf |
+|---|---|---|---|
+| dense text (editor + terminal) | 0.0452 | 211 | 0.69 |
+| sparse text (two labels) | 0.0008 | 3 | 0.96 |
+| tiny low-contrast text | **0.0000** | 108 | 0.31 |
+| photo-like gradient | **0.0325** | 0 | 0 |
+| video still | 0.0035 | 0 | 0 |
+| blank desktop | 0.0000 | **10** | 0.18 |
+| desktop with icons | 0.0011 | 0 | 0 |
+
+Three failures, each fatal on its own:
+
+1. **The photograph scores 0.0325 — above any floor that admits sparse text at 0.0008.**
+   A picture with no text would be queued for a second look forever.
+2. **Nine-pixel grey text scores exactly zero.** The measure runs on the 640px-wide
+   grayscale buffer the privacy scan already builds, and that downscale averages small type
+   out of existence. The tiebreaker was blind to precisely the case it existed for.
+3. **A blank desktop produced ten words.** So `words > 0` does not mean text either.
+
+Tuning the floor against these seven points would have been fitting noise. The measure was
+removed.
+
+**Confidence separates them cleanly, and detail does not.** Real reads came back at 0.69
+and 0.96; struggling and hallucinating came back at 0.31 and 0.18. Two clusters, no
+overlap. So:
+
+| reader said | verdict |
+|---|---|
+| failed or timed out | `inconclusive` |
+| zero words | `no_text` — finished |
+| words, mean confidence ≥ 0.5 | `text` |
+| words, mean confidence < 0.5 | `inconclusive` — seen, not read |
+
+`no_text` is the only outcome that ends the pipeline, so it requires the strongest
+evidence: the reader running cleanly and reacting to nothing at all. Everything the reader
+reacted to and could not vouch for goes forward. A test asserts that nothing the reader
+reacted to can ever be classified `no_text`.
+
+**The honest limit:** 0.5 is calibrated on seven screens I drew, which is not a sample of
+what people look at. Erring low is the safe direction — it sends more frames for a second
+look rather than filing them as clean — and this should be revisited against real
+captures.
 
 ## Reproducing
 
