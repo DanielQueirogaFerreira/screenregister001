@@ -106,3 +106,52 @@ export function buildScenes(frames: FrameRow[], minMs = 5000): { scenes: Scene[]
   const scenes = all.filter((s) => s.duration_ms >= minMs);
   return { scenes, hidden: all.length - scenes.length };
 }
+
+/**
+ * Frames whose transcript matches every term.
+ *
+ * The question this answers is the one the timeline cannot: not "when did the screen
+ * change" but "when was I looking at the pricing page". Until OCR runs there is nothing to
+ * match and this returns nothing, which is the honest behaviour — an empty result and a
+ * caller that can say why.
+ *
+ * Matching is done in SQL with LIKE rather than FTS5, and that is a deliberate first cut.
+ * A rolling seven days is thousands of rows, not millions; LIKE over an indexed date range
+ * is fast enough at that size, needs no second table to keep in step with deletions, and
+ * cannot fall out of sync with the frames it describes. If a week ever stops being cheap
+ * to scan, an FTS index is the next move — and the shape of this function does not change.
+ */
+export async function searchFrameText(
+  env: Env, userId: string, w: TimeWindow, terms: string[], limit = 50,
+): Promise<(FrameRow & { ocr_text: string | null })[]> {
+  const clean = terms.map((t) => t.trim()).filter((t) => t.length > 0).slice(0, 8);
+  if (clean.length === 0) return [];
+
+  const conds = ['user_id = ?', 'captured_at >= ?', 'captured_at <= ?', 'ocr_text IS NOT NULL'];
+  const binds: unknown[] = [userId, w.from, w.to];
+  for (const t of clean) {
+    conds.push(`ocr_text LIKE ? ESCAPE '${ESCAPE_CHAR}'`);
+    binds.push(`%${likeEscape(t)}%`);
+  }
+
+  const { results } = await env.DB.prepare(
+    `SELECT frame_id, session_id, captured_at, hold_ms, change_score, reason, width, height,
+            bytes, storage_key, ocr_text
+     FROM frames WHERE ${conds.join(' AND ')} ORDER BY captured_at ASC LIMIT ?`,
+  ).bind(...binds, Math.min(limit, 200)).all<FrameRow & { ocr_text: string | null }>();
+  return results;
+}
+
+const ESCAPE_CHAR = '\\';
+
+/**
+ * Neutralise LIKE's own wildcards in a user's search term.
+ *
+ * Without this, searching for `100%` matches every frame that has ever had text, and
+ * searching for `a_b` matches `axb`. Both are silent: the query succeeds and the answer is
+ * wrong in the direction of returning too much, which is the worst direction here — an
+ * assistant hands back a week of frames and nobody can tell it was a bug.
+ */
+export function likeEscape(term: string): string {
+  return term.replace(/[\\%_]/g, (c) => `${ESCAPE_CHAR}${c}`);
+}

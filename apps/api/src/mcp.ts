@@ -3,8 +3,9 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import { z } from 'zod';
 import type { Env, Principal } from './types.js';
 import {
-  buildScenes, listFrames, listSessions, resolveWindow, type FrameRow,
+  buildScenes, listFrames, listSessions, resolveWindow, searchFrameText, type FrameRow,
 } from './queries.js';
+import { excerpt } from '@sr/core';
 
 /**
  * The LLM-facing surface.
@@ -175,6 +176,58 @@ export function buildServer(env: Env, me: Principal): McpServer {
         `${results.length} frame(s)${results.length === limit ? ' (limit reached)' : ''} between ` +
           `${clock(w.from)} and ${clock(w.to)}:\n\n${lines.join('\n')}\n\n` +
           `Pass any frame id to get_frame to see the screen at that moment.`,
+      );
+    },
+  );
+
+  server.registerTool(
+    'search_screen_text',
+    {
+      title: 'Find moments by what was on the screen',
+      description:
+        'Search the text that was visible on screen. This is the tool that answers "when ' +
+        'was I looking at X" — the other tools know WHEN the screen changed and never ' +
+        'WHAT it showed. Returns matching moments in time order with a short excerpt, no ' +
+        'images. Text comes from OCR performed on the recording device before the frame ' +
+        'was stored, so it carries OCR\'s error rate: a miss does not prove the thing was ' +
+        'never on screen.',
+      inputSchema: {
+        query: z.string().describe('Words that must all appear, in any order'),
+        last_hours: z.number().optional(),
+        from: z.string().optional(),
+        to: z.string().optional(),
+        limit: z.number().optional().describe('Default 50, max 200'),
+      },
+    },
+    async (args) => {
+      const w = resolveWindow(args);
+      const terms = args.query.split(/\s+/).filter(Boolean);
+      const rows = await searchFrameText(env, me.userId, w, terms, args.limit ?? 50);
+
+      if (rows.length === 0) {
+        // Two very different reasons for an empty result, and an assistant that cannot
+        // tell them apart will confidently report that something never happened.
+        const anyText = await q(
+          `SELECT COUNT(*) AS n FROM frames WHERE user_id = ? AND ocr_text IS NOT NULL`,
+          me.userId,
+        ).first<{ n: number }>();
+        if (!anyText || anyText.n === 0) {
+          return text(
+            'No screen text has been recorded for this account, so there is nothing to ' +
+            'search. Text capture is performed on the recording device and may be off or ' +
+            'not yet available — this is NOT evidence that the thing was never on screen.',
+          );
+        }
+        return text(`Nothing matching "${args.query}" between ${clock(w.from)} and ${clock(w.to)}.`);
+      }
+
+      return text(
+        `${rows.length} moment(s) matching "${args.query}":\n\n` +
+        rows.map((f) =>
+          `${clock(f.captured_at)}  ${f.frame_id}  held ${duration(f.hold_ms ?? 0)}\n` +
+          `    ${excerpt(f.ocr_text ?? '', args.query)}`,
+        ).join('\n') +
+        '\n\nCall get_frame on any of these ids to see the screen itself.',
       );
     },
   );

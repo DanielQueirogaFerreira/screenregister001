@@ -26,6 +26,9 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.30.0
         version: 1.30.0(zod@4.5.4)
+      '@sr/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@sr/schema':
         specifier: workspace:*
         version: link:../../packages/schema

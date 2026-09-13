@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { publicFrame, variantKeys } from './index.js';
-import { buildScenes, resolveWindow, type FrameRow } from './queries.js';
+import { buildScenes, resolveWindow, type FrameRow, likeEscape,
+} from './queries.js';
 
 const frame = (min: number, change: number, reason: string, holdMs: number): FrameRow => ({
   frame_id: `f${min}`,
@@ -143,5 +144,23 @@ describe('variantKeys', () => {
     expect(variantKeys('f/u1/f/f.webp')).toEqual([
       'f/u1/f/f.webp', 't/u1/f/f.webp', 'o/u1/f/f.webp',
     ]);
+  });
+});
+
+describe('searching by what was on screen', () => {
+  it('neutralises LIKE wildcards in a search term', () => {
+    // Without this, searching for "100%" matches every frame that has any text at all,
+    // and "a_b" matches "axb". Both fail silently, in the direction of returning far too
+    // much — an assistant hands back a week and nobody can tell it was a bug.
+    expect(likeEscape('100%')).toBe('100\\%');
+    expect(likeEscape('a_b')).toBe('a\\_b');
+    expect(likeEscape('C:\\Users')).toBe('C:\\\\Users');
+    expect(likeEscape('ordinary text')).toBe('ordinary text');
+  });
+
+  it('leaves a term that needs no escaping exactly as typed', () => {
+    for (const t of ['pricing', 'Cloudflare R2', 'ação', '0.015']) {
+      expect(likeEscape(t)).toBe(t);
+    }
   });
 });

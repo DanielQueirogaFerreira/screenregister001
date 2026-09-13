@@ -12,9 +12,10 @@
     "build": "pnpm -w run test && pnpm --filter @sr/web run build"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@sr/core": "workspace:*",
     "@sr/schema": "workspace:*",
     "hono": "^4.6.14",
-    "@modelcontextprotocol/sdk": "^1.30.0",
     "zod": "^4.5.4"
   },
   "devDependencies": {

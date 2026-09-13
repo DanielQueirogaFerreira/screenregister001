@@ -11,8 +11,9 @@ import { hashPassword, validatePassword, verifyPassword } from './password.js';
 import { buildStatus, pruneStatusTables, recordProbes, runProbes } from './status.js';
 import { handleMcp } from './mcp.js';
 import { oauth } from './oauth.js';
-import { buildScenes, listFrames, resolveWindow } from './queries.js';
+import { buildScenes, listFrames, resolveWindow, searchFrameText } from './queries.js';
 import { StampError, decodeStamp, ulid } from '@sr/schema';
+import { excerpt } from '@sr/core';
 import { HEARTBEAT_INTERVAL_MS, LIVE_WINDOW_MS, adminAudit, liveCutoff } from './admin.js';
 import {
   type Permissions, type Principal as Operator, type Role,
@@ -147,7 +148,50 @@ app.use('/v1/data', requireAuth);
 app.use('/v1/timeline', requireAuth);
 app.use('/v1/scenes', requireAuth);
 app.use('/v1/admin/*', requireAuth);
+app.use('/v1/search', requireAuth);
 app.use('/v1/status', requireAuth);
+
+/**
+ * Find moments by what the screen showed.
+ *
+ * The REST twin of the MCP tool, for clients that call HTTP rather than speak MCP. An
+ * empty result says which kind of empty it is: nothing recorded, or nothing matching.
+ * Conflating those is how a caller concludes an event never happened when the truth is
+ * that text capture was off.
+ */
+app.get('/v1/search', async (c) => {
+  const userId = c.get('me').userId;
+  const query = (c.req.query('q') ?? '').trim();
+  if (!query) return c.json({ error: 'missing_query', detail: 'Pass ?q= with words to find.' }, 400);
+
+  const w = resolveWindow({
+    last_hours: c.req.query('last_hours') ? Number(c.req.query('last_hours')) : undefined,
+    from: c.req.query('from'), to: c.req.query('to'),
+  });
+  const rows = await searchFrameText(
+    c.env, userId, w, query.split(/\s+/).filter(Boolean),
+    c.req.query('limit') ? Number(c.req.query('limit')) : 50,
+  );
+
+  const indexed = await c.env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM frames WHERE user_id = ? AND ocr_text IS NOT NULL`,
+  ).bind(userId).first<{ n: number }>();
+
+  return c.json({
+    query,
+    window: w,
+    /** How many frames have any text at all. Zero means "nothing to search", not "no match". */
+    frames_with_text: Number(indexed?.n ?? 0),
+    results: rows.map((f) => ({
+      frame_id: f.frame_id,
+      session_id: f.session_id,
+      captured_at: f.captured_at,
+      hold_ms: f.hold_ms,
+      excerpt: excerpt(f.ocr_text ?? '', query),
+    })),
+  });
+});
+
 
 /**
  * Operator routes.
