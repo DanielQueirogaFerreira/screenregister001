@@ -27,6 +27,36 @@ type Ctx = { Bindings: Env; Variables: { me: Principal; scope: 'read' | 'write';
 const app = new Hono<Ctx>();
 
 /**
+ * The discovery documents are public, and have to answer a browser from anywhere.
+ *
+ * Registered before the rule below, because these three are the exception to it. They are
+ * unauthenticated, carry nothing belonging to anyone, and exist to be read by a client
+ * that has not connected yet — which for a web-based assistant means a fetch from its own
+ * origin. Denying that makes the handshake fail at its first step with an error the user
+ * cannot act on.
+ *
+ * `*` without credentials, deliberately: a wildcard origin cannot carry cookies, so the
+ * session is not reachable through this even in principle.
+ *
+ * Not included, and each for its own reason:
+ *   /oauth/authorize — reads the session cookie, and is a navigation rather than a fetch.
+ *   /v1/*           — account data; same-origin only, unchanged.
+ *   /mcp            — bearer-authenticated and reached server-side by every client we
+ *                     support. csrfOk already refuses a cookie-authenticated POST from a
+ *                     foreign origin, so this is about not opening a door nobody knocked on.
+ */
+const publicDocumentCors = cors({
+  origin: '*',
+  allowHeaders: ['Content-Type'],
+  allowMethods: ['GET', 'POST', 'OPTIONS'],
+  maxAge: 86400,
+});
+
+app.use('/.well-known/*', publicDocumentCors);
+app.use('/oauth/register', publicDocumentCors);
+app.use('/oauth/token', publicDocumentCors);
+
+/**
  * The Worker serves the client, so real traffic is same-origin and needs no CORS at all.
  * An earlier version reflected every requesting origin, which handed any website a working
  * cross-origin channel to the API — a bearer token was still required, so it was not
@@ -205,6 +235,15 @@ app.get('/v1/search', async (c) => {
       captured_at: f.captured_at,
       hold_ms: f.hold_ms,
       excerpt: excerpt(f.ocr_text ?? '', query),
+      /**
+       * How the frame was classified, and how well it read.
+       *
+       * Both describe the reading, not the screen. A caller quoting an excerpt back to
+       * somebody has no other way to know whether it came off a clean read or a struggling
+       * one, and an excerpt is exactly the kind of thing that gets quoted as fact.
+       */
+      enrich_status: f.enrich_status,
+      ocr_confidence: f.ocr_confidence,
     })),
   });
 });

@@ -9,6 +9,16 @@ https://<your-worker>/mcp          Authorization: Bearer srp_…
 
 Read this whole page before you connect the first one. The endpoint is the easy part.
 
+**If you only want it working, you do not need this page.** Sign in and open the
+**Connect** tab (area 203). It shows the one address to paste, the steps for Claude and
+Gemini, and a self-check saying whether this deployment is answering the questions an
+assistant is about to ask. This page is the long version: what the connection can reach,
+what it cannot, and what to do when it misbehaves.
+
+For Claude and Gemini there is **no token at all** — they register themselves and you press
+Allow on a consent screen served by your own Worker. Tokens below are for clients that want
+a header instead: Claude Code, Gemini CLI, scripts of your own.
+
 ---
 
 ## 1. Make one token per assistant
@@ -73,8 +83,15 @@ ChatGPT connects only to remote HTTPS servers, which this is.
 
 ### Gemini (Spark / Connected Apps) — OAuth, no token to paste
 
+**Google's eligibility conditions come first, because none of them are visible until it
+refuses:** custom apps work only on a **personal** Google account — not a work or school
+one — for people **18 or over**, in the **United States**. The server must also speak
+Streamable HTTP and carry a certificate from a publicly trusted authority, both of which a
+Worker on `workers.dev` does by default.
+
 Settings & help → Connected Apps → *Add a custom app* → paste
-`https://<your-worker>/mcp` → Next.
+`https://<your-worker>/mcp` → Next. Connect it in the **web** app once and it is available
+to Gemini on the phone as well.
 
 **There is no token field, and that is not an oversight on Google's part — Spark speaks
 OAuth 2.1 and nothing else.** What happens when you press Next:
@@ -185,6 +202,12 @@ That is the right posture to borrow.
 
 ## 6. What is deliberately not built yet
 
+**OCR text.** The reader exists and is measured, but nothing in the capture worker calls it
+yet, so `ocr_text` is null on every stored frame and `search_screen_text` finds nothing. It
+says so rather than implying the moment never happened — an empty result distinguishes "no
+text has ever been recorded here" from "no match". Until that lands, an assistant reads
+this archive by looking at the screenshots and at when the screen changed.
+
 **Refresh tokens.** A grant lasts 90 days and then the assistant has to be reconnected by
 hand. Refresh tokens would make that invisible. Deliberately skipped for now: a refresh
 token is a credential that renews itself, and for a screen archive an access that quietly
@@ -218,6 +241,14 @@ leaving.
 - **The consent screen is plain HTML served by the Worker**, not a route in the app. It
   must be impossible to reach in a state where it does not yet know whose data is being
   consented to.
+- **Parameters the server does not act on are returned anyway.** `resource` (RFC 8707) is
+  one: this server issues exactly one kind of token, so acting on it would mean nothing,
+  but a consent step that silently drops a parameter looks to the client like a server that
+  changed its mind about what was asked for.
+- **The discovery documents answer any origin; nothing else does.** They are
+  unauthenticated and belong to nobody, and a web-based assistant fetches them from its own
+  origin. The wildcard carries no credentials, so a cookie cannot ride it, and it stops at
+  those documents — `/v1/*`, `/mcp` and the consent screen stay same-origin.
 
 ## 7. Operational rules worth keeping
 
@@ -240,3 +271,4 @@ Vendor capabilities in §2 move quickly; these were checked on 2026-09-13.
 - Gemini custom MCP servers — [Gemini MCP: How to Add a Custom Server in 2026](https://www.usecarly.com/blog/gemini-mcp/), [MCP servers with Gemini CLI](https://geminicli.com/docs/tools/mcp-server/)
 - Grok connectors and Grok Build — [Remote MCP Tools · xAI docs](https://docs.x.ai/developers/tools/remote-mcp), [Connectors · xAI docs](https://docs.x.ai/grok/connectors)
 - claude.ai connector authentication — [Authentication for connectors](https://claude.com/docs/connectors/building/authentication), [Get started with custom connectors using remote MCP](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp)
+- Gemini Spark eligibility and custom-app setup — [Connect & manage custom apps for Gemini Spark](https://support.google.com/gemini/answer/17209137)

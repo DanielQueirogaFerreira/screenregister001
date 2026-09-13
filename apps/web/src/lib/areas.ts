@@ -31,6 +31,7 @@ export const AREAS = {
   inspect: { id: '104', name: 'inspector' },
   settings: { id: '201', name: 'settings' },
   auth: { id: '202', name: 'sign-in' },
+  connect: { id: '203', name: 'connect an assistant' },
   admin: { id: '301', name: 'operator console' },
   evolution: { id: '401', name: 'codebase navigator' },
   database: { id: '402', name: 'database & cost' },

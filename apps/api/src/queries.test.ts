@@ -120,6 +120,25 @@ describe('publicFrame', () => {
     expect(out.redacted).toBe(true);
   });
 
+  it('carries how readable the frame was, not only what it contained', () => {
+    /**
+     * These three columns reach a caller for free, because publicFrame passes through
+     * everything it is not deliberately removing. Pinned anyway: the pass-through is an
+     * implementation detail and the property is now part of what the API promises.
+     *
+     * What they are for: a frame marked `inconclusive` was stored WITHOUT text-secret
+     * masking, because there was no text to scan. It is the least examined frame in the
+     * system, and a caller that cannot tell it from a clean one will treat the two alike.
+     */
+    const out = publicFrame({
+      ...row, enrich_status: 'inconclusive', scan_reason: 'the reader failed or timed out',
+      ocr_confidence: null, ocr_ms: 3000,
+    });
+    expect(out.enrich_status).toBe('inconclusive');
+    expect(out.scan_reason).toBe('the reader failed or timed out');
+    expect(out.ocr_confidence).toBeNull();
+  });
+
   it('copes with the columns a pre-migration row does not have', () => {
     const out = publicFrame({ frame_id: 'x', changed_tiles: '[]' });
     expect(out.redacted).toBe(false);

@@ -190,7 +190,9 @@ export function buildServer(env: Env, me: Principal): McpServer {
         'WHAT it showed. Returns matching moments in time order with a short excerpt, no ' +
         'images. Text comes from OCR performed on the recording device before the frame ' +
         'was stored, so it carries OCR\'s error rate: a miss does not prove the thing was ' +
-        'never on screen.',
+        'never on screen. Each match carries the reader\'s mean confidence as "read 0.00" ' +
+        '— nearer 1 is a clean read; nearer 0.5 means the words were seen more than they ' +
+        'were understood, and the excerpt should be treated as a lead rather than a quote.',
       inputSchema: {
         query: z.string().describe('Words that must all appear, in any order'),
         last_hours: z.number().optional(),
@@ -234,8 +236,13 @@ export function buildServer(env: Env, me: Principal): McpServer {
       return text(
         `${rows.length} moment(s) matching "${args.query}":\n\n` +
         rows.map((f) =>
-          `${clock(f.captured_at)}  ${f.frame_id}  held ${duration(f.hold_ms ?? 0)}\n` +
-          `    ${excerpt(f.ocr_text ?? '', args.query)}`,
+          `${clock(f.captured_at)}  ${f.frame_id}  held ${duration(f.hold_ms ?? 0)}` +
+          // Printed on every line rather than only on the bad ones. A flag that appears
+          // below some threshold teaches a reader that unflagged means certain, and the
+          // threshold would be mine, not theirs.
+          (typeof f.ocr_confidence === 'number'
+            ? `  read ${f.ocr_confidence.toFixed(2)}` : '') +
+          `\n    ${excerpt(f.ocr_text ?? '', args.query)}`,
         ).join('\n') +
         '\n\nCall get_frame on any of these ids to see the screen itself.',
       );

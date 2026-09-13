@@ -20,8 +20,9 @@ import { ThemeToggle } from './lib/sections.js';
 import { StatusView } from './views/StatusView.js';
 import { EvolutionView } from './views/EvolutionView.js';
 import { DatabaseView } from './views/DatabaseView.js';
+import { ConnectView } from './views/ConnectView.js';
 
-type Tab = 'record' | 'library' | 'inspect' | 'settings' | 'admin';
+type Tab = 'record' | 'library' | 'inspect' | 'connect' | 'settings' | 'admin';
 
 export function App() {
   // The status page is deliberately outside the auth gate, and checked before any of it
@@ -63,10 +64,13 @@ function RecorderApp() {
    * does: the others are reached from here, but /status is served outside the auth gate
    * and has nothing else to point at.
    */
-  const [tab, setTab] = useState<Tab>(
-    typeof location !== 'undefined' && location.pathname.replace(/\/+$/, '') === '/admin'
-      ? 'admin' : 'record',
-  );
+  const [tab, setTab] = useState<Tab>(() => {
+    const p = typeof location !== 'undefined' ? location.pathname.replace(/\/+$/, '') : '';
+    // /connect earns a URL for the same reason /admin has one: it is the page other things
+    // point AT. The consent screen, the guide and anything explaining the setup all need
+    // somewhere to send a person, and "open the app and press the fourth tab" is not a link.
+    return p === '/admin' ? 'admin' : p === '/connect' ? 'connect' : 'record';
+  });
   const [settings, setSettings] = useState<CaptureSettings>(loadSettings);
   /** Recordings open in the player. More than one plays them together or in sequence. */
   const [playing, setPlaying] = useState<SessionRecord[]>([]);
@@ -298,7 +302,7 @@ function RecorderApp() {
         </h1>
         <nav>
           {([
-            'record', 'library', 'inspect', 'settings',
+            'record', 'library', 'inspect', 'connect', 'settings',
             ...(isAdmin ? (['admin'] as Tab[]) : []),
           ] as Tab[]).map((t) => (
             <button
@@ -307,7 +311,10 @@ function RecorderApp() {
               onClick={() => {
                 setPlaying([]);
                 setTab(t);
-                if (t !== 'admin' && location.pathname.replace(/\/+$/, '') === '/admin') {
+                // Both tabs that own a URL have to give it back on the way out, or the
+                // address bar keeps naming a page you are no longer looking at.
+                const here = location.pathname.replace(/\/+$/, '');
+                if ((here === '/admin' || here === '/connect') && `/${t}` !== here) {
                   history.replaceState(null, '', '/');
                 }
               }}
@@ -432,6 +439,8 @@ function RecorderApp() {
         />
       ) : tab === 'admin' ? (
         <AdminView />
+      ) : tab === 'connect' ? (
+        <ConnectView />
       ) : tab === 'inspect' ? (
         <InspectView
           store={store}
@@ -463,6 +472,7 @@ function RecorderApp() {
             : tab === 'library' ? AREAS.library
             : tab === 'inspect' ? AREAS.inspect
             : tab === 'admin' ? AREAS.admin
+            : tab === 'connect' ? AREAS.connect
             : AREAS.settings
         }
         retentionDays={store.retentionDays}

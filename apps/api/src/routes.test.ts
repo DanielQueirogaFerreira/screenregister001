@@ -96,3 +96,63 @@ describe('operator routes', () => {
     expect(await res.json()).toEqual({ error: 'not_found' });
   });
 });
+
+/**
+ * Which origins may read which documents.
+ *
+ * The rule everywhere else is same-origin only, and that is right: /v1/* is account data.
+ * The discovery documents are the exception — unauthenticated, belonging to nobody, and
+ * meant to be fetched by a client that has not connected yet. For a web-based assistant
+ * that fetch comes from its own origin, and denying it fails the handshake at step one
+ * with an error the user cannot act on.
+ *
+ * Both halves are pinned here, because the exception is only safe while it stays an
+ * exception. A wildcard that spread to /v1 would hand every website a cross-origin
+ * channel to a screen archive.
+ */
+describe('cross-origin reach', () => {
+  const from = (path: string, origin = 'https://claude.ai') =>
+    app.request(path, { headers: { origin } }, env());
+
+  it('lets any origin read the discovery documents', async () => {
+    for (const path of [
+      '/.well-known/oauth-protected-resource',
+      '/.well-known/oauth-protected-resource/mcp',
+      '/.well-known/oauth-authorization-server',
+      '/.well-known/oauth-authorization-server/mcp',
+    ]) {
+      const res = await from(path);
+      expect(res.status, path).toBe(200);
+      expect(res.headers.get('access-control-allow-origin'), path).toBe('*');
+    }
+  });
+
+  it('answers the preflight a browser sends before the token exchange', async () => {
+    const res = await app.request('/oauth/token', {
+      method: 'OPTIONS',
+      headers: {
+        origin: 'https://claude.ai',
+        'access-control-request-method': 'POST',
+        'access-control-request-headers': 'content-type',
+      },
+    }, env());
+    expect(res.status).toBe(204);
+    expect(res.headers.get('access-control-allow-origin')).toBe('*');
+  });
+
+  it('never carries credentials on the open documents', async () => {
+    // A wildcard origin cannot carry cookies, and this says so out loud: the session is
+    // not reachable through the exception even in principle.
+    const res = await from('/.well-known/oauth-authorization-server');
+    expect(res.headers.get('access-control-allow-credentials')).toBeNull();
+  });
+
+  it('keeps account data and the consent screen same-origin', async () => {
+    // /oauth/authorize reads the session cookie, so it stays out of the exception even
+    // though it sits beside the endpoints that are in it.
+    for (const path of ['/v1/usage', '/v1/sessions', '/oauth/authorize', '/mcp']) {
+      const res = await from(path);
+      expect(res.headers.get('access-control-allow-origin'), path).toBeNull();
+    }
+  });
+});

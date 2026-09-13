@@ -56,6 +56,34 @@ export const OPENAPI = (origin: string) => ({
         responses: { 200: { description: 'Scenes, each naming the frame that opened it' } },
       },
     },
+    '/v1/search': {
+      get: {
+        summary: 'Find moments by what the screen showed',
+        description:
+          'The only route that knows WHAT was on screen rather than WHEN it changed. Text ' +
+          'comes from OCR run on the recording device, so it carries OCR\'s error rate and ' +
+          'a miss is not proof of absence. The response carries a `coverage` object — ' +
+          '`searchable` frames hold text, `unread` frames could not be read at all and are ' +
+          'invisible to this search by construction, `total` is everything stored. When ' +
+          '`searchable` is 0 an empty result means "nothing to search", never "no match". ' +
+          'Each result carries `ocr_confidence`, the reader\'s mean confidence for that ' +
+          'frame: near 1 is a clean read, near 0.5 barely a read at all.',
+        parameters: [
+          {
+            name: 'q', in: 'query', required: true, schema: { type: 'string' },
+            description: 'Words that must all appear in one frame, in any order',
+          },
+          { name: 'last_hours', in: 'query', schema: { type: 'number', default: 24 } },
+          { name: 'from', in: 'query', schema: { type: 'string', format: 'date-time' } },
+          { name: 'to', in: 'query', schema: { type: 'string', format: 'date-time' } },
+          { name: 'limit', in: 'query', schema: { type: 'number', default: 50, maximum: 200 } },
+        ],
+        responses: {
+          200: { description: 'Matching moments, with coverage for what could not be searched' },
+          400: { description: 'No q parameter' },
+        },
+      },
+    },
     '/v1/timeline': {
       get: {
         summary: 'Individual stored frames, as metadata only',

@@ -170,6 +170,22 @@ describe('discovery, which is how a hosted assistant finds its way in', () => {
     expect(meta.issuer).toBe('https://sr.test');
   });
 
+  it('serves the authorisation metadata under the resource path too', async () => {
+    /**
+     * RFC 8414 §3.1 lets a client insert the resource's path between the well-known
+     * segment and the rest, and some do — they probe the suffixed form FIRST.
+     *
+     * The protected-resource document already had this twin; this one did not, and the
+     * asymmetry is invisible from the working path. A client that reads 404 here as "no
+     * authorisation server" never tries the bare path to find out otherwise, and the
+     * failure surfaces to the user as an unexplained "could not connect".
+     */
+    const { env } = fakeEnv();
+    const bare = await (await call(env, '/.well-known/oauth-authorization-server')).json();
+    const suffixed = await (await call(env, '/.well-known/oauth-authorization-server/mcp')).json();
+    expect(suffixed).toEqual(bare);
+  });
+
   it('points the resource at its authorisation server', async () => {
     const { env } = fakeEnv();
     const doc = await (await call(env, '/.well-known/oauth-protected-resource')).json() as Record<string, unknown>;
@@ -194,6 +210,19 @@ describe('registration', () => {
     // A secret shipped to a client that cannot keep one is decoration, and offering one
     // invites a client to rely on it.
     expect('client_secret' in client).toBe(false);
+  });
+
+  it('dates the registration, because some clients require it', async () => {
+    // RFC 7591 §3.2.1 makes client_id_issued_at optional and some clients treat its
+    // absence as a malformed response. One field is cheaper than being that server.
+    const { env } = fakeEnv();
+    const res = await register(env, { client_name: 'Gemini', redirect_uris: ['https://g.test/cb'] });
+    const client = await res.json() as Record<string, unknown>;
+    expect(typeof client.client_id_issued_at).toBe('number');
+    // Seconds since the epoch, not milliseconds — a client reading this as a date would
+    // otherwise place the registration in the year 56000.
+    expect(client.client_id_issued_at).toBeGreaterThan(1_700_000_000);
+    expect(client.client_id_issued_at).toBeLessThan(4_000_000_000);
   });
 
   it('refuses a redirect it would never honour anyway', async () => {
@@ -232,6 +261,31 @@ describe('the consent screen', () => {
     // Without this the visitor signs in, lands on the recorder, and the app that sent them
     // waits forever — the flow does not fail, it silently never finishes.
     expect(decodeURIComponent(to.searchParams.get('next')!)).toContain('code_challenge=');
+  });
+
+  it('carries an unknown parameter through to the form it will post back', async () => {
+    /**
+     * `resource` (RFC 8707) is what the MCP specification asks clients to send, and this
+     * server acts on none of it — it issues exactly one kind of token. Acting on it is not
+     * the requirement; RETURNING it is. A consent step that silently drops a parameter
+     * looks to the client like a server that changed its mind about what was requested.
+     */
+    const box = await registeredClient();
+    box.sessions.set(
+      await hashToken('session-cookie-value'),
+      { user_id: 'u1', expires_at: new Date(Date.now() + 86_400_000).toISOString(), revoked_at: null },
+    );
+    const res = await call(
+      box.env,
+      authorizeUrl(box.clientId, await challengeFor('v'.repeat(43)), {
+        resource: 'https://sr.test/mcp',
+      }),
+      { headers: { cookie: 'sr_session=session-cookie-value' } },
+    );
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain('name="resource"');
+    expect(html).toContain('https://sr.test/mcp');
   });
 
   it('will not redirect anywhere the client did not register', async () => {

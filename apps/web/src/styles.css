@@ -126,7 +126,12 @@ input:focus-visible, select:focus-visible, button:focus-visible {
 header { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
 h1 { font-size: 17px; margin: 0; letter-spacing: -.2px; }
 h1 span { color: var(--dim); font-weight: 400; }
-nav { display: flex; gap: 6px; margin-left: auto; }
+/* Wrapping, because the row is not fixed-length. The header has always wrapped and the
+   nav inside it never did, so on a phone it ran 846px wide inside a 390px screen and took
+   the whole page with it — a sideways scroll on every screen of the app. Adding a sixth
+   tab made that worse, which is how it was found. Growing a row downwards is the right
+   failure here; the alternative, squeezing, shrinks the tap targets instead. */
+nav { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin-left: auto; }
 nav button.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px; }
 .grid { display: grid; gap: 14px; }
@@ -1218,6 +1223,35 @@ body:has(.evo-layout:fullscreen) .version-badge { display: none; }
 }
 .evo-build { color: var(--dim); opacity: .6; overflow: hidden; text-overflow: ellipsis; }
 
+/* --- connect an assistant (area 203) ---------------------------------------------- */
+
+/* The address is the page. It gets the width, the monospace and the one primary button. */
+.connect-url { margin-top: 10px; gap: 8px; }
+.connect-url input {
+  flex: 1; min-width: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 14px;
+}
+.connect-url button { flex: none; }
+
+.connect-steps { margin: 10px 0 0; padding-left: 22px; }
+.connect-steps li { margin: 5px 0; }
+.connect-list { margin: 0 0 10px; padding-left: 20px; }
+.connect-list li { margin: 5px 0; }
+
+.connect-checks { list-style: none; margin: 10px 0 0; padding: 0; }
+.connect-checks li {
+  display: flex; align-items: baseline; gap: 8px; margin: 6px 0; font-size: 13px;
+  flex-wrap: wrap;
+}
+.chk {
+  width: 9px; height: 9px; border-radius: 50%; flex: none; align-self: center;
+  background: var(--dim);
+}
+.chk-ok { background: var(--good); }
+/* Warn, not bad. Every one of these failing is recoverable, and two of the three are
+   about a deployment that has not been used yet rather than one that is broken. */
+.chk-bad { background: var(--warn); }
+
 /* --- narrow overrides, last so they win over the cockpit rules above --- */
 @media (max-width: 560px) {
   /* 24px, not 27. Seven controls and a mode switch do not fit a phone at 27, and a row
@@ -1236,4 +1270,11 @@ body:has(.evo-layout:fullscreen) .version-badge { display: none; }
   .evo-layout:not(.full) .evo-hud,
   .evo-layout:not(.full) .evo-at { display: none; }
   .evo-hud { margin-right: 0; }
+}
+
+@media (max-width: 560px) {
+  /* The email costs a whole nav row on a phone and answers a question nobody is asking
+     while looking at the header — you know who you are signed in as. It is still on the
+     settings screen, which is where someone goes when they actually want to check. */
+  header .who { display: none; }
 }

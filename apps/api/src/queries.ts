@@ -108,6 +108,19 @@ export function buildScenes(frames: FrameRow[], minMs = 5000): { scenes: Scene[]
 }
 
 /**
+ * What a match carries beyond the frame itself.
+ *
+ * `ocr_confidence` travels with the excerpt because it is what makes the excerpt weighable:
+ * the same sentence returned at 0.95 and at 0.56 is the same text with very different
+ * claims behind it, and a caller that cannot tell them apart will quote both alike.
+ */
+export interface SearchExtras {
+  ocr_text: string | null;
+  enrich_status: string | null;
+  ocr_confidence: number | null;
+}
+
+/**
  * Frames whose transcript matches every term.
  *
  * The question this answers is the one the timeline cannot: not "when did the screen
@@ -123,7 +136,7 @@ export function buildScenes(frames: FrameRow[], minMs = 5000): { scenes: Scene[]
  */
 export async function searchFrameText(
   env: Env, userId: string, w: TimeWindow, terms: string[], limit = 50,
-): Promise<(FrameRow & { ocr_text: string | null })[]> {
+): Promise<(FrameRow & SearchExtras)[]> {
   const clean = terms.map((t) => t.trim()).filter((t) => t.length > 0).slice(0, 8);
   if (clean.length === 0) return [];
 
@@ -136,9 +149,9 @@ export async function searchFrameText(
 
   const { results } = await env.DB.prepare(
     `SELECT frame_id, session_id, captured_at, hold_ms, change_score, reason, width, height,
-            bytes, storage_key, ocr_text
+            bytes, storage_key, ocr_text, enrich_status, ocr_confidence
      FROM frames WHERE ${conds.join(' AND ')} ORDER BY captured_at ASC LIMIT ?`,
-  ).bind(...binds, Math.min(limit, 200)).all<FrameRow & { ocr_text: string | null }>();
+  ).bind(...binds, Math.min(limit, 200)).all<FrameRow & SearchExtras>();
   return results;
 }
 

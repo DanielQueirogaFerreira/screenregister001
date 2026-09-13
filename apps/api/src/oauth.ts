@@ -130,20 +130,32 @@ oauth.get('/.well-known/oauth-protected-resource/mcp', (c) =>
  * a server advertises non-standard extension fields here, so this carries exactly the
  * registered fields and not one more.
  */
-oauth.get('/.well-known/oauth-authorization-server', (c) => {
-  const origin = new URL(c.req.url).origin;
-  return json({
-    issuer: origin,
-    authorization_endpoint: `${origin}/oauth/authorize`,
-    token_endpoint: `${origin}/oauth/token`,
-    registration_endpoint: `${origin}/oauth/register`,
-    scopes_supported: ['read'],
-    response_types_supported: ['code'],
-    grant_types_supported: ['authorization_code'],
-    token_endpoint_auth_methods_supported: ['none'],
-    code_challenge_methods_supported: ['S256'],
-  });
+const asMetadata = (origin: string) => ({
+  issuer: origin,
+  authorization_endpoint: `${origin}/oauth/authorize`,
+  token_endpoint: `${origin}/oauth/token`,
+  registration_endpoint: `${origin}/oauth/register`,
+  scopes_supported: ['read'],
+  response_types_supported: ['code'],
+  grant_types_supported: ['authorization_code'],
+  token_endpoint_auth_methods_supported: ['none'],
+  code_challenge_methods_supported: ['S256'],
 });
+
+oauth.get('/.well-known/oauth-authorization-server', (c) =>
+  json(asMetadata(new URL(c.req.url).origin)));
+
+/**
+ * The same document under the resource path, because RFC 8414 §3.1 says a client may
+ * insert the resource's path between the well-known segment and the rest.
+ *
+ * The protected-resource document already had this twin. This one did not, and the
+ * asymmetry is the kind that costs an afternoon: a client that probes
+ * `/.well-known/oauth-authorization-server/mcp` first and treats 404 as "no authorisation
+ * server here" never reaches the bare path to find out otherwise.
+ */
+oauth.get('/.well-known/oauth-authorization-server/mcp', (c) =>
+  json(asMetadata(new URL(c.req.url).origin)));
 
 /**
  * Dynamic client registration (RFC 7591).
@@ -182,16 +194,20 @@ oauth.post('/oauth/register', async (c) => {
   const name = typeof body?.client_name === 'string' && body.client_name.trim()
     ? body.client_name.trim().slice(0, 80)
     : 'An assistant';
+  const now = new Date();
   await c.env.DB.prepare(
     `INSERT INTO oauth_clients (client_id, client_name, redirect_uris, created_at)
      VALUES (?,?,?,?)`,
-  ).bind(clientId, name, JSON.stringify(uris), new Date().toISOString()).run();
+  ).bind(clientId, name, JSON.stringify(uris), now.toISOString()).run();
 
   // No client_secret. This is a public client using PKCE, which is what OAuth 2.1 wants
   // and what every one of these assistants is: a secret shipped to a client that cannot
   // keep one is decoration.
   return json({
     client_id: clientId,
+    // RFC 7591 §3.2.1 makes this optional, and some clients treat a registration response
+    // without it as malformed. It costs one field to not be the server that fails there.
+    client_id_issued_at: Math.floor(now.getTime() / 1000),
     client_name: name,
     redirect_uris: uris,
     grant_types: ['authorization_code'],
@@ -251,6 +267,11 @@ oauth.get('/oauth/authorize', async (c) => {
   return page(
     `Connect ${esc(client.client_name)}?`,
     '',
+    // Every parameter goes back out, not just the ones read above. A client that sends
+    // `resource` (RFC 8707, which the MCP specification asks of clients) must see it
+    // survive the consent step; a server that silently drops unknown parameters looks to
+    // that client like one that changed its mind about which resource was requested.
+    // Nothing here acts on them — this server issues exactly one kind of token.
     `<form method="post" action="/oauth/authorize">
        ${[...p.entries()].map(([k, v]) =>
          `<input type="hidden" name="${esc(k)}" value="${esc(v)}">`).join('\n')}
